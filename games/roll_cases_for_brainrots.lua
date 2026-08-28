@@ -23,7 +23,9 @@
                   (the server clamps count to 3). SKIP REVEAL switches off the
                   handler that plays the spin and answers the server in its place
                   -- firing RequestRevealComplete alone does NOT skip anything,
-                  the client plays the animation either way. Needs getconnections.
+                  the client plays it either way. Three remotes feed the reveal
+                  (CaseOpened, CaseReveal3D, CaseMulti3D) and cutting one leaves
+                  the others playing. Needs getconnections.
      BASE       : Collect fires the base pad plus every plate slot; Place is the
                   pad's own auto-place. Both are one remote each and the server
                   refuses what you haven't earned, which is the normal case.
@@ -352,7 +354,43 @@ end
 -- ponytail: needs getconnections; without it the reveal plays and we say so rather
 -- than pretending the toggle did something. It also takes out LoreDialogueController's
 -- CaseOpened listener, which is first-open lore chatter -- restored on toggle-off.
-local revealConn, killedReveal = nil, {}
+-- Cutting a controller off an event we answer ourselves. Two rules, both learned the
+-- hard way: mute BEFORE connecting our own handler, or getconnections hands us our
+-- own and we switch ourselves off with the rest; and mute every remote that feeds
+-- the thing, not just the obvious one.
+local muted = {}
+
+local function mute(remote)
+	if not (getconnections and remote) or muted[remote] then
+		return false
+	end
+	local list = {}
+	for _, c in ipairs(getconnections(remote.OnClientEvent)) do
+		pcall(function()
+			c:Disable()
+		end)
+		table.insert(list, c)
+	end
+	muted[remote] = list
+	return true
+end
+
+local function unmute(remote)
+	local list = remote and muted[remote]
+	if not list then
+		return
+	end
+	for _, c in ipairs(list) do
+		pcall(function()
+			c:Enable()
+		end)
+	end
+	muted[remote] = nil
+end
+
+local revealConn = nil
+
+local REVEAL_REMOTES = { CaseOpened, remote("CaseReveal3D"), remote("CaseMulti3D") }
 
 local function skipReveal(enable)
 	if enable == (revealConn ~= nil) then
@@ -368,42 +406,38 @@ local function skipReveal(enable)
 			revealConn:Disconnect()
 			revealConn = nil
 		end
-		for _, c in ipairs(killedReveal) do
-			pcall(function()
-				c:Enable()
-			end)
+		for _, r in ipairs(REVEAL_REMOTES) do
+			unmute(r)
 		end
-		table.clear(killedReveal)
 		return true
 	end
 
-	-- The 3D reveal is a SECOND path and the one that was still animating: it comes
-	-- in on CaseReveal3D, handled in CaseEquipOpenController, and cutting CaseOpened
-	-- never touched it. It has its own off switch though -- the handler returns early
-	-- when _ShowCasesOpening is false, which is the game's own Settings toggle. Set
-	-- the attribute for right now and tell the server so it sticks across respawns.
+	-- The game's own Settings switch. CaseEquipOpenController's CaseReveal3D handler
+	-- returns early when this is false, so it's the supported way to lose the 3D
+	-- reveal. Set locally for right now, sent to the server so it survives a respawn.
 	pcall(function()
 		player:SetAttribute("_ShowCasesOpening", false)
 		Remotes.RequestSetSetting:FireServer({ key = "ShowCasesOpening", value = false })
 	end)
 
 	if not getconnections then
-		say("3D reveal off; spin frame needs getconnections")
+		say("no getconnections -- reveals will keep animating")
 		return false
 	end
 
-	-- Disable first, connect second: getconnections would otherwise hand us our own
-	-- handler and we'd switch ourselves off with the rest of them.
-	for _, c in ipairs(getconnections(CaseOpened.OnClientEvent)) do
-		c:Disable()
-		table.insert(killedReveal, c)
+	-- Three remotes feed the reveal, not one. CaseOpened is the spin frame,
+	-- CaseReveal3D the single 3D reveal, CaseMulti3D the three-at-a-time one --
+	-- cutting only the first is why this kept animating.
+	for _, r in ipairs(REVEAL_REMOTES) do
+		mute(r)
 	end
+
+	-- Connected after the mute, and now the only thing releasing the server's gate.
+	-- Miss it and the next open is refused.
 	revealConn = CaseOpened.OnClientEvent:Connect(function(payload)
 		if type(payload) ~= "table" then
 			return
 		end
-		-- Nobody else is listening now, so this is the only thing releasing the
-		-- server's gate. Miss it and the next open is refused.
 		pcall(function()
 			if type(payload.RevealIds) == "table" and #payload.RevealIds > 0 then
 				RequestRevealComplete:FireServer({ ids = payload.RevealIds })
@@ -526,36 +560,90 @@ local function landAt(payload, zone)
 	local start = payload.flatStartPos
 	local x = typeof(start) == "Vector3" and start.X or 0
 	local y = tonumber(payload.baseFloorY) or (typeof(start) == "Vector3" and start.Y) or 0
-	local z = math.min(target, spanEndZ() - FLIGHT_EDGE)
+
+	-- How far this kick was ever allowed to go. The server sends the range it wants
+	-- flown plus whatever boost allowance you have, and horizClampDist when it wants
+	-- to say so outright -- so a zone past that was never reachable on this kick and
+	-- claiming it is just asking to be clamped or rejected. Say which zone you got
+	-- instead of silently landing short.
+	local range = tonumber(payload.targetRange) or 0
+	local cap = tonumber(payload.boostDistCap) or 0
+	local maxDist = tonumber(payload.horizClampDist) or (range + cap)
+	local dirZ = typeof(payload.flatDir) == "Vector3" and payload.flatDir.Z or 1
+	local reachZ = (typeof(start) == "Vector3" and start.Z or 0) + maxDist * (dirZ >= 0 and 1 or -1)
+
+	local z = math.min(target, reachZ, spanEndZ() - FLIGHT_EDGE)
 
 	RequestKick:FireServer({ action = "landed", position = Vector3.new(x, y, z) })
-	say(("landed in %s (Z %d)"):format(zone, z))
+
+	if z < target - 1 then
+		-- Name the zone we actually reached, so "Zone12 does nothing" reads as
+		-- "Zone12 is out of range on a Perfect kick" instead of looking like a bug.
+		local got = zone
+		for _, entry in ipairs(ZONE_Z) do
+			if entry[2] <= z then
+				got = entry[1]
+			end
+		end
+		say(("%s out of range (max Z %d) - landed %s"):format(zone, reachZ, got))
+	else
+		say(("landed in %s (Z %d)"):format(zone, z))
+	end
 end
 
-local flightConn = KickFeedback.OnClientEvent:Connect(function(payload)
-	if type(payload) ~= "table" or payload.kind ~= "flight" or payload.kicker ~= player then
-		return
-	end
-	flight.last = payload
-	flightSeq += 1 -- kickOnce is waiting on this
-	-- Deferred one step: KickController republishes _G.KickFlightClient.Teleport for
-	-- each flight from inside its own handler for this same event, and connection
-	-- order isn't ours to pick. Calling in the same tick can hit the previous kick's
-	-- closure, which clamps against the previous kick's allowance.
-	task.defer(function()
-		if flight.boost then
-			pcall(maxBoost, payload)
+-- Our own listener, and the switch that takes KickController's off the same event.
+-- That handler is why a forced landing kept coming up short: it runs the whole
+-- flight simulation and fires its OWN reportLanding at the natural distance a few
+-- seconds after ours, and the server honours the later one. It is also the flight
+-- animation. Cutting it settles both at once.
+local flightConn = nil
+
+local function connectFlight()
+	flightConn = KickFeedback.OnClientEvent:Connect(function(payload)
+		if type(payload) ~= "table" or payload.kind ~= "flight" or payload.kicker ~= player then
+			return
 		end
-		if flight.force then
-			-- launch before landed, the order the real client sends them. doLaunch
-			-- fires it off an animation marker we never play, so nobody else will.
-			pcall(function()
-				RequestKick:FireServer({ action = "launch" })
-			end)
-			pcall(landAt, payload, flight.zone)
-		end
+		flight.last = payload
+		flightSeq += 1 -- kickOnce is waiting on this
+		task.defer(function()
+			if flight.boost then
+				pcall(maxBoost, payload) -- no-op while the flight is cut; see cutFlight
+			end
+			if flight.force then
+				-- launch before landed, the order the real client sends them. doLaunch
+				-- fires it off an animation marker we never play, so nobody else will.
+				pcall(function()
+					RequestKick:FireServer({ action = "launch" })
+				end)
+				pcall(landAt, payload, flight.zone)
+			end
+		end)
 	end)
-end)
+end
+
+-- Ours goes off first so getconnections can't hand it back to us as one of the
+-- game's, then straight back on afterwards -- we still need the arc payload.
+--
+-- Muting KickFeedback also means _G.KickFlightClient is never republished, since the
+-- game creates it inside the handler we just cut. That's fine: boost only matters
+-- when you're flying the real arc, and if you're forcing the landing you picked the
+-- distance directly. The two are mutually exclusive by nature, not by accident.
+local function cutFlight(enable)
+	if flightConn then
+		flightConn:Disconnect()
+		flightConn = nil
+	end
+	if enable then
+		if not mute(KickFeedback) then
+			say("no getconnections -- the flight animation stays")
+		end
+	else
+		unmute(KickFeedback)
+	end
+	connectFlight()
+end
+
+connectFlight()
 
 -- claims ---------------------------------------------------------------------
 -- Every one of these is fire-and-forget and refused when there's nothing to take, so
@@ -658,6 +746,7 @@ Farm:Toggle({
 		-- every kick sits through the real 10-20s arc. Same flag the Flight tab's
 		-- Force Landing drives, so the two can't disagree.
 		flight.force = v
+		cutFlight(v) -- takes KickController's flight handler off the event
 		if not v then
 			return
 		end
@@ -852,7 +941,7 @@ Arc:Paragraph({
 
 Arc:Toggle({
 	Title = "Max Boost",
-	Desc = "Spend the whole boost allowance the moment the flight starts",
+	Desc = "Spend the server's whole boost allowance. Needs the real flight -- inert while Force Landing is on.",
 	Value = false,
 	Callback = function(v)
 		flight.boost = v
@@ -880,6 +969,7 @@ Arc:Toggle({
 	Value = false,
 	Callback = function(v)
 		flight.force = v
+		cutFlight(v)
 	end,
 })
 
@@ -907,10 +997,12 @@ local function stopAll()
 		state.gen += 1 -- retires the running thread even if it's mid-wait
 	end
 	flight.boost, flight.force = false, false
-	skipReveal(false) -- puts the game's own CaseOpened handlers back
-	pcall(function()
+	skipReveal(false) -- puts the reveal handlers and the Settings toggle back
+	cutFlight(false) -- ...and KickController's flight handler
+	if flightConn then
 		flightConn:Disconnect()
-	end)
+		flightConn = nil
+	end
 end
 
 Window:OnDestroy(function()
