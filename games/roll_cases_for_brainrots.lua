@@ -45,6 +45,10 @@
      needs no gamepass and no key injection. If it's missing the panel says so and
      the kick toggle does nothing -- everything else still works.
 
+     Read it through getrenv(), never with a bare _G -- see `gameG` below. An
+     executor gives a pasted script its own global table, so a plain _G.KickAuto is
+     nil here even while the game is happily running its own auto-kick off it.
+
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
      RightControl hides/shows it. The minus button rolls it up to a bare Zegion pill.
      Stop: getgenv().rollCasesStop() ]]
@@ -146,6 +150,24 @@ end
 
 local say = function() end -- replaced by the panel below
 
+-- game globals ---------------------------------------------------------------
+-- An executor runs a pasted script in its OWN global table. The game's LocalScripts
+-- share a different one, and that's where KickController publishes KickAuto and
+-- KickFlightClient -- so a plain `_G.KickAuto` here reads an empty table and is
+-- always nil, no matter how well the game is running. getrenv() is the way across.
+--
+-- Captured once because the table itself is stable; the fields on it are read live
+-- at every call, which is what matters (KickFlightClient is republished per flight).
+-- Falls back to our own _G on an executor without getrenv, where the two may
+-- genuinely be the same table.
+local gameG = _G
+pcall(function()
+	local renv = getrenv()
+	if type(renv) == "table" and type(renv._G) == "table" then
+		gameG = renv._G
+	end
+end)
+
 -- cases ----------------------------------------------------------------------
 -- Cheapest first. Luck is the one field every case has and it's monotonic with
 -- tier, so it doubles as the ordering and saves keeping a second list in sync.
@@ -188,7 +210,7 @@ end
 -- minigame: press() opens it, state() reports it, lock() stops the bar. Read live
 -- every time -- it doesn't exist until the controller has run.
 local function kickApi()
-	local api = _G.KickAuto
+	local api = gameG.KickAuto
 	return type(api) == "table" and api or nil
 end
 
@@ -406,7 +428,7 @@ end
 -- Spending the whole allowance in one call is what mashing boost for the entire arc
 -- would have earned -- the cap is the server's number, so this forges nothing.
 local function maxBoost(payload)
-	local api = _G.KickFlightClient
+	local api = gameG.KickFlightClient
 	if not (type(api) == "table" and type(api.Teleport) == "function") then
 		say("no _G.KickFlightClient -- flight already over?")
 		return
