@@ -18,11 +18,12 @@ local ICON = "solar:bolt-circle-bold" -- one mark for every script; verify names
 local TOPBAR_H = 58 -- two stacked labels (16px over 13px); 44 is a one-line topbar and reads packed
 local KEY = Enum.KeyCode.RightControl
 
-local SHADE_TRIM = 28 -- trailing space after the title. The measured 8 (Topbar's own
--- PaddingRight) is true to the content but reads clipped against the corner radius.
+local SHADE_TRIM = 12 -- fallback trailing space, only used if the left inset can't be read
 local SHADE_MIN = 160 -- never shade narrower than the traffic lights + the shade button,
 -- or there is nothing left to click and the window is unrecoverable
-local SHADE_PAD = 10 -- window chrome under the topbar; nudge if the shade clips
+local SHADE_PAD = 0 -- extra height under the topbar. The topbar centres its content in
+-- its OWN height, so anything added here is empty space below it and the pill reads
+-- bottom-heavy. Raise only if the bar clips.
 
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
@@ -94,16 +95,21 @@ local function installShade(WindUI, Window, setAuthorVisible)
 			scale = 1
 		end
 
-		local edge = 0
+		local edge, inset = 0, math.huge
 		for _, child in ipairs(topbar:GetChildren()) do
 			-- Center is the tab-strip slot: unused and invisible here, but when it IS
 			-- used it's sized to fill the window, defeating the whole measurement.
 			if child:IsA("GuiObject") and child.Visible and child.Name ~= "Center" then
-				edge = math.max(edge, child.AbsolutePosition.X + child.AbsoluteSize.X - topbar.AbsolutePosition.X)
+				local left = child.AbsolutePosition.X - topbar.AbsolutePosition.X
+				edge = math.max(edge, left + child.AbsoluteSize.X)
+				inset = math.min(inset, left) -- the gap in front of the traffic lights
 			end
 		end
 
-		local w = math.clamp(edge / scale + SHADE_TRIM, SHADE_MIN, fullWidth)
+		-- Trailing space is the leading space, measured rather than picked: a constant
+		-- that looks right at one title length is visibly lopsided at another.
+		local trim = inset < math.huge and inset or SHADE_TRIM
+		local w = math.clamp((edge + trim) / scale, SHADE_MIN, fullWidth)
 		return UDim2.fromOffset(w, Window.Topbar.Height + SHADE_PAD)
 	end
 
