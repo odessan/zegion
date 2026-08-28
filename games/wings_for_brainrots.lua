@@ -602,7 +602,9 @@ end
 -- pushed the title bar off it with nothing left to click. Every resize is paired with
 -- a position nudge of half the delta, pinning the TOP-LEFT corner instead, so the bar
 -- collapses where it stands and grows back down and right from the same spot.
-local SHADE_TRIM = 8 -- Topbar's own PaddingRight -- the breathing room after the title
+local SHADE_TRIM = 28 -- trailing space after the title. Was 8 (Topbar's own PaddingRight),
+-- which measures true but reads wrong: the text ends flush against the rounded corner and
+-- the pill looks clipped. Roughly matches the inset in front of the traffic lights.
 local SHADE_MIN = 160 -- never shade narrower than the traffic lights + this button, or
 -- there is nothing left to click to get the window back
 local SHADE_PAD = 10 -- topbar height + window chrome; nudge if the shade clips
