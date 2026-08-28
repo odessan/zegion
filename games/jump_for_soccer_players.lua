@@ -25,7 +25,7 @@
      never heard of is a tier the game shipped after this was written.
 
      Executor only: the UI is WindUI, pulled in with HttpGet, which Studio blocks.
-     Minimize (yellow) leaves a draggable "Soccer Jump" bubble -- click it to come back.
+     The minus button rolls the panel up to a bare Zegion pill -- click it to come back.
      RightControl also hides/shows. Farming keeps running while it's minimized.
      Stop for good: getgenv().soccerJumpStop() ]]
 
@@ -332,26 +332,21 @@ end
 -- ponytail: no hand-rolled widget kit. WindUI already ships the multi-select dropdown,
 -- toggles, cards, drag, resize and the topbar, which is everything this panel is.
 -- Fetched at runtime; nothing to vendor.
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- Topbar, icon, bubble, live game name and the shade all live in panel.lua, so a
+-- restyle is one file and not sixteen. Fetched here rather than installed by the loader,
+-- so this file still pastes and runs on its own.
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local panel = loadstring(game:HttpGet(PANEL_URL))()
 
-local Window = WindUI:CreateWindow({
-	Title = "Soccer Jump",
-	Icon = "solar:box-bold",
-	Folder = "SoccerJump", -- where WindUI keeps saved configs
-	Size = UDim2.fromOffset(480, 400),
-	Topbar = { Height = 44, ButtonsType = "Mac" },
-	OpenButton = { Title = "Soccer Jump", Enabled = true, Draggable = true },
+local Window, WindUI = panel({
+	game = "Soccer Jump", -- fallback until the live name lands
+	folder = "SoccerJump", -- unchanged: renaming it orphans configs already saved in-game
+	size = UDim2.fromOffset(480, 400),
+	key = KEY_TOGGLE,
 })
-
--- Minimize is Window:Close(), and Close only un-hides the floating open button when
--- `not IsPC` -- WindUI assumes a desktop user has the toggle key and a phone doesn't.
--- Lying about IsPC is what puts the bubble back on desktop, and it's read in exactly
--- one place (the open-button gate), so nothing else shifts.
--- ponytail: one assignment beats reimplementing Close; revisit if IsPC ever grows a
--- second reader.
-Window.IsPC = false
-
-Window:SetToggleKey(KEY_TOGGLE) -- second way back in, for when the bubble is off-screen
+if not Window then
+	return -- panel.lua already said why
+end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 

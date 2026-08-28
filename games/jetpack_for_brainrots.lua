@@ -108,7 +108,6 @@ local SUFFIX = {
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService") -- only the status drain uses this
-local TweenService = game:GetService("TweenService") -- only the shade uses this
 local player = Players.LocalPlayer
 
 if getgenv and getgenv().islandTpStop then
@@ -487,17 +486,21 @@ end
 -- ponytail: the hand-rolled widget kit is gone. WindUI already ships rows, toggles,
 -- multi-select dropdowns, drag, resize and the topbar buttons, so there is nothing here
 -- worth owning. Fetched at runtime; nothing to vendor.
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- Topbar, icon, bubble, live game name and the shade all live in panel.lua, so a
+-- restyle is one file and not sixteen. Fetched here rather than installed by the loader,
+-- so this file still pastes and runs on its own.
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local panel = loadstring(game:HttpGet(PANEL_URL))()
 
-local Window = WindUI:CreateWindow({
-	Title = "Island Farm",
-	Icon = "solar:map-point-bold",
-	Folder = "IslandFarm",
-	Size = UDim2.fromOffset(440, 360),
-	Topbar = { Height = 44, ButtonsType = "Mac" },
-	OpenButton = { Title = "Island Farm", Enabled = true, Draggable = true },
+local Window, WindUI = panel({
+	game = "Island Farm", -- fallback until the live name lands
+	folder = "IslandFarm", -- unchanged: renaming it orphans configs already saved in-game
+	size = UDim2.fromOffset(440, 360),
+	key = KEY_TOGGLE,
 })
-Window:SetToggleKey(KEY_TOGGLE)
+if not Window then
+	return -- panel.lua already said why
+end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 local Farm = Tab:Section({ Title = "Farm", Icon = "solar:magic-stick-3-bold", Box = true, BoxBorder = true, Opened = true })
@@ -605,50 +608,6 @@ Manual:Button({
 })
 
 refresh()
-
--- minimize -------------------------------------------------------------------
--- WindUI's Minimize hides the whole window and leaves only the floating open button,
--- which is easy to lose. Swapped for a shade: the body collapses, the topbar stays put,
--- and the same button rolls it back down. The farm keeps running either way.
-local SHADE_W = 220 -- traffic lights + icon + "Island Farm" + this button; widen if the title does
-local SHADE_PAD = 10 -- topbar height + window chrome; nudge if the shade clips
-
-Window:DisableTopbarButtons({ "Minimize" }) -- before ours, it reuses the same slot
-
-local shaded, fullSize = false, nil
-Window:CreateTopbarButton("Shade", "minus", function()
-	local main = Window.UIElements.Main
-	shaded = not shaded
-
-	if shaded then
-		fullSize = main.Size -- read live, so a resized window comes back its own size
-	end
-	-- Topbar is the one child that stays. Going by name rather than by index keeps this
-	-- working if WindUI reshuffles the body frames.
-	for _, child in ipairs(main.Main:GetChildren()) do
-		if child:IsA("GuiObject") and child.Name ~= "Topbar" then
-			child.Visible = not shaded
-		end
-	end
-
-	-- Both ends read BEFORE SetSize, which tweens: reading the size back afterwards
-	-- samples a frame that is still moving from the last click.
-	local from = main.Size
-	local to = shaded and UDim2.fromOffset(SHADE_W, Window.Topbar.Height + SHADE_PAD) or fullSize
-	local p = main.Position
-	Window:SetSize(to)
-	-- Matched to SetSize's own tween, or the corner visibly slides while the size catches
-	-- up. Main is anchored at its CENTRE, so a resize alone moves all four edges: half of
-	-- each delta pins the top-left instead, and the bar collapses where it stands.
-	TweenService:Create(main, TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-		Position = UDim2.new(
-			p.X.Scale,
-			p.X.Offset + (to.X.Offset - from.X.Offset) / 2,
-			p.Y.Scale,
-			p.Y.Offset + (to.Y.Offset - from.Y.Offset) / 2
-		),
-	}):Play()
-end, 998, nil, Color3.fromHex("#F4C948")) -- same yellow the real Minimize used
 
 -- close ----------------------------------------------------------------------
 -- The loop exits on its own flag, so this really does stop it.

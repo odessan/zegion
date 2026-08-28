@@ -109,7 +109,6 @@ local KEY_TOGGLE = Enum.KeyCode.RightControl
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService") -- only the shade uses this
 local player = Players.LocalPlayer
 local ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]
 
@@ -683,17 +682,21 @@ local carrier = { on = false, gen = 0 }
 local rebirther = { on = false, gen = 0 }
 
 -- gui ------------------------------------------------------------------------
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- Topbar, icon, bubble, live game name and the shade all live in panel.lua, so a
+-- restyle is one file and not sixteen. Fetched here rather than installed by the loader,
+-- so this file still pastes and runs on its own.
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local panel = loadstring(game:HttpGet(PANEL_URL))()
 
-local Window = WindUI:CreateWindow({
-	Title = "Skate for Brainrots",
-	Icon = "solar:skateboarding-bold",
-	Folder = "SkateRots",
-	Size = UDim2.fromOffset(440, 460),
-	Topbar = { Height = 44, ButtonsType = "Mac" },
-	OpenButton = { Title = "Skate for Brainrots", Enabled = true, Draggable = true },
+local Window, WindUI = panel({
+	game = "Skate for Brainrots", -- fallback until the live name lands
+	folder = "SkateRots", -- unchanged: renaming it orphans configs already saved in-game
+	size = UDim2.fromOffset(440, 460),
+	key = KEY_TOGGLE,
 })
-Window:SetToggleKey(KEY_TOGGLE)
+if not Window then
+	return -- panel.lua already said why
+end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 local Farm = Tab:Section({ Title = "Farm", Icon = "solar:box-bold", Box = true, BoxBorder = true, Opened = true })
@@ -894,91 +897,6 @@ local line = Farm:Paragraph({ Title = "Status", Desc = "idle" })
 say = function(msg)
 	line:SetDesc(msg)
 end
-
--- minimize -------------------------------------------------------------------
--- WindUI's own Minimize hides the whole window and leaves nothing but the floating
--- open button, which it only draws on touch devices -- on a PC the window would be
--- gone with nothing left to click. Swapped for a shade: the body collapses to a bare
--- title bar and the same button rolls it back down. Loops keep farming either way.
---
--- The shade is sized to its CONTENT, not to the window: keeping the full width just
--- leaves a 440-wide black slab with a title in the corner of it.
---
--- Main is anchored at its CENTRE, so a resize on its own moves all four edges: the
--- shade would land mid-screen, and rolling it back down near the top of the screen
--- pushed the title bar off it with nothing left to click. Every resize is paired with
--- a position nudge of half the delta, pinning the TOP-LEFT corner instead, so the bar
--- collapses where it stands and grows back down and right from the same spot.
-local SHADE_TRIM = 8 -- Topbar's own PaddingRight -- the breathing room after the title
-local SHADE_MIN = 160 -- never shade narrower than the traffic lights + this button, or
--- there is nothing left to click to get the window back
-local SHADE_PAD = 10 -- topbar height + window chrome; nudge if the shade clips
-
-Window:DisableTopbarButtons({ "Minimize" }) -- before ours, it reuses the same slot
-
--- Measured, not guessed, so the bar fits whatever the title happens to be. WindUI lays
--- the topbar out as three frames: Left (icon + title, AutomaticSize "X"), Right (the
--- traffic lights and this button), and Center. With ButtonsType "Mac" it positions Left
--- after Right, so the right-hand edge of the widest child IS the end of the content.
--- AbsoluteSize is post-UIScale while Size offsets are pre-scale, hence the divide.
-local function shadeSize(fullWidth)
-	local topbar = Window.UIElements.Main.Main.Topbar
-	local scale = tonumber(WindUI.UIScale) or 1
-	if scale <= 0 then
-		scale = 1
-	end
-
-	local edge = 0
-	for _, child in ipairs(topbar:GetChildren()) do
-		-- Center is the tab-strip slot: unused and invisible here, but when it IS used
-		-- it's sized to fill the window, which would defeat the whole measurement.
-		if child:IsA("GuiObject") and child.Visible and child.Name ~= "Center" then
-			edge = math.max(edge, child.AbsolutePosition.X + child.AbsoluteSize.X - topbar.AbsolutePosition.X)
-		end
-	end
-
-	local w = math.clamp(edge / scale + SHADE_TRIM, SHADE_MIN, fullWidth)
-	return UDim2.fromOffset(w, Window.Topbar.Height + SHADE_PAD)
-end
-
-local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-
-local shaded, fullSize, shadeTo = false, nil, nil
-Window:CreateTopbarButton("Shade", "minus", function()
-	local main = Window.UIElements.Main
-	shaded = not shaded
-
-	-- Both read live on the way down: a window the user resized comes back its own size,
-	-- and the bar is re-measured each time in case the title, the buttons or the UIScale
-	-- have changed since. Kept in upvalues so the way back up doesn't have to re-derive
-	-- either end -- see the note on mid-tween reads below.
-	if shaded then
-		fullSize = main.Size
-		shadeTo = shadeSize(fullSize.X.Offset)
-	end
-	-- Topbar is the one child that stays. Going by name rather than by index keeps
-	-- this working if WindUI reshuffles the body frames.
-	for _, child in ipairs(main.Main:GetChildren()) do
-		if child:IsA("GuiObject") and child.Name ~= "Topbar" then
-			child.Visible = not shaded
-		end
-	end
-
-	-- Both ends are known, so the delta is computed rather than read back off a frame
-	-- that is still mid-tween from the last click.
-	local from, to = shaded and fullSize or shadeTo, shaded and shadeTo or fullSize
-	local p = main.Position
-	Window:SetSize(to)
-	-- Matched to SetSize's own tween, or the corner visibly slides while the size catches up.
-	TweenService:Create(main, SHADE_TWEEN, {
-		Position = UDim2.new(
-			p.X.Scale,
-			p.X.Offset + (to.X.Offset - from.X.Offset) / 2,
-			p.Y.Scale,
-			p.Y.Offset + (to.Y.Offset - from.Y.Offset) / 2
-		),
-	}):Play()
-end, 998, nil, Color3.fromHex("#F4C948")) -- same yellow the real Minimize used
 
 -- close ----------------------------------------------------------------------
 local function stopAll()

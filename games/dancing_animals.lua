@@ -51,7 +51,6 @@ local Players = game:GetService("Players")
 local Stats = game:GetService("Stats")
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService") -- only the shade uses this
 local player = Players.LocalPlayer
 local ping = Stats.Network.ServerStatsItem["Data Ping"]
 
@@ -933,16 +932,20 @@ local function autoSell(alive)
 end
 
 -- gui ------------------------------------------------------------------------
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- Topbar, icon, bubble, live game name and the shade all live in panel.lua, so a
+-- restyle is one file and not sixteen. Fetched here rather than installed by the loader,
+-- so this file still pastes and runs on its own.
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local panel = loadstring(game:HttpGet(PANEL_URL))()
 
-local Window = WindUI:CreateWindow({
-	Title = "Dancing Animals",
-	Icon = "solar:music-note-2-bold",
-	Folder = "DancingAnimals",
-	Size = UDim2.fromOffset(420, 300),
-	Topbar = { Height = 44, ButtonsType = "Mac" },
-	OpenButton = { Title = "Dancing Animals", Enabled = true, Draggable = true },
+local Window, WindUI = panel({
+	game = "Dancing Animals", -- fallback until the live name lands
+	folder = "DancingAnimals", -- unchanged: renaming it orphans configs already saved in-game
+	size = UDim2.fromOffset(420, 300),
 })
+if not Window then
+	return -- panel.lua already said why
+end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 local EggSec =
@@ -1096,55 +1099,6 @@ end)
 loopToggle(FoodSec, "Auto Feed", "Feeds the Giant Pet from whatever stack you hold", exclusive(feed), function()
 	return BIGPET_WAIT
 end)
-
--- minimize -------------------------------------------------------------------
--- Same swap as buy_chickens.lua. WindUI's own Minimize hides the whole window and
--- leaves nothing but the floating open button, which it only draws on touch devices --
--- on a PC the panel is gone with nothing left to click. This collapses the body to a
--- bare title bar instead, and the same button rolls it back down. Loops keep farming.
---
--- Main is anchored at its CENTRE, so resizing alone moves all four edges and the shade
--- lands mid-screen. Every resize is paired with a position nudge of half the delta,
--- which pins the TOP-LEFT corner: the bar collapses where it stands.
-local SHADE_W = 280 -- traffic lights + icon + "Dancing Animals" + this button
--- (20 wider than buy_chickens: the title is three characters longer)
-local SHADE_PAD = 10 -- topbar height + window chrome; nudge if the shade clips
-
-Window:DisableTopbarButtons({ "Minimize" }) -- before ours, it reuses the same slot
-
-local SHADE_SIZE = UDim2.fromOffset(SHADE_W, Window.Topbar.Height + SHADE_PAD)
-local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-
-local shaded, fullSize = false, nil
-Window:CreateTopbarButton("Shade", "minus", function()
-	local main = Window.UIElements.Main
-	shaded = not shaded
-
-	if shaded then
-		fullSize = main.Size -- read live, so a resized window comes back its own size
-	end
-	-- By name rather than by index, so a WindUI reshuffle of the body frames is harmless.
-	for _, child in ipairs(main.Main:GetChildren()) do
-		if child:IsA("GuiObject") and child.Name ~= "Topbar" then
-			child.Visible = not shaded
-		end
-	end
-
-	-- Both ends are known, so the delta is computed rather than read back off a frame
-	-- that is still mid-tween from the last click.
-	local from, to = shaded and fullSize or SHADE_SIZE, shaded and SHADE_SIZE or fullSize
-	local p = main.Position
-	Window:SetSize(to)
-	-- Matched to SetSize's own tween, or the corner slides while the size catches up.
-	TweenService:Create(main, SHADE_TWEEN, {
-		Position = UDim2.new(
-			p.X.Scale,
-			p.X.Offset + (to.X.Offset - from.X.Offset) / 2,
-			p.Y.Scale,
-			p.Y.Offset + (to.Y.Offset - from.Y.Offset) / 2
-		),
-	}):Play()
-end, 998, nil, Color3.fromHex("#F4C948")) -- same yellow the real Minimize used
 
 -- close ----------------------------------------------------------------------
 local function stop()

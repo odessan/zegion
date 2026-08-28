@@ -127,7 +127,7 @@
 
      Executor only: the UI is WindUI, pulled in with HttpGet, which Studio blocks.
 
-     The yellow topbar button SHADES the window -- body collapses, title bar stays, click
+     The minus button SHADES the window -- body collapses to a bare Zegion pill, click
      it again to roll back down. That's there instead of WindUI's real Minimize, which on
      a PC hides the window and leaves nothing to click to get it back. RightControl also
      hides/shows the whole thing. Red closes it for good; rerun the script to come back,
@@ -200,7 +200,6 @@ local KEY_TOGGLE = Enum.KeyCode.RightControl
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService") -- only the shade uses this
 
 local player = Players.LocalPlayer
 
@@ -1108,22 +1107,22 @@ end
 -- dropdowns, drag, resize and topbar buttons, so there is nothing here worth owning.
 -- Fetched at runtime, nothing vendored -- which does make this file executor-only now,
 -- because Studio blocks HttpGet.
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- Topbar, icon, bubble, live game name and the shade all live in panel.lua, so a
+-- restyle is one file and not sixteen. Fetched here rather than installed by the loader,
+-- so this file still pastes and runs on its own.
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local panel = loadstring(game:HttpGet(PANEL_URL))()
 
-local Window = WindUI:CreateWindow({
-	Title = "Cut Grass",
-	Icon = "solar:leaf-bold",
-	Folder = "CutGrass", -- where WindUI keeps saved configs
-	Size = UDim2.fromOffset(520, 400),
-	HideSearchBar = true,
-	ToggleKey = KEY_TOGGLE, -- hides the whole window; the open bubble brings it back
-	Topbar = { Height = 44, ButtonsType = "Mac" }, -- traffic lights: yellow shades, red closes
-	OpenButton = {
-		Title = "Cut Grass",
-		Enabled = true,
-		Draggable = true,
-	},
+local Window, WindUI = panel({
+	game = "Cut Grass", -- fallback until the live name lands
+	folder = "CutGrass", -- unchanged: renaming it orphans configs already saved in-game
+	size = UDim2.fromOffset(520, 400),
+	key = KEY_TOGGLE,
+	hideSearchBar = true,
 })
+if not Window then
+	return -- panel.lua already said why
+end
 
 local Tab = Window:Tab({ Title = "Farm", Icon = "solar:leaf-bold" })
 
@@ -1760,57 +1759,6 @@ extras:Slider({
 		clickRate = v
 	end,
 })
-
--- minimize -------------------------------------------------------------------------
--- WindUI's own Minimize hides the window and leaves nothing but a floating open bubble --
--- which it only shows on touch devices, so on a PC the window would be gone with nothing
--- but the toggle key to get it back. Swapped for a shade: the body collapses to a bare
--- title bar and the same button rolls it back down. Farming continues either way.
---
--- Main is anchored at its CENTRE, so a resize on its own moves all four edges -- which is
--- why the shade used to land mid-screen, and why expanding it near the top of the screen
--- pushed the title bar off it with nothing left to click. Every resize here is paired with
--- a position nudge of half the delta, pinning the TOP-LEFT corner: the bar collapses where
--- it stands and grows back down and right from the same spot.
-local SHADE_W = 260 -- traffic lights + icon + "Cut Grass" + this button; widen if the title does
-local SHADE_PAD = 10 -- topbar height + window chrome; nudge if the shade clips
-
-Window:DisableTopbarButtons({ "Minimize" }) -- before ours, it reuses the same slot
-
-local SHADE_SIZE = UDim2.fromOffset(SHADE_W, Window.Topbar.Height + SHADE_PAD)
-local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-
-local shaded, fullSize = false, nil
-Window:CreateTopbarButton("Shade", "minus", function()
-	local main = Window.UIElements.Main
-	shaded = not shaded
-
-	if shaded then
-		fullSize = main.Size -- read live, so a resized window comes back its own size
-	end
-	-- Topbar is the one child that stays. Going by name rather than by index keeps this
-	-- working if WindUI reshuffles the body frames.
-	for _, child in ipairs(main.Main:GetChildren()) do
-		if child:IsA("GuiObject") and child.Name ~= "Topbar" then
-			child.Visible = not shaded
-		end
-	end
-
-	-- Both ends are known, so the delta is computed rather than read back off a frame that
-	-- is still mid-tween from the last click.
-	local from, to = shaded and fullSize or SHADE_SIZE, shaded and SHADE_SIZE or fullSize
-	local p = main.Position
-	Window:SetSize(to)
-	-- Matched to SetSize's own tween, or the corner visibly slides while the size catches up.
-	TweenService:Create(main, SHADE_TWEEN, {
-		Position = UDim2.new(
-			p.X.Scale,
-			p.X.Offset + (to.X.Offset - from.X.Offset) / 2,
-			p.Y.Scale,
-			p.Y.Offset + (to.Y.Offset - from.Y.Offset) / 2
-		),
-	}):Play()
-end, 998, nil, Color3.fromHex("#F4C948")) -- same yellow the real Minimize used
 
 dumpKnit()
 local function describe(remote, missing)

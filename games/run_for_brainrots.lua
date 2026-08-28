@@ -129,17 +129,20 @@ local function setFarming(on)
 end
 
 -- gui ------------------------------------------------------------------------
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- Topbar, icon, bubble, live game name and the shade all live in panel.lua, so a
+-- restyle is one file and not sixteen. Fetched here rather than installed by the loader,
+-- so this file still pastes and runs on its own.
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local panel = loadstring(game:HttpGet(PANEL_URL))()
 
-local Window = WindUI:CreateWindow({
-	Title = "TP for Brainrots",
-	Icon = "solar:magic-stick-3-bold",
-	Folder = "TPRots",
-	Size = UDim2.fromOffset(420, 300),
-	Topbar = { Height = 44, ButtonsType = "Mac" },
-	OpenButton = { Title = "TP for Brainrots", Enabled = true, Draggable = true },
+local Window, WindUI = panel({
+	game = "TP for Brainrots", -- fallback until the live name lands
+	folder = "TPRots", -- unchanged: renaming it orphans configs already saved in-game
+	size = UDim2.fromOffset(420, 300),
 })
-Window:SetToggleKey(Enum.KeyCode.RightControl)
+if not Window then
+	return -- panel.lua already said why
+end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 local Section = Tab:Section({ Title = RARITY, Icon = "solar:box-bold", Box = true, BoxBorder = true, Opened = true })
@@ -162,36 +165,6 @@ local line = Section:Paragraph({ Title = "Status", Desc = "idle" })
 status = function(msg)
 	line:SetDesc(msg)
 end
-
--- minimize -------------------------------------------------------------------
--- WindUI's Minimize hides the whole window and leaves only the floating open button,
--- which is easy to lose. Swapped for a shade: the body collapses, the topbar stays
--- put, and the same button rolls it back down. The farm keeps running either way.
-local SHADE_PAD = 10 -- topbar height + window chrome; nudge if the shade clips
-
-Window:DisableTopbarButtons({ "Minimize" }) -- before ours, it reuses the same slot
-
-local shaded, fullSize = false, nil
-Window:CreateTopbarButton("Shade", "minus", function()
-	local main = Window.UIElements.Main
-	shaded = not shaded
-
-	if shaded then
-		fullSize = main.Size -- read live, so a resized window comes back its own size
-	end
-	-- Topbar is the one child that stays. Going by name rather than by index keeps
-	-- this working if WindUI reshuffles the body frames.
-	for _, child in ipairs(main.Main:GetChildren()) do
-		if child:IsA("GuiObject") and child.Name ~= "Topbar" then
-			child.Visible = not shaded
-		end
-	end
-
-	Window:SetSize(
-		shaded and UDim2.new(main.Size.X.Scale, main.Size.X.Offset, 0, Window.Topbar.Height + SHADE_PAD)
-			or fullSize
-	)
-end, 998, nil, Color3.fromHex("#F4C948")) -- same yellow the real Minimize used
 
 -- close ----------------------------------------------------------------------
 Window:OnDestroy(function()

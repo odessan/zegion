@@ -36,7 +36,6 @@ local MIN_MPS = 0 -- ignore animals earning less than this per second. 0 = take 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
-local TweenService = game:GetService("TweenService") -- the shade button only
 local Stats = game:GetService("Stats")
 local player = Players.LocalPlayer
 
@@ -412,17 +411,20 @@ local function guardLoop(alive)
 end
 
 -- gui ------------------------------------------------------------------------
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- Topbar, icon, bubble, live game name and the shade all live in panel.lua, so a
+-- restyle is one file and not sixteen. Fetched here rather than installed by the loader,
+-- so this file still pastes and runs on its own.
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local panel = loadstring(game:HttpGet(PANEL_URL))()
 
-local Window = WindUI:CreateWindow({
-	Title = "Steal an Animal",
-	Icon = "solar:paw-bold",
-	Folder = "StealAnimal",
-	Size = UDim2.fromOffset(520, 400),
-	HideSearchBar = false,
-	Topbar = { Height = 44, ButtonsType = "Mac" },
-	OpenButton = { Title = "Steal an Animal", Enabled = true, Draggable = true },
+local Window, WindUI = panel({
+	game = "Steal an Animal", -- fallback until the live name lands
+	folder = "StealAnimal", -- unchanged: renaming it orphans configs already saved in-game
+	size = UDim2.fromOffset(520, 400),
 })
+if not Window then
+	return -- panel.lua already said why
+end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 
@@ -609,44 +611,6 @@ task.spawn(function()
 		end
 	end)
 end)
-
--- minimize -------------------------------------------------------------------
--- WindUI's own Minimize leaves nothing but a floating button it only draws on
--- touch devices, so on a PC the window would vanish with nothing left to click.
--- Swapped for a shade. Main is anchored at its CENTRE, so every resize is paired
--- with a half-delta position nudge to pin the top-left corner instead.
-local SHADE_W = 280 -- traffic lights + icon + "Steal an Animal" + this button
-local SHADE_PAD = 10 -- topbar height + window chrome
-
-Window:DisableTopbarButtons({ "Minimize" })
-
-local SHADE_SIZE = UDim2.fromOffset(SHADE_W, Window.Topbar.Height + SHADE_PAD)
-local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-
-local shaded, fullSize = false, nil
-Window:CreateTopbarButton("Shade", "minus", function()
-	local main = Window.UIElements.Main
-	shaded = not shaded
-	if shaded then
-		fullSize = main.Size -- read live, so a resized window comes back its own size
-	end
-	for _, child in ipairs(main.Main:GetChildren()) do
-		if child:IsA("GuiObject") and child.Name ~= "Topbar" then
-			child.Visible = not shaded
-		end
-	end
-	local from, to = shaded and fullSize or SHADE_SIZE, shaded and SHADE_SIZE or fullSize
-	local p = main.Position
-	Window:SetSize(to)
-	TweenService:Create(main, SHADE_TWEEN, {
-		Position = UDim2.new(
-			p.X.Scale,
-			p.X.Offset + (to.X.Offset - from.X.Offset) / 2,
-			p.Y.Scale,
-			p.Y.Offset + (to.Y.Offset - from.Y.Offset) / 2
-		),
-	}):Play()
-end, 998, nil, Color3.fromHex("#F4C948"))
 
 -- close ----------------------------------------------------------------------
 -- One flag ends every loop; each toggle's own alive() is already false once its

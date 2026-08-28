@@ -177,6 +177,7 @@ local function panel(opts)
 		Icon = ICON,
 		Folder = opts.folder,
 		Size = opts.size or UDim2.fromOffset(440, 400),
+		HideSearchBar = opts.hideSearchBar, -- nil is WindUI's own default (shown)
 		Topbar = { Height = TOPBAR_H, ButtonsType = "Mac" },
 		OpenButton = { Title = BRAND, Enabled = true, Draggable = true },
 	})
