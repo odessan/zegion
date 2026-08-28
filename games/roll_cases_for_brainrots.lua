@@ -77,6 +77,9 @@ local CHARGE_HOLD = 0.4 -- seconds between charge and tier. A real client can't 
 -- these back to back because a human is watching a bar in between; a zero-length
 -- charge is the one part of this sequence no player could produce. Don't set to 0.
 local FLIGHT_WAIT = 6 -- seconds to wait for the server's arc after declaring the tier
+local LAUNCH_HOLD = 0.25 -- seconds between the server's "start" and our "launch". The
+-- real client fires launch off a marker in the jump animation, which we never play;
+-- this stands in for that beat. The arc does not arrive until the launch does.
 
 local RETURN_EVERY = 4 -- seconds between AutoReturn fires while out of the zone.
 -- Verbatim from AutoKickController -- the server ignores them faster than that.
@@ -297,8 +300,9 @@ local function kickOnce(alive)
 		task.wait(CHARGE_HOLD)
 		RequestKick:FireServer({ tier = TIER })
 
-		-- The server answers with the arc. Our KickFeedback listener bumps flightSeq
-		-- and stashes the payload; landing needs flatStartPos and baseFloorY out of it.
+		-- Now three hops, not one: the server sends "start", our listener answers
+		-- with "launch" after LAUNCH_HOLD, and only then does the arc come back.
+		-- FLIGHT_WAIT has to cover all of that plus a 3fps round trip.
 		local deadline = os.clock() + FLIGHT_WAIT
 		repeat
 			task.wait(0.1)
@@ -600,7 +604,27 @@ local flightConn = nil
 
 local function connectFlight()
 	flightConn = KickFeedback.OnClientEvent:Connect(function(payload)
-		if type(payload) ~= "table" or payload.kind ~= "flight" or payload.kicker ~= player then
+		if type(payload) ~= "table" or payload.kicker ~= player then
+			return
+		end
+
+		-- The exchange is start -> launch -> flight, and the launch half is ours now.
+		-- doLaunch fires it from inside runLocalKickSequence, which only runs on
+		-- "start" and is exactly the handler cutFlight switches off -- so with the
+		-- flight cut nobody sends it, the server never sends the arc, and the loop
+		-- sits there reporting "no flight came back". Send it here instead.
+		if payload.kind == "start" then
+			if flight.force then
+				task.delay(LAUNCH_HOLD, function()
+					pcall(function()
+						RequestKick:FireServer({ action = "launch" })
+					end)
+				end)
+			end
+			return
+		end
+
+		if payload.kind ~= "flight" then
 			return
 		end
 		flight.last = payload
@@ -610,11 +634,6 @@ local function connectFlight()
 				pcall(maxBoost, payload) -- no-op while the flight is cut; see cutFlight
 			end
 			if flight.force then
-				-- launch before landed, the order the real client sends them. doLaunch
-				-- fires it off an animation marker we never play, so nobody else will.
-				pcall(function()
-					RequestKick:FireServer({ action = "launch" })
-				end)
 				pcall(landAt, payload, flight.zone)
 			end
 		end)
