@@ -239,6 +239,10 @@ end
 -- knows the server accepted the kick without trusting a return value.
 local flightSeq = 0
 
+-- Declared up here, not down in the flight section: kickOnce reads flight.last and
+-- a local declared after it would leave that reading a nil global instead.
+local flight = { boost = false, force = false, zone = "Zone12", last = nil }
+
 local function zone(name)
 	local zones = workspace:FindFirstChild("Zones")
 	local part = zones and zones:FindFirstChild(name)
@@ -312,12 +316,26 @@ local function kickOnce(alive)
 			return nil
 		end
 
-		-- launch then landed, in the order the real client sends them. The landing is
-		-- fired by the KickFeedback handler itself so a hand-thrown kick gets it too.
+		-- The landing itself is fired by the KickFeedback handler, so a hand-thrown
+		-- kick gets it too. What's left is waiting for the server to credit a case.
+		--
+		-- That wait is the open question: if the server paces the credit to the arc
+		-- duration it sent us, no client can skip it and this is the floor. If it
+		-- credits on the landed message, this should be one round trip and anything
+		-- longer means our position was refused and the case arrived by the normal
+		-- route instead. Timing it is the only way to tell those apart, so say it.
+		local landedAt = os.clock()
 		local deadline2 = os.clock() + FLIGHT_TIMEOUT
 		repeat
-			task.wait(0.2)
+			task.wait(0.1)
 		until holding() or os.clock() > deadline2 or not alive()
+		if holding() then
+			local took = os.clock() - landedAt
+			local arc = tonumber(flight.last and flight.last.arcDur) or 0
+			warn(("[rollcases] case took %.1fs after landed (arcDur was %.1fs) -- %s")
+				:format(took, arc, took < arc * 0.5 and "beat the arc, landing accepted"
+					or "about the arc, server is pacing it"))
+		end
 	end
 
 	local case = holding()
@@ -503,7 +521,6 @@ end
 -- So the landing point is whatever the client says it is. The two toggles below sit
 -- on opposite sides of that: BOOST spends the allowance the server itself sent, and
 -- LAND reports a position of our choosing and skips the flight entirely.
-local flight = { boost = false, force = false, zone = "Zone12", last = nil }
 
 local zoneZ = {}
 for _, entry in ipairs(ZONE_Z) do
@@ -570,11 +587,21 @@ local function landAt(payload, zone)
 	-- to say so outright -- so a zone past that was never reachable on this kick and
 	-- claiming it is just asking to be clamped or rejected. Say which zone you got
 	-- instead of silently landing short.
+	-- Only horizClampDist is the server SAYING how far it will accept. targetRange
+	-- plus boostDistCap is just the arc it expects you to fly, and clamping to that
+	-- turns a landing the server might well have taken into one we refused to ask
+	-- for. So clamp to the stated limit when there is one, and otherwise only to the
+	-- far wall, which is map geometry rather than policy.
 	local range = tonumber(payload.targetRange) or 0
 	local cap = tonumber(payload.boostDistCap) or 0
-	local maxDist = tonumber(payload.horizClampDist) or (range + cap)
-	local dirZ = typeof(payload.flatDir) == "Vector3" and payload.flatDir.Z or 1
-	local reachZ = (typeof(start) == "Vector3" and start.Z or 0) + maxDist * (dirZ >= 0 and 1 or -1)
+	local horiz = tonumber(payload.horizClampDist)
+	local startZ = typeof(start) == "Vector3" and start.Z or 0
+	local reachZ = horiz and (startZ + horiz) or math.huge
+
+	-- The arc, once per kick, because these are the numbers that decide whether a
+	-- zone is reachable at all and nothing else prints them.
+	warn(("[rollcases] arc: startZ=%.0f targetRange=%.0f boostCap=%.0f horizClamp=%s -> natural Z %.0f")
+		:format(startZ, range, cap, horiz and ("%.0f"):format(horiz) or "none", startZ + range + cap))
 
 	local z = math.min(target, reachZ, spanEndZ() - FLIGHT_EDGE)
 
