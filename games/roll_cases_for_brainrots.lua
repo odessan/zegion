@@ -346,17 +346,15 @@ local function kickOnce(alive)
 		-- credits on the landed message, this should be one round trip and anything
 		-- longer means our position was refused and the case arrived by the normal
 		-- route instead. Timing it is the only way to tell those apart, so say it.
-		local landedAt = os.clock()
 		local deadline2 = os.clock() + FLIGHT_TIMEOUT
 		repeat
 			task.wait(0.1)
 		until holding() or os.clock() > deadline2 or not alive()
 		if holding() then
-			local took = os.clock() - landedAt
+			local took = os.clock() - (flight.landedAt or os.clock())
 			local arc = tonumber(flight.last and flight.last.arcDur) or 0
-			warn(("[rollcases] case took %.1fs after landed (arcDur was %.1fs) -- %s")
-				:format(took, arc, took < 3 and "landing accepted"
-					or "landing looks refused, server fell back to its own"))
+			warn(("[rollcases] case %s arrived %.1fs after we reported landed (arc %.1fs)")
+				:format(tostring(holding()), took, arc))
 		end
 	end
 
@@ -371,6 +369,10 @@ local function kickOnce(alive)
 		return nil
 	end
 
+	-- "It vanished" and "it banked and you were looking at the wrong tab" look
+	-- identical from the outside. Cases_<key> on the player is the banked count, so
+	-- reading it either side of the deposit is the difference.
+	local before = owned(case)
 	say("banking " .. case)
 	local deadline = os.clock() + BANK_TIMEOUT
 	repeat
@@ -378,14 +380,24 @@ local function kickOnce(alive)
 		task.wait(0.3)
 	until not holding() or os.clock() > deadline or not alive()
 
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local gap = root and (root.Position - collect.Position).Magnitude or -1
+
 	if holding() then
 		-- How far off the zone we ended up is the whole diagnosis: still at the
 		-- landing site means the hop back never took, sitting on the zone means the
 		-- server isn't crediting the deposit.
-		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-		local gap = root and (root.Position - collect.Position).Magnitude or -1
 		warn(("[rollcases] still holding %s, %.0f studs from CollectZone"):format(case, gap))
 		say(("stuck holding %s (%.0f studs off)"):format(case, gap))
+		return nil
+	end
+
+	local after = owned(case)
+	warn(("[rollcases] %s: held -> gone, %d studs from zone, Cases_%s %d -> %d (%s)")
+		:format(case, gap, case, before, after,
+			after > before and "BANKED" or "LOST -- left our hands without being credited"))
+	if after <= before then
+		say(("%s was lost, not banked"):format(case))
 		return nil
 	end
 	return case
@@ -634,6 +646,7 @@ local function landAt(payload, zone)
 	local z = math.min(target, reachZ, spanEndZ() - FLIGHT_EDGE)
 
 	RequestKick:FireServer({ action = "landed", position = Vector3.new(x, y, z) })
+	flight.landedAt = os.clock() -- the real fire time; the arc wait happens before this
 
 	if z < target - 1 then
 		-- Name the zone we actually reached, so "Zone12 does nothing" reads as
