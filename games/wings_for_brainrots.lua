@@ -33,7 +33,8 @@
      waits on the same folder, so it's the game's own definition of "am I holding one".
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().wingsRotsStop() ]]
+     RightControl hides/shows it. The minus button rolls it up to a bare Zegion pill.
+     Stop: getgenv().wingsRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
 -- Pad centers, straight off a dump of workspace.ItemSpawners. These are BaseParts and
@@ -425,15 +426,47 @@ local pickedStats = DEFAULT_STATS
 -- gui ------------------------------------------------------------------------
 local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
 
+-- Zegion is the brand and it's the same on every script here; the game is the small
+-- dimmed line under it. WindUI's Author is a real field -- a second TextLabel inside
+-- the Topbar.Left.Title frame, which stacks its two labels vertically -- so this is
+-- config, not a drawn-on label.
+local GAME_NAME = "Wings for Brainrots" -- fallback until the live name lands, below
+
 local Window = WindUI:CreateWindow({
-	Title = "Wings for Brainrots",
-	Icon = "solar:magic-stick-3-bold",
-	Folder = "WingsRots",
+	Title = "Zegion",
+	Author = GAME_NAME,
+	Icon = "solar:bolt-circle-bold",
+	Folder = "WingsRots", -- unchanged: renaming it orphans configs already saved in-game
 	Size = UDim2.fromOffset(440, 400),
 	Topbar = { Height = 44, ButtonsType = "Mac" },
-	OpenButton = { Title = "Wings for Brainrots", Enabled = true, Draggable = true },
+	OpenButton = { Title = "Zegion", Enabled = true, Draggable = true },
 })
 Window:SetToggleKey(KEY_TOGGLE)
+
+-- Shaded, the bar is meant to be a bare Zegion pill, so the author label goes with the
+-- body. Declared here rather than in the minimize section because the live-name fetch
+-- below has to be able to re-apply it: SetAuthor draws the label visible.
+local shaded = false
+local function refreshAuthor()
+	local author = Window.UIElements.Main.Main.Topbar.Left.Title:FindFirstChild("Author")
+	if author then
+		author.Visible = not shaded
+	end
+end
+
+-- The live name, so a game that renames itself doesn't leave the panel lying (this one
+-- ships as "+1 Wings for Brainrots" today). GetProductInfo is a yielding web call, so
+-- it runs after the window exists rather than in front of it -- a rate-limited or dead
+-- call then costs nothing but the fallback string.
+task.spawn(function()
+	local ok, info = pcall(function()
+		return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
+	end)
+	if ok and info and info.Name then
+		Window:SetAuthor(info.Name)
+		refreshAuthor() -- SetAuthor un-hides the label; the shade may want it hidden
+	end
+end)
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 local Farm = Tab:Section({ Title = "Farm", Icon = "solar:box-bold", Box = true, BoxBorder = true, Opened = true })
@@ -558,10 +591,11 @@ end
 -- WindUI's own Minimize hides the whole window and leaves nothing but the floating
 -- open button, which it only draws on touch devices -- on a PC the window would be
 -- gone with nothing left to click. Swapped for a shade: the body collapses to a bare
--- title bar and the same button rolls it back down. Loops keep farming either way.
+-- Zegion pill and the same button rolls it back down. Loops keep farming either way.
 --
 -- The shade is sized to its CONTENT, not to the window: keeping the full width just
--- leaves a 440-wide black slab with a title in the corner of it.
+-- leaves a 440-wide black slab with a title in the corner of it. The game name is
+-- dropped on the way down for the same reason -- collapsed, the panel is brand only.
 --
 -- Main is anchored at its CENTRE, so a resize on its own moves all four edges: the
 -- shade would land mid-screen, and rolling it back down near the top of the screen
@@ -602,10 +636,17 @@ end
 
 local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
-local shaded, fullSize, shadeTo = false, nil, nil
+local fullSize, shadeTo = nil, nil
 Window:CreateTopbarButton("Shade", "minus", function()
 	local main = Window.UIElements.Main
 	shaded = not shaded
+
+	-- Author goes first and the measurement waits a frame for it: Topbar.Left is
+	-- AutomaticSize "X", and AutomaticSize resolves during the layout pass, not on the
+	-- assignment. Measuring in the same frame reads the width the label still had, and
+	-- the pill comes out game-name wide.
+	refreshAuthor()
+	game:GetService("RunService").Heartbeat:Wait()
 
 	-- Both read live on the way down: a window the user resized comes back its own size,
 	-- and the bar is re-measured each time in case the title, the buttons or the UIScale
