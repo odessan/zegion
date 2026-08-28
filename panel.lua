@@ -189,6 +189,20 @@ local function panel(opts)
 	})
 	Window:SetToggleKey(opts.key or KEY)
 
+	-- WindUI selects nothing on its own, so a fresh panel opens on an empty body and the
+	-- first tab has to be clicked before anything shows. Wrapped here rather than a
+	-- SelectTab(1) at the bottom of all 14 scripts. A script that wants to land somewhere
+	-- else just calls otherTab:Select() after its tabs exist -- last call wins.
+	local rawTab, landed = Window.Tab, false
+	function Window.Tab(self, cfg)
+		local tab = rawTab(self, cfg)
+		if not landed then
+			landed = true
+			tab:Select()
+		end
+		return tab
+	end
+
 	local isShaded
 	local function setAuthorVisible(visible)
 		local author = Window.UIElements.Main.Main.Topbar.Left.Title:FindFirstChild("Author")
