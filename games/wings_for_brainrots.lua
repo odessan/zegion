@@ -438,7 +438,10 @@ local Window = WindUI:CreateWindow({
 	Icon = "solar:bolt-circle-bold",
 	Folder = "WingsRots", -- unchanged: renaming it orphans configs already saved in-game
 	Size = UDim2.fromOffset(440, 400),
-	Topbar = { Height = 44, ButtonsType = "Mac" },
+	-- 44 was a one-line topbar's height. Zegion + the game name is two stacked labels
+	-- (16px over 13px), which left about 7px of air top and bottom and read as packed.
+	-- The shade follows this automatically -- its height is Topbar.Height + SHADE_PAD.
+	Topbar = { Height = 58, ButtonsType = "Mac" },
 	OpenButton = { Title = "Zegion", Enabled = true, Draggable = true },
 })
 Window:SetToggleKey(KEY_TOGGLE)
