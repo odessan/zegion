@@ -91,7 +91,6 @@ local KEY_TOGGLE = Enum.KeyCode.RightControl
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService") -- only the shade uses this
 local player = Players.LocalPlayer
 local ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]
 
@@ -424,52 +423,21 @@ local rebirther = { on = false, gen = 0 }
 local pickedStats = DEFAULT_STATS
 
 -- gui ------------------------------------------------------------------------
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- Topbar, icon, bubble, live game name and the shade all live in panel.lua, so a
+-- restyle is one file and not sixteen. Fetched here rather than installed by the loader,
+-- so this file still pastes and runs on its own.
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local panel = loadstring(game:HttpGet(PANEL_URL))()
 
--- Zegion is the brand and it's the same on every script here; the game is the small
--- dimmed line under it. WindUI's Author is a real field -- a second TextLabel inside
--- the Topbar.Left.Title frame, which stacks its two labels vertically -- so this is
--- config, not a drawn-on label.
-local GAME_NAME = "Wings for Brainrots" -- fallback until the live name lands, below
-
-local Window = WindUI:CreateWindow({
-	Title = "Zegion",
-	Author = GAME_NAME,
-	Icon = "solar:bolt-circle-bold",
-	Folder = "WingsRots", -- unchanged: renaming it orphans configs already saved in-game
-	Size = UDim2.fromOffset(440, 400),
-	-- 44 was a one-line topbar's height. Zegion + the game name is two stacked labels
-	-- (16px over 13px), which left about 7px of air top and bottom and read as packed.
-	-- The shade follows this automatically -- its height is Topbar.Height + SHADE_PAD.
-	Topbar = { Height = 58, ButtonsType = "Mac" },
-	OpenButton = { Title = "Zegion", Enabled = true, Draggable = true },
+local Window, WindUI = panel({
+	game = "Wings for Brainrots", -- fallback until the live name lands
+	folder = "WingsRots", -- unchanged: renaming it orphans configs already saved in-game
+	size = UDim2.fromOffset(440, 400),
+	key = KEY_TOGGLE,
 })
-Window:SetToggleKey(KEY_TOGGLE)
-
--- Shaded, the bar is meant to be a bare Zegion pill, so the author label goes with the
--- body. Declared here rather than in the minimize section because the live-name fetch
--- below has to be able to re-apply it: SetAuthor draws the label visible.
-local shaded = false
-local function refreshAuthor()
-	local author = Window.UIElements.Main.Main.Topbar.Left.Title:FindFirstChild("Author")
-	if author then
-		author.Visible = not shaded
-	end
+if not Window then
+	return -- panel.lua already said why
 end
-
--- The live name, so a game that renames itself doesn't leave the panel lying (this one
--- ships as "+1 Wings for Brainrots" today). GetProductInfo is a yielding web call, so
--- it runs after the window exists rather than in front of it -- a rate-limited or dead
--- call then costs nothing but the fallback string.
-task.spawn(function()
-	local ok, info = pcall(function()
-		return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
-	end)
-	if ok and info and info.Name then
-		Window:SetAuthor(info.Name)
-		refreshAuthor() -- SetAuthor un-hides the label; the shade may want it hidden
-	end
-end)
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 local Farm = Tab:Section({ Title = "Farm", Icon = "solar:box-bold", Box = true, BoxBorder = true, Opened = true })
@@ -589,101 +557,6 @@ local line = Farm:Paragraph({ Title = "Status", Desc = "idle" })
 say = function(msg)
 	line:SetDesc(msg)
 end
-
--- minimize -------------------------------------------------------------------
--- WindUI's own Minimize hides the whole window and leaves nothing but the floating
--- open button, which it only draws on touch devices -- on a PC the window would be
--- gone with nothing left to click. Swapped for a shade: the body collapses to a bare
--- Zegion pill and the same button rolls it back down. Loops keep farming either way.
---
--- The shade is sized to its CONTENT, not to the window: keeping the full width just
--- leaves a 440-wide black slab with a title in the corner of it. The game name is
--- dropped on the way down for the same reason -- collapsed, the panel is brand only.
---
--- Main is anchored at its CENTRE, so a resize on its own moves all four edges: the
--- shade would land mid-screen, and rolling it back down near the top of the screen
--- pushed the title bar off it with nothing left to click. Every resize is paired with
--- a position nudge of half the delta, pinning the TOP-LEFT corner instead, so the bar
--- collapses where it stands and grows back down and right from the same spot.
-local SHADE_TRIM = 28 -- trailing space after the title. Was 8 (Topbar's own PaddingRight),
--- which measures true but reads wrong: the text ends flush against the rounded corner and
--- the pill looks clipped. Roughly matches the inset in front of the traffic lights.
-local SHADE_MIN = 160 -- never shade narrower than the traffic lights + this button, or
--- there is nothing left to click to get the window back
-local SHADE_PAD = 10 -- topbar height + window chrome; nudge if the shade clips
-
-Window:DisableTopbarButtons({ "Minimize" }) -- before ours, it reuses the same slot
-
--- Measured, not guessed, so the bar fits whatever the title happens to be. WindUI lays
--- the topbar out as three frames: Left (icon + title, AutomaticSize "X"), Right (the
--- traffic lights and this button), and Center. With ButtonsType "Mac" it positions Left
--- after Right, so the right-hand edge of the widest child IS the end of the content.
--- AbsoluteSize is post-UIScale while Size offsets are pre-scale, hence the divide.
-local function shadeSize(fullWidth)
-	local topbar = Window.UIElements.Main.Main.Topbar
-	local scale = tonumber(WindUI.UIScale) or 1
-	if scale <= 0 then
-		scale = 1
-	end
-
-	local edge = 0
-	for _, child in ipairs(topbar:GetChildren()) do
-		-- Center is the tab-strip slot: unused and invisible here, but when it IS used
-		-- it's sized to fill the window, which would defeat the whole measurement.
-		if child:IsA("GuiObject") and child.Visible and child.Name ~= "Center" then
-			edge = math.max(edge, child.AbsolutePosition.X + child.AbsoluteSize.X - topbar.AbsolutePosition.X)
-		end
-	end
-
-	local w = math.clamp(edge / scale + SHADE_TRIM, SHADE_MIN, fullWidth)
-	return UDim2.fromOffset(w, Window.Topbar.Height + SHADE_PAD)
-end
-
-local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-
-local fullSize, shadeTo = nil, nil
-Window:CreateTopbarButton("Shade", "minus", function()
-	local main = Window.UIElements.Main
-	shaded = not shaded
-
-	-- Author goes first and the measurement waits a frame for it: Topbar.Left is
-	-- AutomaticSize "X", and AutomaticSize resolves during the layout pass, not on the
-	-- assignment. Measuring in the same frame reads the width the label still had, and
-	-- the pill comes out game-name wide.
-	refreshAuthor()
-	game:GetService("RunService").Heartbeat:Wait()
-
-	-- Both read live on the way down: a window the user resized comes back its own size,
-	-- and the bar is re-measured each time in case the title, the buttons or the UIScale
-	-- have changed since. Kept in upvalues so the way back up doesn't have to re-derive
-	-- either end -- see the note on mid-tween reads below.
-	if shaded then
-		fullSize = main.Size
-		shadeTo = shadeSize(fullSize.X.Offset)
-	end
-	-- Topbar is the one child that stays. Going by name rather than by index keeps
-	-- this working if WindUI reshuffles the body frames.
-	for _, child in ipairs(main.Main:GetChildren()) do
-		if child:IsA("GuiObject") and child.Name ~= "Topbar" then
-			child.Visible = not shaded
-		end
-	end
-
-	-- Both ends are known, so the delta is computed rather than read back off a frame
-	-- that is still mid-tween from the last click.
-	local from, to = shaded and fullSize or shadeTo, shaded and shadeTo or fullSize
-	local p = main.Position
-	Window:SetSize(to)
-	-- Matched to SetSize's own tween, or the corner visibly slides while the size catches up.
-	TweenService:Create(main, SHADE_TWEEN, {
-		Position = UDim2.new(
-			p.X.Scale,
-			p.X.Offset + (to.X.Offset - from.X.Offset) / 2,
-			p.Y.Scale,
-			p.Y.Offset + (to.Y.Offset - from.Y.Offset) / 2
-		),
-	}):Play()
-end, 998, nil, Color3.fromHex("#F4C948")) -- same yellow the real Minimize used
 
 -- close ----------------------------------------------------------------------
 local function stopAll()
