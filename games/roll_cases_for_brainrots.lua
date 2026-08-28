@@ -10,8 +10,10 @@
                   most kicks; this doesn't.
      OPEN       : opens the ticked cases straight off the remote -- no confirm
                   dialog, no spin frame, 3 at a time through RequestOpenCaseMulti
-                  (the server clamps count to 3). SKIP REVEAL answers the reveal
-                  the instant CaseOpened lands, so the ~5s animation never plays.
+                  (the server clamps count to 3). SKIP REVEAL switches off the
+                  handler that plays the spin and answers the server in its place
+                  -- firing RequestRevealComplete alone does NOT skip anything,
+                  the client plays the animation either way. Needs getconnections.
      BASE       : Collect fires the base pad plus every plate slot; Place is the
                   pad's own auto-place. Both are one remote each and the server
                   refuses what you haven't earned, which is the normal case.
@@ -222,6 +224,19 @@ local function fillNow(startTime)
 	return phase < 0.55 and phase / 0.55 or 1 - (phase - 0.55) / 0.55
 end
 
+-- The frame the game animates. onLockClick picks the tier off THIS bar's
+-- Size.Y.Scale, so it's the number to decide on -- read in the same resumption as
+-- the lock call, it cannot have moved in between, which makes the choice exact.
+-- fillNow models the same curve from os.clock() and is a frame off whatever
+-- RenderStepped last wrote; at 20fps a frame is 0.09 of the bar, a whole tier wide.
+-- Only used as a fallback if the GUI path ever moves.
+local function movingBar()
+	local gui = player:FindFirstChild("PlayerGui")
+	local mini = gui and gui:FindFirstChild("KickMinigame")
+	local bar = mini and mini:FindFirstChild("Bar")
+	return bar and bar:FindFirstChild("MovingBar") or nil
+end
+
 local function zone(name)
 	local zones = workspace:FindFirstChild("Zones")
 	local part = zones and zones:FindFirstChild(name)
@@ -281,21 +296,30 @@ local function kickOnce(alive)
 		-- frame lands on Excellent instead. LOCK_FLOOR is the band itself -- if the
 		-- minigame ends on its own (15s auto-fire) we never got to lock at all.
 		say("charging")
-		local start, prev = api.state().startTime, 0
+		local start, prev, bar = api.state().startTime, 0, movingBar()
+		local locked = false
 		while alive() do
 			local now = api.state()
 			if not now.minigameActive or now.locked then
 				break
 			end
-			local fill = fillNow(start)
+			local fill = bar and bar.Size.Y.Scale or fillNow(start)
 			local rising = fill >= prev
 			prev = fill
 			if rising and fill >= LOCK_AT then
 				api.lock()
-				say(fill >= LOCK_FLOOR and "PERFECT" or ("locked at %.2f"):format(fill))
+				locked = true
+				say(fill >= LOCK_FLOOR and ("PERFECT (%.2f)"):format(fill) or ("locked at %.2f"):format(fill))
 				break
 			end
 			task.wait()
+		end
+		-- The minigame auto-fires at 15s with whatever the bar reads. Landing here
+		-- means we watched it the whole way and never saw LOCK_AT on a rising edge,
+		-- which is worth saying out loud -- it's the difference between "the loop is
+		-- broken" and "the bar never got that high".
+		if not locked and alive() then
+			say(("never reached %.2f - bar peaked at %.2f"):format(LOCK_AT, prev))
 		end
 
 		-- The flight is client-driven and ends with RequestKick{action="landed"}. The
@@ -334,19 +358,56 @@ local function kickOnce(alive)
 end
 
 -- open -----------------------------------------------------------------------
--- The reveal is a client animation gated on an id the server hands out. Answering it
--- the moment CaseOpened lands is exactly what the game's own auto-open does when it
--- wants the next spin -- it just does it after the animation instead of instead of it.
-local skipReveal, revealConn = true, nil
+-- Firing RequestRevealComplete does NOT skip the reveal. It only tells the server
+-- we're done watching -- FrameController's own CaseOpened handler then calls
+-- playReveal(payload) unconditionally, and THAT is the animation. Its one silent
+-- path needs payload.PlayerAuto, which only the server sets on its own auto-open
+-- session, so there is no flag we can pass to get it.
+--
+-- So skipping means switching that handler off and answering the server ourselves.
+-- Same trick flash_for_brainrots.lua uses on its dash cutscene.
+--
+-- ponytail: needs getconnections; without it the reveal plays and we say so rather
+-- than pretending the toggle did something. It also takes out LoreDialogueController's
+-- CaseOpened listener, which is first-open lore chatter -- restored on toggle-off.
+local revealConn, killedReveal = nil, {}
 
-local function armReveal()
-	if revealConn then
-		return
+local function skipReveal(enable)
+	if enable == (revealConn ~= nil) then
+		return true -- already in the asked-for state
+	end
+
+	if not enable then
+		if revealConn then
+			revealConn:Disconnect()
+			revealConn = nil
+		end
+		for _, c in ipairs(killedReveal) do
+			pcall(function()
+				c:Enable()
+			end)
+		end
+		table.clear(killedReveal)
+		return true
+	end
+
+	if not getconnections then
+		say("no getconnections -- reveals will keep animating")
+		return false
+	end
+
+	-- Disable first, connect second: getconnections would otherwise hand us our own
+	-- handler and we'd switch ourselves off with the rest of them.
+	for _, c in ipairs(getconnections(CaseOpened.OnClientEvent)) do
+		c:Disable()
+		table.insert(killedReveal, c)
 	end
 	revealConn = CaseOpened.OnClientEvent:Connect(function(payload)
-		if not skipReveal or type(payload) ~= "table" then
+		if type(payload) ~= "table" then
 			return
 		end
+		-- Nobody else is listening now, so this is the only thing releasing the
+		-- server's gate. Miss it and the next open is refused.
 		pcall(function()
 			if type(payload.RevealIds) == "table" and #payload.RevealIds > 0 then
 				RequestRevealComplete:FireServer({ ids = payload.RevealIds })
@@ -355,6 +416,7 @@ local function armReveal()
 			end
 		end)
 	end)
+	return true
 end
 
 -- The two reasons the server refuses an open. Worth surfacing: "nothing is happening"
@@ -529,14 +591,21 @@ end
 -- loops ----------------------------------------------------------------------
 -- One generation counter per toggle. Without it, off-then-on inside a single interval
 -- leaves the sleeping thread alive next to the new one, firing at double rate.
-local function every(state, interval, body)
+local function every(name, state, interval, body)
 	state.gen += 1
 	local mine = state.gen
 	task.spawn(function()
 		while state.on and state.gen == mine do
-			pcall(body, function()
+			-- The pcall is load-bearing -- models vanish mid-sweep and a dead instance
+			-- throws -- but swallowing the message turns every bug into "it just sits
+			-- there". Say what broke and carry on.
+			local ok, err = pcall(body, function()
 				return state.on and state.gen == mine
 			end)
+			if not ok then
+				warn(("[rollcases] %s: %s"):format(name, tostring(err)))
+				say(name .. " errored - see F9")
+			end
 			task.wait(interval)
 		end
 	end)
@@ -591,7 +660,7 @@ Farm:Toggle({
 			return
 		end
 		banked = 0
-		every(kicker, PRESS_GAP, function(alive)
+		every("kicker", kicker, PRESS_GAP, function(alive)
 			local got = kickOnce(alive)
 			if got then
 				banked += 1
@@ -631,7 +700,7 @@ Farm:Toggle({
 		if not v then
 			return
 		end
-		every(opener, OPEN_EVERY, function(alive)
+		every("opener", opener, OPEN_EVERY, function(alive)
 			if #pickedCases == 0 then
 				say("no cases ticked")
 				return
@@ -655,11 +724,9 @@ Farm:Toggle({
 
 Farm:Toggle({
 	Title = "Skip Reveal",
-	Desc = "Answer the reveal the moment it opens -- no spin animation, on manual opens too",
+	Desc = "Cut the spin animation entirely and answer the server ourselves. Manual opens too.",
 	Value = true,
-	Callback = function(v)
-		skipReveal = v
-	end,
+	Callback = skipReveal,
 })
 
 Base:Toggle({
@@ -671,7 +738,7 @@ Base:Toggle({
 		if not v then
 			return
 		end
-		every(collector, COLLECT_EVERY, function()
+		every("collector", collector, COLLECT_EVERY, function()
 			RequestBasePad:FireServer("Collect")
 			local plot = tonumber(player:GetAttribute("BasePlot"))
 			if plot then
@@ -692,7 +759,7 @@ Base:Toggle({
 		if not v then
 			return
 		end
-		every(placer, PLACE_EVERY, function()
+		every("placer", placer, PLACE_EVERY, function()
 			RequestBasePad:FireServer("Place")
 		end)
 	end,
@@ -719,7 +786,7 @@ Base:Toggle({
 		if not v then
 			return
 		end
-		every(seller, SELL_EVERY, function()
+		every("seller", seller, SELL_EVERY, function()
 			-- An empty list is "all rarities" to this remote, which would sell the
 			-- Secrets you're farming for. Refusing to fire is the guard.
 			if #pickedRarities == 0 then
@@ -741,7 +808,7 @@ Extra:Toggle({
 	Callback = function(v)
 		claimer.on = v
 		if v then
-			every(claimer, 60, claimAll)
+			every("claimer", claimer, 60, claimAll)
 		end
 	end,
 })
@@ -755,7 +822,7 @@ Extra:Toggle({
 		if not v then
 			return
 		end
-		every(upkeeper, UPKEEP_EVERY, function()
+		every("upkeeper", upkeeper, UPKEEP_EVERY, function()
 			RequestRebirth:FireServer({ mode = "rebirth" })
 			RequestSpeedUpgrade:FireServer({ index = 1 })
 		end)
@@ -821,7 +888,7 @@ say = function(msg)
 	line:SetDesc(msg)
 end
 
-armReveal()
+skipReveal(true) -- matches the toggle's default Value
 if not kickApi() then
 	say("no _G.KickAuto yet -- opening and base loops still work")
 end
@@ -833,12 +900,10 @@ local function stopAll()
 		state.gen += 1 -- retires the running thread even if it's mid-wait
 	end
 	flight.boost, flight.force = false, false
-	for _, conn in ipairs({ revealConn, flightConn }) do
-		pcall(function()
-			conn:Disconnect()
-		end)
-	end
-	revealConn = nil
+	skipReveal(false) -- puts the game's own CaseOpened handlers back
+	pcall(function()
+		flightConn:Disconnect()
+	end)
 end
 
 Window:OnDestroy(function()
