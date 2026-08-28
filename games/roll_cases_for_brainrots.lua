@@ -15,9 +15,16 @@
                   12 zones you land in, and the zone decides the case -- so Perfect
                   plus a forced landing is the whole farm.
 
-                  Banking teleports rather than walks: at 3fps a 14-stud stroll is
-                  seconds of nothing, and the credit is a server-side zone check
-                  that cares where you are, not how you got there.
+                  Banking teleports rather than walks: the credit is a server-side
+                  zone check that cares where you are, not how you got there.
+
+                  What CANNOT be skipped is the arc DURATION. The real client only
+                  reports a landing once elapsed >= arcDur, and the server refuses
+                  an early one -- reporting at 0.1s into a 7.9s arc got the landing
+                  dropped and a fallback credit at 15-18s instead. So the landing
+                  waits out arcDur. The flight itself, every frame of animation
+                  around it, and the travel back are all still gone; that one clock
+                  is the server's and it stays.
      OPEN       : opens the ticked cases straight off the remote -- no confirm
                   dialog, no spin frame, 3 at a time through RequestOpenCaseMulti
                   (the server clamps count to 3). SKIP REVEAL switches off the
@@ -77,6 +84,12 @@ local CHARGE_HOLD = 0.4 -- seconds between charge and tier. A real client can't 
 -- these back to back because a human is watching a bar in between; a zero-length
 -- charge is the one part of this sequence no player could produce. Don't set to 0.
 local FLIGHT_WAIT = 6 -- seconds to wait for the server's arc after declaring the tier
+local LAND_MARGIN = 0.2 -- seconds past arcDur before reporting the landing. The real
+-- client's flight loop only reports once elapsed >= arcDur ("if arcDur2 <= v409"), so
+-- it never lands early and the server evidently refuses one that does -- reporting at
+-- 0.1s into a 7.9s arc got the landing dropped and a fallback credit at 15-18s. The
+-- arc duration is the server's clock, not an animation, so it cannot be skipped; what
+-- IS skipped is the flight itself and every frame of animation around it.
 local LAUNCH_HOLD = 0.25 -- seconds between the server's "start" and our "launch". The
 -- real client fires launch off a marker in the jump animation, which we never play;
 -- this stands in for that beat. The arc does not arrive until the launch does.
@@ -87,7 +100,8 @@ local PRESS_GAP = 1.2 -- seconds after banking before the next charge. Below ~1 
 -- charge lands while the server still has you mid-kick and is dropped silently.
 local FLIGHT_TIMEOUT = 25 -- give up waiting for a case after a kick. A kick that
 -- lands short of every zone gives nothing, and waiting forever stalls the loop.
-local BANK_TIMEOUT = 12 -- give up walking a case into the Collect zone
+local BANK_TIMEOUT = 20 -- give up getting a case into the Collect zone. Generous
+-- because the hop back from Zone12 is ~5000 studs and has to wait out streaming.
 
 local OPEN_EVERY = 0.6 -- seconds between open batches. The reveal is skipped so
 -- this is purely the server's own open cooldown; raise it if opens go missing.
@@ -265,6 +279,14 @@ local function tpTo(part)
 		return false
 	end
 	root.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
+	-- Landing at Zone12 puts us ~5000 studs from the Collect zone, and a hop that far
+	-- arrives before anything around it has streamed in. Touching the world while
+	-- paused is how a deposit silently doesn't take.
+	local spins = 0
+	while player.GameplayPaused and spins < 40 do
+		task.wait(0.1)
+		spins += 1
+	end
 	return true
 end
 
@@ -333,8 +355,8 @@ local function kickOnce(alive)
 			local took = os.clock() - landedAt
 			local arc = tonumber(flight.last and flight.last.arcDur) or 0
 			warn(("[rollcases] case took %.1fs after landed (arcDur was %.1fs) -- %s")
-				:format(took, arc, took < arc * 0.5 and "beat the arc, landing accepted"
-					or "about the arc, server is pacing it"))
+				:format(took, arc, took < 3 and "landing accepted"
+					or "landing looks refused, server fell back to its own"))
 		end
 	end
 
@@ -357,7 +379,13 @@ local function kickOnce(alive)
 	until not holding() or os.clock() > deadline or not alive()
 
 	if holding() then
-		say("stuck holding " .. case)
+		-- How far off the zone we ended up is the whole diagnosis: still at the
+		-- landing site means the hop back never took, sitting on the zone means the
+		-- server isn't crediting the deposit.
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local gap = root and (root.Position - collect.Position).Magnitude or -1
+		warn(("[rollcases] still holding %s, %.0f studs from CollectZone"):format(case, gap))
+		say(("stuck holding %s (%.0f studs off)"):format(case, gap))
 		return nil
 	end
 	return case
@@ -661,7 +689,12 @@ local function connectFlight()
 				pcall(maxBoost, payload) -- no-op while the flight is cut; see cutFlight
 			end
 			if flight.force then
-				pcall(landAt, payload, flight.zone)
+				-- Wait out the server's own clock, then report. Firing early is what
+				-- was losing the landing; see LAND_MARGIN.
+				local arc = tonumber(payload.arcDur) or 0
+				task.delay(arc + LAND_MARGIN, function()
+					pcall(landAt, payload, flight.zone)
+				end)
 			end
 		end)
 	end)
