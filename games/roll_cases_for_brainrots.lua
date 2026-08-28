@@ -1,13 +1,23 @@
 --[[ Roll Cases for Brainrots -- 97665661589897
 
-     KICK       : the whole case loop. AutoReturn to the jump zone, press, stop the
-                  bar at PERFECT every single time, then walk the case you landed
-                  on into the Collect zone. Perfect is the top tier band (fill >=
-                  0.92 in KickController.tierFromFillFraction) and tier is what
-                  decides how far you fly, which decides which of the 12 map zones
-                  you land in, which decides the case. The game's own AutoKick
-                  button aims for a RANDOM 0.82-0.98, so it drops out of Perfect
-                  most kicks; this doesn't.
+     KICK       : the whole case loop, and it never opens the minigame. What the
+                  server sees is four messages -- charge, tier, launch, landed --
+                  and the tier is a bare string the CLIENT picks:
+
+                      RequestKick:FireServer({ tier = "Perfect" })
+
+                  So the bar is a timing toy, not the protocol. Driving it means
+                  sampling a 1.1s triangle wave, which needs frames; this game runs
+                  at ~3fps on a loaded server, where a 0.95 band is never even
+                  observed and the old bar-watching version simply never locked.
+                  Declaring the tier skips the sampling problem AND the charge
+                  animation. Tier decides distance, distance decides which of the
+                  12 zones you land in, and the zone decides the case -- so Perfect
+                  plus a forced landing is the whole farm.
+
+                  Banking teleports rather than walks: at 3fps a 14-stud stroll is
+                  seconds of nothing, and the credit is a server-side zone check
+                  that cares where you are, not how you got there.
      OPEN       : opens the ticked cases straight off the remote -- no confirm
                   dialog, no spin frame, 3 at a time through RequestOpenCaseMulti
                   (the server clamps count to 3). SKIP REVEAL switches off the
@@ -56,17 +66,20 @@
      Stop: getgenv().rollCasesStop() ]]
 
 -- config ---------------------------------------------------------------------
--- The bar fills 0 -> 1 -> 0 on a 1.1s triangle (0.55 up, 0.55 down) and the tier
--- is read off the fill at the moment you lock. Perfect starts at 0.92, so locking
--- at 0.95 leaves ~16ms of headroom on either side at 60fps -- inside the band even
--- if a frame is late, and never past the peak into the falling half.
-local LOCK_AT = 0.95
-local LOCK_FLOOR = 0.92 -- the Perfect threshold itself; the loop won't settle for less
+-- The tier the client declares. KickController picks this off the bar and sends it
+-- as a bare string -- "Bad" / "Good" / "Great" / "Excellent" / "Perfect" -- so the
+-- bar is a timing toy and this is the actual protocol. Perfect is the top band and
+-- the one that flies furthest.
+local TIER = "Perfect"
+local CHARGE_HOLD = 0.4 -- seconds between charge and tier. A real client can't send
+-- these back to back because a human is watching a bar in between; a zero-length
+-- charge is the one part of this sequence no player could produce. Don't set to 0.
+local FLIGHT_WAIT = 6 -- seconds to wait for the server's arc after declaring the tier
 
 local RETURN_EVERY = 4 -- seconds between AutoReturn fires while out of the zone.
 -- Verbatim from AutoKickController -- the server ignores them faster than that.
-local PRESS_GAP = 1.2 -- seconds after landing before pressing again. Below ~1 the
--- press lands while the server still has you mid-kick and is dropped silently.
+local PRESS_GAP = 1.2 -- seconds after banking before the next charge. Below ~1 the
+-- charge lands while the server still has you mid-kick and is dropped silently.
 local FLIGHT_TIMEOUT = 25 -- give up waiting for a case after a kick. A kick that
 -- lands short of every zone gives nothing, and waiting forever stalls the loop.
 local BANK_TIMEOUT = 12 -- give up walking a case into the Collect zone
@@ -208,34 +221,18 @@ local function rarities()
 end
 
 -- kick -----------------------------------------------------------------------
--- KickController hands its own auto-kick this table and nothing else can drive the
--- minigame: press() opens it, state() reports it, lock() stops the bar. Read live
--- every time -- it doesn't exist until the controller has run.
+-- KickController publishes this for its own auto-kick. We only want state().inZone
+-- off it now -- the kick itself goes over the remote -- but that one field saves
+-- reimplementing the zone test. Read live; it doesn't exist until the controller runs.
 local function kickApi()
 	local api = gameG.KickAuto
 	return type(api) == "table" and api or nil
 end
 
--- The exact curve KickController animates the bar on (startMinigame's RenderStepped:
--- 1.1s period, peak at 0.55). Computing it beats reading MovingBar.Size, which means
--- naming a five-deep PlayerGui path that a UI update would quietly break.
-local function fillNow(startTime)
-	local phase = (os.clock() - startTime) % 1.1
-	return phase < 0.55 and phase / 0.55 or 1 - (phase - 0.55) / 0.55
-end
-
--- The frame the game animates. onLockClick picks the tier off THIS bar's
--- Size.Y.Scale, so it's the number to decide on -- read in the same resumption as
--- the lock call, it cannot have moved in between, which makes the choice exact.
--- fillNow models the same curve from os.clock() and is a frame off whatever
--- RenderStepped last wrote; at 20fps a frame is 0.09 of the bar, a whole tier wide.
--- Only used as a fallback if the GUI path ever moves.
-local function movingBar()
-	local gui = player:FindFirstChild("PlayerGui")
-	local mini = gui and gui:FindFirstChild("KickMinigame")
-	local bar = mini and mini:FindFirstChild("Bar")
-	return bar and bar:FindFirstChild("MovingBar") or nil
-end
+-- Bumped by the KickFeedback listener further down, once per arc the server sends.
+-- kickOnce records it before charging and waits for it to move, which is how it
+-- knows the server accepted the kick without trusting a return value.
+local flightSeq = 0
 
 local function zone(name)
 	local zones = workspace:FindFirstChild("Zones")
@@ -248,33 +245,35 @@ local function holding()
 	return type(case) == "string" and case ~= "" and case or nil
 end
 
--- Walk, don't teleport. The Collect zone is ~14 studs from the jump zone and the
--- game's own AutoKickController banks by walking; a case is only credited once the
--- server sees you inside the zone, and it sees a walk without being asked twice.
-local function walkTo(part)
+-- The Collect zone is ~14 studs from the jump zone, but at 3fps a walk over it is
+-- seconds of nothing. Set the root straight onto it and give the server a beat to
+-- agree we're there -- the credit is a zone check on the server's copy of our
+-- position, so what matters is that it sees us inside, not how we arrived.
+local function tpTo(part)
 	local char = player.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not (hum and root and part) then
+	if not (root and part) then
 		return false
 	end
-	hum:MoveTo(Vector3.new(part.Position.X, root.Position.Y, part.Position.Z))
+	root.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
 	return true
 end
 
 -- One kick, start to banked. Returns what landed, or nil.
+--
+-- This does NOT touch the minigame. The bar is a client-side timing toy: the whole
+-- protocol the server sees is charge -> tier -> launch -> landed, and the tier is a
+-- bare string the client picks. Driving the bar instead means sampling a 1.1s
+-- triangle wave, which needs frames -- at the 3fps this game actually runs at, a
+-- 0.95 band is never even observed, so the old version simply never locked.
+-- Declaring the tier sidesteps the sampling problem entirely and skips the charge
+-- animation as a bonus.
 local function kickOnce(alive)
-	local api = kickApi()
-	if not api then
-		return nil
-	end
-
-	-- Still carrying from a kick that timed out last cycle -- bank it before pressing,
-	-- or the press is refused and we spin.
-	if holding() then
-		say("banking a leftover case")
-	else
-		if not api.state().inZone then
+	-- Still carrying from a kick that timed out last cycle -- bank it before kicking
+	-- again, or the charge is refused and we spin.
+	if not holding() then
+		local api = kickApi()
+		if api and not api.state().inZone then
 			say("returning to the jump zone")
 			RequestAutoReturn:FireServer()
 			local deadline = os.clock() + RETURN_EVERY
@@ -286,50 +285,33 @@ local function kickOnce(alive)
 			end
 		end
 
-		if api.state().kickInProgress or not api.press() then
-			task.wait(0.3)
+		-- charge -> tier. CHARGE_HOLD is the beat between them: the real client can't
+		-- send these back to back because a human is watching a bar in between, and a
+		-- zero-length charge is the one thing in this sequence that looks like nothing
+		-- a player could produce.
+		local seen = flightSeq
+		say("kicking (" .. TIER .. ")")
+		RequestKick:FireServer({ action = "charge" })
+		task.wait(CHARGE_HOLD)
+		RequestKick:FireServer({ tier = TIER })
+
+		-- The server answers with the arc. Our KickFeedback listener bumps flightSeq
+		-- and stashes the payload; landing needs flatStartPos and baseFloorY out of it.
+		local deadline = os.clock() + FLIGHT_WAIT
+		repeat
+			task.wait(0.1)
+		until flightSeq ~= seen or os.clock() > deadline or not alive()
+		if flightSeq == seen then
+			say("no flight came back - kick refused?")
 			return nil
 		end
 
-		-- Lock on the way UP only. fillNow crosses LOCK_AT twice a period; taking the
-		-- falling crossing works but leaves the bar heading out of the band, so a late
-		-- frame lands on Excellent instead. LOCK_FLOOR is the band itself -- if the
-		-- minigame ends on its own (15s auto-fire) we never got to lock at all.
-		say("charging")
-		local start, prev, bar = api.state().startTime, 0, movingBar()
-		local locked = false
-		while alive() do
-			local now = api.state()
-			if not now.minigameActive or now.locked then
-				break
-			end
-			local fill = bar and bar.Size.Y.Scale or fillNow(start)
-			local rising = fill >= prev
-			prev = fill
-			if rising and fill >= LOCK_AT then
-				api.lock()
-				locked = true
-				say(fill >= LOCK_FLOOR and ("PERFECT (%.2f)"):format(fill) or ("locked at %.2f"):format(fill))
-				break
-			end
-			task.wait()
-		end
-		-- The minigame auto-fires at 15s with whatever the bar reads. Landing here
-		-- means we watched it the whole way and never saw LOCK_AT on a rising edge,
-		-- which is worth saying out loud -- it's the difference between "the loop is
-		-- broken" and "the bar never got that high".
-		if not locked and alive() then
-			say(("never reached %.2f - bar peaked at %.2f"):format(LOCK_AT, prev))
-		end
-
-		-- The flight is client-driven and ends with RequestKick{action="landed"}. The
-		-- case showing up on the player is the server agreeing it accepted the landing;
-		-- nothing the client fires tells you that.
-		say("flying")
-		local deadline = os.clock() + FLIGHT_TIMEOUT
+		-- launch then landed, in the order the real client sends them. The landing is
+		-- fired by the KickFeedback handler itself so a hand-thrown kick gets it too.
+		local deadline2 = os.clock() + FLIGHT_TIMEOUT
 		repeat
 			task.wait(0.2)
-		until holding() or os.clock() > deadline or not alive()
+		until holding() or os.clock() > deadline2 or not alive()
 	end
 
 	local case = holding()
@@ -346,8 +328,8 @@ local function kickOnce(alive)
 	say("banking " .. case)
 	local deadline = os.clock() + BANK_TIMEOUT
 	repeat
-		walkTo(collect) -- re-issued: one MoveTo is cancelled by anything that nudges you
-		task.wait(0.4)
+		tpTo(collect) -- re-issued: respawns and the landing shove both move us off it
+		task.wait(0.3)
 	until not holding() or os.clock() > deadline or not alive()
 
 	if holding() then
@@ -378,6 +360,10 @@ local function skipReveal(enable)
 	end
 
 	if not enable then
+		pcall(function()
+			player:SetAttribute("_ShowCasesOpening", true)
+			Remotes.RequestSetSetting:FireServer({ key = "ShowCasesOpening", value = true })
+		end)
 		if revealConn then
 			revealConn:Disconnect()
 			revealConn = nil
@@ -391,8 +377,18 @@ local function skipReveal(enable)
 		return true
 	end
 
+	-- The 3D reveal is a SECOND path and the one that was still animating: it comes
+	-- in on CaseReveal3D, handled in CaseEquipOpenController, and cutting CaseOpened
+	-- never touched it. It has its own off switch though -- the handler returns early
+	-- when _ShowCasesOpening is false, which is the game's own Settings toggle. Set
+	-- the attribute for right now and tell the server so it sticks across respawns.
+	pcall(function()
+		player:SetAttribute("_ShowCasesOpening", false)
+		Remotes.RequestSetSetting:FireServer({ key = "ShowCasesOpening", value = false })
+	end)
+
 	if not getconnections then
-		say("no getconnections -- reveals will keep animating")
+		say("3D reveal off; spin frame needs getconnections")
 		return false
 	end
 
@@ -541,6 +537,7 @@ local flightConn = KickFeedback.OnClientEvent:Connect(function(payload)
 		return
 	end
 	flight.last = payload
+	flightSeq += 1 -- kickOnce is waiting on this
 	-- Deferred one step: KickController republishes _G.KickFlightClient.Teleport for
 	-- each flight from inside its own handler for this same event, and connection
 	-- order isn't ours to pick. Calling in the same tick can hit the previous kick's
@@ -550,6 +547,11 @@ local flightConn = KickFeedback.OnClientEvent:Connect(function(payload)
 			pcall(maxBoost, payload)
 		end
 		if flight.force then
+			-- launch before landed, the order the real client sends them. doLaunch
+			-- fires it off an animation marker we never play, so nobody else will.
+			pcall(function()
+				RequestKick:FireServer({ action = "launch" })
+			end)
 			pcall(landAt, payload, flight.zone)
 		end
 	end)
@@ -648,16 +650,21 @@ local Extra =
 
 Farm:Toggle({
 	Title = "Auto Kick",
-	Desc = "Jump zone -> stop the bar on PERFECT -> walk the case to Collect",
+	Desc = "Declare PERFECT, land in the Flight tab's zone, teleport the case to Collect",
 	Value = false,
 	Callback = function(v)
 		kicker.on = v
+		-- The loop is only fast because the landing is answered for it; without this
+		-- every kick sits through the real 10-20s arc. Same flag the Flight tab's
+		-- Force Landing drives, so the two can't disagree.
+		flight.force = v
 		if not v then
 			return
 		end
+		-- kickApi is only used for the in-zone check now, not to drive anything, so
+		-- a missing one costs us an AutoReturn guard rather than the whole loop.
 		if not kickApi() then
-			say("_G.KickAuto missing -- stand in the jump zone once, then retry")
-			return
+			say("no KickAuto - kicking anyway, stand in the jump zone")
 		end
 		banked = 0
 		every("kicker", kicker, PRESS_GAP, function(alive)
