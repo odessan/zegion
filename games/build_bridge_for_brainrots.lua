@@ -14,8 +14,8 @@
             out of it. Untick everything and the farm idles at BASE.
      BLOCK: Lucky blocks are brainrots that pay after a timer. Ranked by what they'll
             pay, same as anything else. Untick to leave them.
-     CASH : the $ piles. Swept after a load lands rather than on their own loop -- two
-            teleporting one character fight over it. The button sweeps on demand.
+     CASH : the $ piles, on the button only. It teleports round them, so it wants the
+            farm off -- one thread drives the character and they'd fight over it.
 
      Read out of the game's own client scripts rather than guessed at, which is what the
      first two passes got wrong:
@@ -40,8 +40,8 @@ local BASE = Vector3.new(-129, 12, -120) -- where a load is carried to. Grabbed 
 -- different base -- re-grab it if the farm starts coming home to nowhere.
 
 local TAKE_BLOCKS = true -- include Lucky Blocks in the pick
-local CASH_MAX = 20 -- cash piles swept per lap. A cap, not a target: the sweep is time
--- the farm isn't farming, and the pile is still there next lap.
+local CASH_MAX = 20 -- cash piles per press of the button. A cap, not a target: at up to
+-- TOUCH_TIMEOUT each this is already ~20s of teleporting, and the rest keep.
 
 local SETTLE = 4 -- ping multiples to wait after a tp. Raise if grabs fire but nothing
 -- lands: the pickup's range check runs against where the SERVER thinks you are.
@@ -56,7 +56,9 @@ local HELD_NEAR = 12 -- studs. A brainrot this close to another player's root is
 -- skipped, which costs one brainrot; the other way round costs a whole GRAB_TIMEOUT.
 local DEPOSIT = 0.5 -- seconds parked on BASE before heading out again. Arriving is the
 -- whole deposit, so this is the server's window to notice you're standing there.
-local TOUCH_TIMEOUT = 0.6 -- give up on one cash pile
+local TOUCH_TIMEOUT = 1.5 -- give up on one cash pile. The touch that collects is the
+-- physical one, and a probe against the live game needed most of a second for it -- 0.6
+-- was cutting piles off before they registered.
 local DWELL = 1.5 -- seconds between looks when nothing is takeable
 
 local Players = game:GetService("Players")
@@ -198,7 +200,6 @@ assert(label({}) == "nothing", "an empty tick set says so rather than reading bl
 local wanted = ticked(RARITIES) -- live: the Rarity dropdown writes this. Everything on
 -- by default, so the farm behaves the same until you actually narrow it.
 local blocks = TAKE_BLOCKS -- live: the Lucky Blocks toggle writes this
-local sweeping = false -- live: the Collect Cash toggle writes this
 local farming, gen = false, 0
 
 local function entry(model)
@@ -327,49 +328,57 @@ end
 -- the server has never heard of it. That's why firetouchinterest alone did nothing:
 -- there's no server-side touch to drive. What actually collects is a plain client
 -- connection on part.Touched, which fires CollectCashEvent with the pile's id -- an id
--- kept in a local table we can't read. So fire the connection itself and let the game's
--- own handler supply the id. firetouchinterest stays as a fallback; it costs a call.
-local function collect(part, root)
-	if getconnections then
-		for _, con in ipairs(getconnections(part.Touched)) do
-			pcall(function()
-				con:Fire(root) -- the handler wants the part that touched it, ie. us:
-				-- it does Players:GetPlayerFromCharacter(hit.Parent) and bails unless
-				-- that's the local player
-			end)
-		end
+-- kept in a local table we can't read. So let the game's own handler supply it.
+--
+-- Standing in the pile is what actually collects, confirmed against the live game: a
+-- plain teleport in and a wait takes it, no executor touch API involved. Calling the
+-- handler directly is kept only because it's one line and takes the pile on the first
+-- frame instead of the third. The :Fire and firetouchinterest branches that used to be
+-- here are gone -- neither was ever shown to collect anything, and the one that
+-- reported success without collecting is what made this look broken.
+local function nudge(part, root)
+	if not getconnections then
+		return
 	end
-	if firetouchinterest then
-		pcall(firetouchinterest, root, part, 0)
-		pcall(firetouchinterest, root, part, 1)
+	for _, con in ipairs(getconnections(part.Touched)) do
+		if typeof(con.Function) == "function" then
+			pcall(con.Function, root) -- the handler wants the part that touched it: it
+			-- does Players:GetPlayerFromCharacter(hit.Parent) and bails unless that's us
+		end
 	end
 end
 
 local function sweepCash()
 	local fold = workspace:FindFirstChild("Cash")
 	if not fold then
-		return 0
+		return 0, 0
 	end
-	-- Called from the lap AND from the button, and only the lap can be cancelled: the
-	-- button runs with the farm off, so `farming` can't be the stop condition on its own.
-	local fromFarm = farming
-	local got = 0
+	local got, missed = 0, 0
 	for _, part in ipairs(fold:GetChildren()) do
-		if got >= CASH_MAX or (fromFarm and not farming) then
+		if got + missed >= CASH_MAX then
 			break
 		end
 		if part:IsA("BasePart") and part.Parent then
 			tp(part.Position) -- the server still range-checks CollectCashEvent
 			local deadline = os.clock() + TOUCH_TIMEOUT
 			repeat
-				local root = hrp()
-				collect(part, root)
+				nudge(part, hrp())
 				task.wait()
 			until not part.Parent or part.Parent ~= fold or os.clock() > deadline
-			got += 1
+			-- The handler Destroys the pile, so a pile still parented is one that did
+			-- NOT collect. Counting attempts instead of collections is what let this
+			-- report "swept 20" while banking nothing.
+			if not part.Parent or part.Parent ~= fold then
+				got += 1
+			else
+				missed += 1
+			end
 		end
 	end
-	return got
+	if missed > 0 then
+		warn(("[bridgerots] cash: %d collected, %d left"):format(got, missed))
+	end
+	return got, missed
 end
 
 -- lap ------------------------------------------------------------------------
@@ -403,13 +412,6 @@ local function lap()
 		-- from the outside and have completely different fixes.
 		say("no " .. label(wanted) .. " reachable")
 		tp(BASE) -- idle at home until one spawns
-		-- Sweep here too, not just after a load. With a narrow rarity tick this branch
-		-- IS the common one -- the farm spends most of its time idle -- so leaving the
-		-- sweep on the loaded path only is why Collect Cash looked like it stopped
-		-- working the moment the dropdown went in.
-		if sweeping then
-			sweepCash()
-		end
 		return false
 	end
 
@@ -417,10 +419,6 @@ local function lap()
 	say(("banking %d"):format(load))
 	tp(BASE)
 	task.wait(DEPOSIT)
-
-	if sweeping then
-		sweepCash()
-	end
 
 	-- Nothing in here empties you any more, so if standing on BASE isn't what does it,
 	-- the next lap can't pick anything up and the farm looks dead with no reason given.
@@ -486,9 +484,7 @@ end
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 local Section = Tab:Section({ Title = "Farm", Icon = "solar:box-bold", Box = true, BoxBorder = true, Opened = true })
 
--- Above the dropdown, not below it: the menu opens downward and floats over whatever
--- follows, so buttons underneath would be unclickable exactly when the list is open.
--- Declared first because both buttons close over the handle.
+-- Declared first: the all/none shortcut below closes over the handle.
 local rarityDrop
 
 -- WindUI's Dropdown:Select() sets the value and redraws, but does NOT fire the
@@ -502,27 +498,9 @@ local function setRarities(set, value)
 	say(farming and ("hunting " .. label(wanted)) or ("rarity: " .. label(wanted)))
 end
 
--- One row rather than an All and a None: with everything ticked the only thing you want
--- is a clear, and from anything else you want the lot. So it flips.
-Section:Button({
-	Title = "All / none",
-	Icon = "list-checks",
-	Callback = function()
-		local n = 0
-		for _, name in ipairs(RARITIES) do
-			n += wanted[name] and 1 or 0
-		end
-		if n == #RARITIES then
-			setRarities({}, nil) -- nil clears every tick on a Multi dropdown
-		else
-			setRarities(ticked(RARITIES), RARITIES)
-		end
-	end,
-})
-
 rarityDrop = Section:Dropdown({
 	Title = "Rarity",
-	Desc = "Which rarities to take. Richest of the ticked ones wins, not the rarest.",
+	Desc = "What to take. Richest of the ticked ones wins, not the rarest.",
 	Values = RARITIES,
 	Value = RARITIES,
 	Multi = true,
@@ -537,6 +515,59 @@ rarityDrop = Section:Dropdown({
 	end,
 })
 
+-- All/none, sat inside the dropdown's own row. WindUI only stacks whole rows, so this
+-- reaches into the row frame: the value box is right-anchored inside DropdownFrame's
+-- Main, so shift it left and take the space it gave up.
+--
+-- ponytail: internals, not API. If a WindUI update renames these the pcall leaves the
+-- dropdown fully working and only the shortcut goes missing -- which is the right way
+-- round for a convenience button.
+pcall(function()
+	local main = rarityDrop.DropdownFrame.UIElements.Main
+	local box = rarityDrop.UIElements.Dropdown
+	local SIZE, GAP = 28, 6
+
+	box.Position = UDim2.new(1, -(SIZE + GAP), box.Position.Y.Scale, box.Position.Y.Offset)
+
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.fromOffset(SIZE, SIZE)
+	btn.AnchorPoint = Vector2.new(1, 0.5)
+	btn.Position = UDim2.new(1, 0, 0.5, 0)
+	btn.BackgroundColor3 = Color3.fromRGB(48, 48, 52)
+	btn.AutoButtonColor = true
+	btn.Text = "\226\156\147" -- check mark; no icon pack to resolve, no id to go stale
+	btn.TextColor3 = Color3.fromRGB(225, 225, 230)
+	btn.TextSize = 15
+	btn.Font = Enum.Font.GothamMedium
+	btn.ZIndex = box.ZIndex + 1
+	btn.Parent = main
+
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(0, 8)
+	round.Parent = btn
+
+	-- Flips: everything ticked means the only useful action is a clear, and from any
+	-- other state you want the lot.
+	btn.MouseButton1Click:Connect(function()
+		local n = 0
+		for _, name in ipairs(RARITIES) do
+			n += wanted[name] and 1 or 0
+		end
+		if n == #RARITIES then
+			setRarities({}, nil)
+		else
+			setRarities(ticked(RARITIES), RARITIES)
+		end
+	end)
+end)
+
+Section:Toggle({
+	Title = "Auto Farm Rarity",
+	Desc = "Fill up on the richest ticked brainrots you can reach, carry them home, repeat",
+	Value = false,
+	Callback = setFarming,
+})
+
 Section:Toggle({
 	Title = "Lucky Blocks",
 	Desc = "Take lucky blocks too, ranked by what they'll pay once their timer is up",
@@ -546,34 +577,16 @@ Section:Toggle({
 	end,
 })
 
-Section:Toggle({
-	Title = "Collect Cash",
-	Desc = "Sweep the $ piles after a load lands",
-	Value = false,
-	Callback = function(v)
-		sweeping = v
-	end,
-})
-
-Section:Toggle({
-	Title = "Auto Farm",
-	Desc = "Fill up on the richest reachable brainrots, carry them home, repeat",
-	Value = false,
-	Callback = setFarming,
-})
-
-Section:Button({ Title = "TP to plot", Callback = function()
-	tp(BASE)
-end })
-
 Section:Button({
 	Title = "Collect cash now",
+	Desc = "Teleports round the $ piles. Turn the farm off first -- one thread drives the character",
 	Callback = function()
 		if farming then
-			say("farm is running -- use the Collect Cash toggle")
+			say("turn Auto Farm off first")
 			return -- one thread drives the character; see sweepCash
 		end
-		say(("swept %d"):format(sweepCash()))
+		local got, missed = sweepCash()
+		say(("swept %d, %d refused"):format(got, missed))
 	end,
 })
 
@@ -585,7 +598,6 @@ end
 -- close ----------------------------------------------------------------------
 local function stopAll()
 	farming = false
-	sweeping = false
 end
 
 Window:OnDestroy(function()
