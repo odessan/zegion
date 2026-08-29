@@ -383,6 +383,13 @@ local function lap()
 		-- from the outside and have completely different fixes.
 		say("no " .. label(wanted) .. " reachable")
 		tp(BASE) -- idle at home until one spawns
+		-- Sweep here too, not just after a load. With a narrow rarity tick this branch
+		-- IS the common one -- the farm spends most of its time idle -- so leaving the
+		-- sweep on the loaded path only is why Collect Cash looked like it stopped
+		-- working the moment the dropdown went in.
+		if sweeping then
+			sweepCash()
+		end
 		return false
 	end
 
@@ -459,7 +466,38 @@ end
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:home-2-bold" })
 local Section = Tab:Section({ Title = "Farm", Icon = "solar:box-bold", Box = true, BoxBorder = true, Opened = true })
 
-Section:Dropdown({
+-- Above the dropdown, not below it: the menu opens downward and floats over whatever
+-- follows, so buttons underneath would be unclickable exactly when the list is open.
+-- Declared first because both buttons close over the handle.
+local rarityDrop
+
+-- WindUI's Dropdown:Select() sets the value and redraws, but does NOT fire the
+-- Callback (dist/main.lua as.Select) -- so `wanted` has to be set here as well. It is
+-- the source of truth; Select only makes the ticks agree with it.
+local function setRarities(set, value)
+	wanted = set
+	pcall(function()
+		rarityDrop:Select(value) -- nil clears every tick on a Multi dropdown
+	end)
+	say(farming and ("hunting " .. label(wanted)) or ("rarity: " .. label(wanted)))
+end
+
+Section:Button({
+	Title = "All rarities",
+	Callback = function()
+		setRarities(ticked(RARITIES), RARITIES)
+	end,
+})
+
+Section:Button({
+	Title = "No rarities",
+	Desc = "Clears the lot -- the farm idles at base until you tick something",
+	Callback = function()
+		setRarities({}, nil)
+	end,
+})
+
+rarityDrop = Section:Dropdown({
 	Title = "Rarity",
 	Desc = "Which rarities to take. Richest of the ticked ones wins, not the rarest.",
 	Values = RARITIES,
