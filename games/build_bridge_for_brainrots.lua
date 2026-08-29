@@ -322,6 +322,29 @@ end
 -- Each pile's own Touched handler fires CollectCashEvent, so standing on it is the whole
 -- interaction. Runs on the farm's thread because a second loop would be teleporting the
 -- same character somewhere else at the same time.
+-- workspace.Cash is not the game's folder -- ZoneCash.lua does Instance.new("Model") on
+-- the CLIENT and clones ReplicatedStorage.CashTemp into it, so every pile is local and
+-- the server has never heard of it. That's why firetouchinterest alone did nothing:
+-- there's no server-side touch to drive. What actually collects is a plain client
+-- connection on part.Touched, which fires CollectCashEvent with the pile's id -- an id
+-- kept in a local table we can't read. So fire the connection itself and let the game's
+-- own handler supply the id. firetouchinterest stays as a fallback; it costs a call.
+local function collect(part, root)
+	if getconnections then
+		for _, con in ipairs(getconnections(part.Touched)) do
+			pcall(function()
+				con:Fire(root) -- the handler wants the part that touched it, ie. us:
+				-- it does Players:GetPlayerFromCharacter(hit.Parent) and bails unless
+				-- that's the local player
+			end)
+		end
+	end
+	if firetouchinterest then
+		pcall(firetouchinterest, root, part, 0)
+		pcall(firetouchinterest, root, part, 1)
+	end
+end
+
 local function sweepCash()
 	local fold = workspace:FindFirstChild("Cash")
 	if not fold then
@@ -336,14 +359,11 @@ local function sweepCash()
 			break
 		end
 		if part:IsA("BasePart") and part.Parent then
-			tp(part.Position)
+			tp(part.Position) -- the server still range-checks CollectCashEvent
 			local deadline = os.clock() + TOUCH_TIMEOUT
 			repeat
 				local root = hrp()
-				if firetouchinterest then
-					pcall(firetouchinterest, root, part, 0)
-					pcall(firetouchinterest, root, part, 1)
-				end
+				collect(part, root)
 				task.wait()
 			until not part.Parent or part.Parent ~= fold or os.clock() > deadline
 			got += 1
@@ -482,18 +502,21 @@ local function setRarities(set, value)
 	say(farming and ("hunting " .. label(wanted)) or ("rarity: " .. label(wanted)))
 end
 
+-- One row rather than an All and a None: with everything ticked the only thing you want
+-- is a clear, and from anything else you want the lot. So it flips.
 Section:Button({
-	Title = "All rarities",
+	Title = "All / none",
+	Icon = "list-checks",
 	Callback = function()
-		setRarities(ticked(RARITIES), RARITIES)
-	end,
-})
-
-Section:Button({
-	Title = "No rarities",
-	Desc = "Clears the lot -- the farm idles at base until you tick something",
-	Callback = function()
-		setRarities({}, nil)
+		local n = 0
+		for _, name in ipairs(RARITIES) do
+			n += wanted[name] and 1 or 0
+		end
+		if n == #RARITIES then
+			setRarities({}, nil) -- nil clears every tick on a Multi dropdown
+		else
+			setRarities(ticked(RARITIES), RARITIES)
+		end
 	end,
 })
 
