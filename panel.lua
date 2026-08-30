@@ -18,6 +18,13 @@ local ICON = "solar:bolt-circle-bold" -- one mark for every script; verify names
 local TOPBAR_H = 58 -- two stacked labels (16px over 13px); 44 is a one-line topbar and reads packed
 local KEY = Enum.KeyCode.RightControl
 
+-- Everything at once: WindUI keeps ONE UIScale on the ScreenGui, so this shrinks the
+-- window, the rows, the text and the icons together and no layout constant below has to
+-- change -- Size offsets stay in unscaled pixels and the panel just draws smaller.
+-- 0.8 is about as far down as the 13px subtitle stays comfortable at 1080p; a script that
+-- needs more room on screen passes its own opts.scale rather than shrinking everyone.
+local SCALE = 0.8
+
 local SHADE_TRIM = 12 -- fallback trailing space, only used if the left inset can't be read
 local SHADE_MIN = 160 -- never shade narrower than the traffic lights + the shade button,
 -- or there is nothing left to click and the window is unrecoverable
@@ -170,6 +177,7 @@ end
 --             configs saved under the old name are orphaned (required)
 -- opts.size   window size, default 440x400
 -- opts.key    toggle key, default RightControl
+-- opts.scale  UI scale, default SCALE
 local function panel(opts)
 	local WindUI, why = loadWindUI()
 	if not WindUI then
@@ -188,6 +196,12 @@ local function panel(opts)
 		OpenButton = { Title = BRAND, Enabled = true, Draggable = true },
 	})
 	Window:SetToggleKey(opts.key or KEY)
+	-- After CreateWindow, not before: the UIScale instance is built with the window, and
+	-- SetUIScale is what updates WindUI.UIScale itself -- which the shade measurement
+	-- below reads to convert AbsoluteSize back into offsets.
+	pcall(function()
+		Window:SetUIScale(opts.scale or SCALE)
+	end)
 
 	-- WindUI selects nothing on its own, so a fresh panel opens on an empty body and the
 	-- first tab has to be clicked before anything shows. Wrapped here rather than a
