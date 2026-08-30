@@ -54,6 +54,10 @@ local GAMES = {
 	-- Swap the id -- the panel opening in a game where nothing spawns is the tell.
 	["133294838637122"] = "jump_for_soccer_players.lua", -- Jump To Steal Soccer Players
 
+	-- Confirmed from its own dump, not guessed: SharedModules.SoccerPlayerRegistry,
+	-- workspace.Live.Slimes and the Place Slime / Open Lucky Block remotes all match.
+	["140417239274110"] = "run_for_soccer_players.lua", -- Run For Soccer Players
+
 	-- dump / dump_v2 aren't in games/ on purpose: they're tools you run when you want
 	-- them, not things that should fire the moment you join a game.
 }
