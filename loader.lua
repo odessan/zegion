@@ -58,8 +58,8 @@ local GAMES = {
 	-- workspace.Live.Slimes and the Place Slime / Open Lucky Block remotes all match.
 	["140417239274110"] = "run_for_soccer_players.lua", -- Run For Soccer Players
 
-	-- dump / dump_v2 aren't in games/ on purpose: they're tools you run when you want
-	-- them, not things that should fire the moment you join a game.
+	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
+	-- paste in when you want them, not things that should fire the moment you join.
 }
 
 -- loader ---------------------------------------------------------------------

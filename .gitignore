@@ -1,2 +1,7 @@
 # Local-only: instructions for writing these scripts, not part of what the loader serves.
 CLAUDE.md
+
+# Local-only: tools you paste into the executor by hand when you want a dump. Nothing
+# fetches them, so serving them from the repo only meant keeping them tidy for no one.
+dump.lua
+dump_v2.lua
