@@ -1,159 +1,130 @@
-# Chicken Farm GUI
+# Zegion
 
-Single-file Roblox script: `buy_chickens.lua`. Paste into an executor, or drop it in
-`StarterPlayer > StarterPlayerScripts` as a LocalScript.
-
-One file on purpose — an executor pastes one file, so splitting into modules would
-need a bundle step or a `loadstring(game:HttpGet(...))` per module. Split when it
-passes ~500 lines, not before.
-
-## Layout
-
-| Section in the file | What lives there |
-|---|---|
-| `anti-afk` | 60s nudge + `Idled` → VirtualUser right-click, always on |
-| `fire` | `send()` — the one place a remote is called |
-| `ACTIONS` | one table entry per feature. **Edit this to add things.** |
-| `spy` | `__namecall` hook that logs the game's own remote calls |
-| `widgets` | colors + `rowFrame` / `rowLabel` / `switch` helpers |
-| `shell` | panel, title bar, close button |
-| `build` | loops ACTIONS, makes one row per action |
-| `close` | ✕ — stops loops, silences spy, destroys the GUI |
-
-## Adding a feature
-
-One entry in `ACTIONS`. The button, textbox, and Auto toggle appear on their own.
+Roblox automation scripts, one per game, served by a loader. Paste this and nothing else:
 
 ```lua
-{ label = "Sell Eggs", remote = rf, method = "InvokeServer", cmd = "Sell Eggs" }
+loadstring(game:HttpGet("https://raw.githubusercontent.com/odessan/Zegion/main/loader.lua"))()
 ```
 
-For an inline control add `input = { cycle = {1, 5, 25, 100}, default = 25 }` (tap to
-cycle) or `input = { text = "1.4" }` (typed). Its current value is passed to `run`.
+The loader reads `game.PlaceId`, fetches that game's script and runs it. In a game with
+no script it says so and stops.
 
-Fields: `label`, `remote` (`rf` = RemoteFunction, `re` = RemoteEvent), `method`,
-`cmd`, optional `input = {default, placeholder}` for an inline box, optional
-`run(self, text)` when the default no-arg call isn't enough.
+## How it fits together
 
-Each row is one line: label, optional small input, ON/OFF switch. ON runs the action
-every `INTERVAL` seconds until switched off. An action with `once = true` gets an
-arm-then-fire button instead — for anything destructive that must never loop. There is no status line — errors go to
-the console (F9) via `warn`.
+```
+loader.lua      PlaceId -> games/<file>.lua, fetch, run
+panel.lua       the window every script builds its UI in (WindUI, topbar, shade, keys)
+games/*.lua     one self-contained script per game
+```
 
-## Current actions
+Three files deep, on purpose. A game script fetches `panel.lua` itself rather than
+relying on the loader to have installed it, so **any script here also pastes and runs on
+its own** — handy when you're iterating on one and don't want the loader's cache in the
+way.
 
-- **Buy + Merge** — `rf:InvokeServer("Buy Chickens", n)` with n from the cycle button
-  (1 / 5 / 25 / 100 — the bundles the shop sells), then `rf:InvokeServer("Merge Chickens")`.
-  The merge call is harmless when the 100 bundle already auto-merged: the server has
-  nothing left to merge.
-- **Collect Eggs** — scans `workspace` for UUID-shaped names/attributes (see below) and fires
-  `re:FireServer("Collect Egg", id)` for each, then destroys the model locally (the
-  game's LocalScript would normally do that; firing the remote directly skips it).
-  That destroy is cosmetic — the server already granted the egg — but it also stops
-  the scan re-firing the same id every tick. If the scan finds nothing, use Spy.
-- **Collect Cash** — `rf:InvokeServer("Collect Cash")`. No args.
-- **Lucky Blocks** — the game's own three-step flow per tick:
-  `rf:InvokeServer("Collect Lucky Block", uuid)` for each block found, then
-  `rf:InvokeServer("Open Lucky Block")`, then `re:FireServer("Claim Opened Chicken")`
-  after a 0.3s pause so the open resolves first. Open and Claim are no-ops when there's
-  nothing to open, so the chain runs unconditionally.
-- **Upgrade Process** — `rf:InvokeServer("Upgrade Process Level")`. No args. Runs on its
-  own 5s interval (`interval = 5` on the action) instead of the 0.2s default, since every
-  hit spends cash. Change that number to retune it.
-- **Upgrade Buy Tier** — `rf:InvokeServer("Upgrade Buy Tier Level")`. No args, 5s
-  interval, same cash-spending reasoning as Upgrade Process.
-- **Rebirth** — `rf:InvokeServer("Rebirth")`. Not a switch: it wipes progress, so it
-  gets a press-to-fire button. First click arms it (`SURE?`, red), second click within
-  3 seconds fires. It disarms itself if you walk away.
-- **Deposit @** — `rf:InvokeServer("Deposit Eggs")`, gated on the egg multiplier.
-  Only fires when the multiplier is at or above the number in the box (default 1.4).
+## Using the panel
 
-## UUID scanning
+| Key | What |
+|---|---|
+| `RightControl` | minimise / expand — the body rolls up to a bare Zegion pill |
+| `RightAlt` | hide the window outright, for a screenshot |
 
-Eggs and lucky blocks are both addressed by a uuid the client already knows. `uuids(keyword)`
-walks `workspace` and treats an instance as a candidate when its **name** or any of its
-**attributes** is uuid-shaped.
+Loops keep running under either. The red topbar button unloads the script; re-paste to
+bring it back. Every script also owns a `getgenv().<name>Stop()`, and re-running one
+calls the previous copy's stop first, so you never stack two panels or two loops.
 
-The keyword ("egg", "luck") is meant to stop egg ids being fired at the lucky-block remote
-and vice versa: an id matches when that word appears in its own name or in an ancestor's,
-up to 4 levels.
+Diagnostics go to the F9 console — `warn` for problems, `[name]` prefixed prints for
+progress. When a script "does nothing", the answer is in there.
 
-In practice nothing in this place carries those words, so what matters is the fallback:
+## Supported games
 
-- `uuids("egg")` — falls back to **every** uuid found. Collect Eggs is the catch-all
-  collector, and that fallback is the only reason it collects anything at all.
-- `uuids("luck", true)` — **strict**: collects nothing rather than firing egg ids at the
-  lucky-block remote. Without this, switching Lucky Blocks ON also claimed every egg.
+Names drift on Roblox; trust the id. The panel shows the live name on its topbar.
 
-If the game ever names its blocks so "luck" matches, the strict scan starts working with
-no code change. Use Spy to check what's actually going out.
+| Game | PlaceId | Script |
+|---|---|---|
+| +1 Cut Grass Adventure | `90086669327265` | `cut_grass_adventure.lua` |
+| +1 Jetpack for Brainrots | `80234914611737` | `jetpack_for_brainrots.lua` |
+| +1 Poop for Brainrots | `87810710637189` | `poop_for_brainrots.lua` |
+| +1 Skate for Brainrots | `115852335239914` | `skate_for_brainrots.lua` |
+| +1 Wings for Brainrots | `84332574190497` | `wings_for_brainrots.lua` |
+| Be Flash For Brainrots! | `136066387156306` | `flash_for_brainrots.lua` |
+| Become a Brainrot | `99255447043899` | `become_a_brainrot.lua` |
+| Break Tape For Brainrots | `104339804279870` | `break_tape_for_brainrots.lua` |
+| Build a Bridge for Brainrots | `88207898227053` | `build_bridge_for_brainrots.lua` |
+| Chicken Farm | `137233438285284` | `chicken_farm.lua` |
+| Fake a Brainrot | `110627433764494` | `fake_a_brainrot.lua` |
+| Fall For Brainrots! | `86368783421928` | `fall_for_brainrots.lua` |
+| Fish an Anime! | `74729868188364` | `fish_for_anime_rng.lua` |
+| Jump To Steal Soccer Players | `133294838637122` | `jump_for_soccer_players.lua` |
+| My Dancing Animals! | `102602309625870` | `dancing_animals.lua` |
+| My Seafood Stand! | `72896199592423` | `my_seafood_stand.lua` |
+| Power Blast Lucky Block | `119822977170203` | `power_blast_lucky_block.lua` |
+| Run For Brainrots! | `94702395375549` | `run_for_brainrots.lua` |
+| Run For Soccer Players | `140417239274110` | `run_for_soccer_players.lua` |
+| Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua` |
+| Surf for Lucky Blocks | `98916904742148` | `surf_for_brainrots.lua` |
+| Swing Obby for Brainrots! | `114640202062357` | `swing_obby_for_brainrots.lua` |
+| TBOD^2 | `139063887391814` | `one_dropper_tycoon.lua` |
 
-## The multiplier gate
+`GAMES` in `loader.lua` is the source of truth. Only ids that were actually confirmed
+are in it — a wrong id is worse than a missing one, because the loader would quietly run
+another game's script instead of saying "not supported".
 
-The in-game HUD shows `Egg Multiplier: 1.04x` and rerolls every ~30s. The script finds
-that label by **searching for text containing "Multiplier"**, not by a hardcoded path,
-so the game reshuffling its UI doesn't break it. It checks the known path first —
-`Workspace.Map.EggMultiplierPart.UI.Multi`, a label on a part out in the world — then
-falls back to scanning `PlayerGui`, `workspace`, and the executor's hidden gui container. On a hit it prints the full path once — check that it found the label you
-meant and not some other "Multiplier". Re-scans at most every 2s if the label vanishes.
+## Adding a game
 
-Deposit fires **once per multiplier window**, not once per tick: it only acts when the
-parsed value differs from the last one it saw (or 28s have passed, covering a window
-that rolls the same number twice). At 0.2s ticks that's 1 call per window instead
-of ~150.
+Run the loader in the new game first. It prints the exact line to add and puts the
+PlaceId on your clipboard, so the round trip is paste → copy the warning → add the line:
 
-If the console says `no 'Multiplier' text found`, the label is somewhere none of those
-three roots reach, or it isn't a `TextLabel` (a `TextButton` or a 3D `TextLabel` under a
-model that's streamed out). That warning is throttled to once per 5s.
+```lua
+["<PlaceId>"] = "your_script.lua",
+```
 
-## Anti-AFK
+Then write `games/your_script.lua`. The quickest way in is to copy the closest existing
+script — they're all the same skeleton — and replace the middle:
 
-Always on, no switch. Three layers, because a client that ignores one may honor another:
+```
+header      what each control does, in the words of someone using it
+config      every tunable as a named local, with why you'd change it
+world       finding things, moving around
+<feature>   the actual loops
+shell       panel.lua -> Window -> tabs, cards, toggles
+close       one shutdown(), hung off Window:OnDestroy and getgenv().<name>Stop
+```
 
-1. **Every 60s**, so the idle timer never gets near the ~20 min kick.
-2. **On `Idled`**, the last warning before the kick.
-3. **Rejoin on disconnect** — whatever the cause, the error prompt appears in
-   `CoreGui.RobloxPromptGui.promptOverlay`; a `ChildAdded` watcher sees an `ErrorPrompt`
-   and calls `TeleportService:Teleport(game.PlaceId, player)`.
+Two habits that decide whether a script survives a game update:
 
-A nudge is a right-click sent two ways: `VirtualUser` `Button2Down`/`Button2Up` at the
-camera CFrame, and `VirtualInputManager:SendMouseButtonEvent`. Neither does anything
-in-game. Startup prints which services are available.
+- **Find things by shape, not by path.** Walk services by `ClassName`, pattern-match
+  remote names, filter on an attribute — a hardcoded path is a bet that the game never
+  moves anything. Hardcode only when you've checked there's no stable shape, and say so
+  in a comment.
+- **Never trust a return value for "did it work".** Wait for the world to change instead:
+  the item left the folder, a Tool appeared on your character, the prompt went dark.
 
-The console (F9) is the diagnostic. Startup says whether each service exists and whether
-the rejoin watcher armed; every nudge prints `nudge #N (timer|Idled)`. Read it after a kick:
+`CLAUDE.md` has the long version — the full skeleton, the recurring gameplay idioms, the
+remote-path shapes worth recognising, and the streaming pitfalls. It's local-only and not
+served by the loader.
 
-* **No `nudge` lines at all** — the script died before the loop, or the executor blocks `print`.
-* **Only `(timer)` lines, then kicked** — synthetic input isn't resetting the timer. `Idled`
-  never fired, so this wasn't Roblox's idle kick; it's the game's own AFK check.
-* **A `(Idled)` line ~20 min in, then kicked anyway** — it is the idle kick, and the nudge
-  isn't counting as input.
-* **`rejoin-on-disconnect NOT armed`** — layer 3 is off, which is why the session ends
-  instead of coming back.
+## Finding the remotes
 
-If `VirtualUser` says ok and you still get kicked, synthetic input isn't resetting your
-client's idle timer — or it's not the idle kick at all, but the game's own AFK check.
-Layer 3 is what saves the session either way. Read the disconnect message before it
-rejoins: the wording says which one it was.
+Two tools live outside this repo — you paste them by hand when you want them, and nothing
+fetches them, so they're deliberately not served:
 
-## Closing it
+- **`spy.lua`** — hooks `__namecall` and logs the game's own remote traffic. Play one loop
+  of whatever you want to automate by hand and read F9; `[spy →]` gives you the exact
+  remote path, method and arguments. Almost every script here started as a spy log.
+- **`dump.lua`** / **`dump_v2.lua`** — one pass over the whole DataModel into
+  `dump/<PlaceId>/`: the place file, every script, and a `manifest.txt` you can grep for
+  `ProximityPrompt`, a zone name, an attribute, whatever — path and CFrame included,
+  without ever opening Dex. `dump_v2` adds a focus pattern for when a full dump is
+  minutes you don't want to spend.
 
-The ✕ in the title bar unloads the script: every auto loop stops (they all watch
-`running`), the spy goes quiet, the anti-AFK handler disconnects, the GUI is destroyed. No rejoin needed — rerun the
-script to bring it back.
+## Notes
 
-The `__namecall` hook stays installed after close, since executors give you no way to
-unhook. It's a plain passthrough once `spy` is false.
+Executor only. The UI is [WindUI](https://github.com/Footagesus/WindUI), pulled in with
+`HttpGet`, which Studio blocks — and a launch is four requests to
+raw.githubusercontent (the library plus three icon packs), so a failure there is usually
+a rate limit, not a broken script. `panel.lua` retries five times and says which of the
+two failed, fetch or compile.
 
-## spy.lua
-
-Standalone. Paste and run on its own — nothing to do with the farm GUI, it just watches
-traffic. `[spy →]` is client-to-server (`FireServer` / `InvokeServer`, with the value an
-`InvokeServer` got back), `[spy ←]` is server-to-client (`OnClientEvent`). Every remote in
-the game, plus any created later.
-
-Stop it with `getgenv().spyStop()`. Re-running the file stops the previous spy first.
-
-Busy games fire remotes constantly — put the noisy names in the `IGNORE` list at the top.
-RemoteFunctions in the server-to-client direction aren't covered; `OnClientInvoke` holds
-one callback and taking it breaks the game.
+`raw.githubusercontent` caches for about five minutes. A pushed edit that "didn't take"
+is that, not your script — flip `NOCACHE` in `loader.lua` while you're iterating.
