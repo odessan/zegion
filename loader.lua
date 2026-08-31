@@ -66,6 +66,10 @@ local GAMES = {
 	-- and GuardClient's catch loop all match. The panel shows the live name on top.
 	["99255447043899"] = "become_a_brainrot.lua", -- Become a Brainrot
 
+	-- Confirmed from its own dump: workspace.ActiveItems, Shared.BrainrotConfig and the
+	-- FakeSystem_StartFake remotes all match.
+	["110627433764494"] = "fake_a_brainrot.lua", -- Fake a Brainrot
+
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
 }
