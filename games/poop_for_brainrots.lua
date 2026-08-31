@@ -73,7 +73,8 @@
                 ranges. The server refuses the ones that are not ready.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().poopRotsStop() ]]
+     RightControl rolls it up to a bare Zegion pill and back; RightAlt hides it outright.
+     Stop: getgenv().poopRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
 local POWER = 1 -- SubmitKickAlpha. 0-1, >0.9 is a "perfect", 1 is the longest kick

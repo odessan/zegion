@@ -129,8 +129,9 @@
 
      The minus button SHADES the window -- body collapses to a bare Zegion pill, click
      it again to roll back down. That's there instead of WindUI's real Minimize, which on
-     a PC hides the window and leaves nothing to click to get it back. RightControl also
-     hides/shows the whole thing. Red closes it for good; rerun the script to come back,
+     a PC hides the window and leaves nothing to click to get it back. RightControl does
+     the same shade from the keyboard; RightAlt is the hide-outright one, for a
+     screenshot. Red closes it for good; rerun the script to come back,
      or stop everything without touching the UI with getgenv().cutGrassStop() ]]
 
 -- config ---------------------------------------------------------------------

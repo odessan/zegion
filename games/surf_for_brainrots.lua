@@ -52,7 +52,8 @@
      update that adds a tier or a mutation is picked up with no edit here.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().surfRotsStop() ]]
+     RightControl rolls it up to a bare Zegion pill and back; RightAlt hides it outright.
+     Stop: getgenv().surfRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
 local SETTLE = 4 -- ping multiples to wait after a TP before trusting the new position;

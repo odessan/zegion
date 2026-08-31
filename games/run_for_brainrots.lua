@@ -4,7 +4,8 @@
      TP     : jump to the area or the base by hand
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().tpRotsStop() ]]
+     RightControl rolls it up to a bare Zegion pill and back; RightAlt hides it outright.
+     Stop: getgenv().tpRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
 local AREA = Vector3.new(-5, 19, 5437) -- Divine area. Being here is what makes the folder stream in.

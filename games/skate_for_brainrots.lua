@@ -39,7 +39,8 @@
      pins down -- see the comment on it.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().skateRotsStop() ]]
+     RightControl rolls it up to a bare Zegion pill and back; RightAlt hides it outright.
+     Stop: getgenv().skateRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
 -- workspace.ItemSpawns.<n>, straight off a dump. Written down rather than read off the

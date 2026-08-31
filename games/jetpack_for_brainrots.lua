@@ -38,7 +38,8 @@
      BASE      : plain TP, kept for getting out of trouble by hand. Not in the loop.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().islandTpStop() ]]
+     RightControl rolls it up to a bare Zegion pill and back; RightAlt hides it outright.
+     Stop: getgenv().islandTpStop() ]]
 
 -- config ---------------------------------------------------------------------
 local BASE = CFrame.new(26.7890625, 58.0223694, 74.3964844, -1, 0, 0, 0, 1, 0, 0, 0, -1)

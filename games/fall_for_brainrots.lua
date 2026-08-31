@@ -19,7 +19,8 @@
                 leave it on and it goes through the moment you're eligible.
 
      Executor: paste and run.  Studio: LocalScript in StarterPlayerScripts.
-     RightControl hides/shows the panel. Stop: getgenv().ffbStop() ]]
+     RightControl minimises and expands the panel; RightAlt hides it outright.
+     Stop: getgenv().ffbStop() ]]
 
 -- config ---------------------------------------------------------------------
 local BASE = CFrame.new(120.48938, 14587.2314, -2621.0625, 1, 0, 0, 0, 1, 0, 0, 0, 1)

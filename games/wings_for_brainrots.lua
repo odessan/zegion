@@ -33,8 +33,8 @@
      waits on the same folder, so it's the game's own definition of "am I holding one".
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. The minus button rolls it up to a bare Zegion pill.
-     Stop: getgenv().wingsRotsStop() ]]
+     RightControl rolls it up to a bare Zegion pill, as does the minus button; RightAlt
+     hides it outright. Stop: getgenv().wingsRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
 -- Pad centers, straight off a dump of workspace.ItemSpawners. These are BaseParts and

@@ -30,7 +30,8 @@
          moves you up, which moves it up, which moves you up.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().bridgeRotsStop() ]]
+     RightControl rolls it up to a bare Zegion pill and back; RightAlt hides it outright.
+     Stop: getgenv().bridgeRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
 local BASE = Vector3.new(-129, 12, -120) -- where a load is carried to. Grabbed by hand

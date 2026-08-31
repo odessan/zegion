@@ -25,7 +25,8 @@
      only where we wait when the zone has nothing left to take.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().swingRotsStop() ]]
+     RightControl rolls it up to a bare Zegion pill and back; RightAlt hides it outright.
+     Stop: getgenv().swingRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
 local ZONE = 14 -- the top zone today. Every brainrot carries its own Zone attribute,

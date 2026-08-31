@@ -10,13 +10,27 @@
 
      A script keeps its own Tabs, Sections and rows -- this only builds the window and
      hands it back. Each script fetches this itself rather than relying on the loader to
-     install it, so every one of them still pastes and runs on its own. ]]
+     install it, so every one of them still pastes and runs on its own.
+
+     Keys:  RightControl  minimise / expand -- the body rolls up to a bare Zegion pill
+            RightAlt      hide the window outright, for a screenshot
+
+     Loops keep running under either one. ]]
 
 -- brand ----------------------------------------------------------------------
 local BRAND = "Zegion"
 local ICON = "solar:bolt-circle-bold" -- one mark for every script; verify names at api.iconify.design
 local TOPBAR_H = 58 -- two stacked labels (16px over 13px); 44 is a one-line topbar and reads packed
+-- The panel key rolls the body up and down -- minimise and expand, the Shade button on a
+-- key. It used to hide the window outright, which is a bad default: WindUI only draws
+-- its floating open button on touch devices, so on a PC the panel was simply GONE with
+-- nothing left to click and no way back except re-pasting.
 local KEY = Enum.KeyCode.RightControl
+-- Hiding outright is still worth having -- for a screenshot, or to see what's under the
+-- panel -- so it keeps a key, just not the one you'll hit by reflex. RightAlt sits next
+-- to RightControl and Roblox binds neither, so both panel keys stay under one hand and
+-- no game action is stolen by picking them.
+local HIDE_KEY = Enum.KeyCode.RightAlt
 
 -- Everything at once: WindUI keeps ONE UIScale on the ScreenGui, so this shrinks the
 -- window, the rows, the text and the icons together and no layout constant below has to
@@ -34,6 +48,7 @@ local SHADE_PAD = 0 -- extra height under the topbar. The topbar centres its con
 
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 -- windui ---------------------------------------------------------------------
 -- Fetched, not vendored, and one launch is FOUR requests to raw.githubusercontent: the
@@ -88,7 +103,7 @@ end
 -- half the delta, pinning the TOP-LEFT instead, so the bar collapses where it stands.
 local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
-local function installShade(WindUI, Window, setAuthorVisible)
+local function installShade(WindUI, Window, setAuthorVisible, shadeKey)
 	-- Measured, not guessed, so the bar fits whatever the title happens to be. WindUI
 	-- lays the topbar out as three frames: Left (icon + title, AutomaticSize "X"), Right
 	-- (the traffic lights and this button) and Center. With ButtonsType "Mac" it
@@ -123,8 +138,15 @@ local function installShade(WindUI, Window, setAuthorVisible)
 	Window:DisableTopbarButtons({ "Minimize" }) -- before ours, it reuses the same slot
 
 	local shaded, fullSize, shadeTo = false, nil, nil
-	Window:CreateTopbarButton("Shade", "minus", function()
+	-- Named rather than inlined into CreateTopbarButton so the key below drives the exact
+	-- same path -- a second copy of this would be a second place for the shaded flag and
+	-- the two cached sizes to drift out of step with the button's.
+	local function toggle()
 		local main = Window.UIElements.Main
+		-- The window was closed; the connection outlives it by a frame or two.
+		if not main.Parent then
+			return
+		end
 		shaded = not shaded
 
 		-- Author goes first and the measurement waits a frame for it: Topbar.Left is
@@ -164,7 +186,23 @@ local function installShade(WindUI, Window, setAuthorVisible)
 				p.Y.Offset + (to.Y.Offset - from.Y.Offset) / 2
 			),
 		}):Play()
-	end, 998, nil, Color3.fromHex("#F4C948")) -- same yellow the real Minimize used
+	end
+
+	Window:CreateTopbarButton("Shade", "minus", toggle, 998, nil, Color3.fromHex("#F4C948")) -- same yellow the real Minimize used
+
+	-- gameProcessed is the whole guard: the panel has a search bar, and without it the
+	-- key shades the window from under you while you're typing in it.
+	local conn
+	conn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if not gameProcessed and input.KeyCode == shadeKey then
+			toggle()
+		end
+	end)
+	-- Re-pasting a script builds a whole new window; without this the old one's handler
+	-- lives on and every panel ever opened this session answers the key.
+	Window.UIElements.Main.Destroying:Connect(function()
+		conn:Disconnect()
+	end)
 
 	return function()
 		return shaded
@@ -176,7 +214,10 @@ end
 -- opts.folder where WindUI saves configs -- keep whatever the script already used, or
 --             configs saved under the old name are orphaned (required)
 -- opts.size   window size, default 440x400
--- opts.key    toggle key, default RightControl
+-- opts.key    minimise/expand key, default RightControl. NOTE: this used to be the
+--             hide-outright key. Every script passes RightControl for "the panel key",
+--             so the roles were swapped here rather than in twenty-one call sites.
+-- opts.hideKey   hide the window outright, default RightAlt (was opts.shadeKey)
 -- opts.scale  UI scale, default SCALE
 local function panel(opts)
 	local WindUI, why = loadWindUI()
@@ -195,7 +236,9 @@ local function panel(opts)
 		Topbar = { Height = TOPBAR_H, ButtonsType = "Mac" },
 		OpenButton = { Title = BRAND, Enabled = true, Draggable = true },
 	})
-	Window:SetToggleKey(opts.key or KEY)
+	-- WindUI's own toggle is the hide-outright one, so it gets the secondary key. The
+	-- primary key goes to the shade, below.
+	Window:SetToggleKey(opts.hideKey or HIDE_KEY)
 	-- After CreateWindow, not before: the UIScale instance is built with the window, and
 	-- SetUIScale is what updates WindUI.UIScale itself -- which the shade measurement
 	-- below reads to convert AbsoluteSize back into offsets.
@@ -224,7 +267,7 @@ local function panel(opts)
 			author.Visible = visible
 		end
 	end
-	isShaded = installShade(WindUI, Window, setAuthorVisible)
+	isShaded = installShade(WindUI, Window, setAuthorVisible, opts.key or KEY)
 
 	-- The live name, so a game that renames itself doesn't leave the panel lying --
 	-- "Wings for Brainrots" ships as "+1 Wings for Brainrots", "Steal an Animal" is

@@ -42,7 +42,8 @@
      stand in your tycoon and try again before assuming it is broken.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl hides/shows it. Stop: getgenv().dropperTycoonStop() ]]
+     RightControl rolls it up to a bare Zegion pill and back; RightAlt hides it outright.
+     Stop: getgenv().dropperTycoonStop() ]]
 
 -- config ---------------------------------------------------------------------
 local BUY_EVERY = 1 -- seconds between button sweeps. One sweep is already ~1s of

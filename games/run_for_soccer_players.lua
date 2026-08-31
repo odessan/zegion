@@ -57,7 +57,8 @@
 
      Executor only: the UI is WindUI, pulled in with HttpGet, which Studio blocks.
      The minus button rolls the panel up to a bare Zegion pill -- click it to come back.
-     RightControl also hides/shows. Farming keeps running while it's minimized.
+     RightControl does the same from the keyboard, and RightAlt hides the window
+     outright. Farming keeps running under either.
      Stop for good: getgenv().soccerRunStop() ]]
 
 -- config ---------------------------------------------------------------------
