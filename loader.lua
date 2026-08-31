@@ -58,6 +58,14 @@ local GAMES = {
 	-- workspace.Live.Slimes and the Place Slime / Open Lucky Block remotes all match.
 	["140417239274110"] = "run_for_soccer_players.lua", -- Run For Soccer Players
 
+	-- Its own update board calls it "Fish an Anime! [v1.9.10416]"; it's listed as an
+	-- anime RNG fishing game, so both names find it.
+	["74729868188364"] = "fish_for_anime_rng.lua", -- Fish an Anime!
+
+	-- Confirmed from its own dump: Events.SummonBrainrots, workspace.Locations 1..16+End
+	-- and GuardClient's catch loop all match. The panel shows the live name on top.
+	["99255447043899"] = "become_a_brainrot.lua", -- Become a Brainrot
+
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
 }
