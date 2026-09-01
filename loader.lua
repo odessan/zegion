@@ -79,6 +79,10 @@ local GAMES = {
 	-- Remotes.MessageBus dispatcher and Shared.Config.MineConfig all match.
 	["119409763193569"] = "dig_into_secrets.lua", -- Dig Into Secrets
 
+	-- Confirmed from its own dump: the TornadoRemotes trio, workspace.Spawners with its
+	-- eighteen SpawnPlace<Rarity> folders and ReplicatedStorage.BrainrotData all match.
+	["72833051149233"] = "tornado_for_brainrots.lua", -- Tornado for Brainrots
+
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
 }
