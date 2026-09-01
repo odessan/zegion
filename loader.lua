@@ -70,6 +70,15 @@ local GAMES = {
 	-- FakeSystem_StartFake remotes all match.
 	["110627433764494"] = "fake_a_brainrot.lua", -- Fake a Brainrot
 
+	-- Same engine as the two soccer games -- workspace.Live.Slimes, SlimeRegistry, the
+	-- Drop Slime / Open Lucky Block remotes -- with an SCP skin and a vertical tower.
+	-- Confirmed from its own dump.
+	["123724279728430"] = "jump_for_scp.lua", -- Jump for SCP
+
+	-- Confirmed from its own dump: workspace.GeneratedStages.Stage_N.Ores, the single
+	-- Remotes.MessageBus dispatcher and Shared.Config.MineConfig all match.
+	["119409763193569"] = "dig_into_secrets.lua", -- Dig Into Secrets
+
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
 }

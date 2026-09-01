@@ -52,9 +52,11 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Break Tape For Brainrots | `104339804279870` | `break_tape_for_brainrots.lua` |
 | Build a Bridge for Brainrots | `88207898227053` | `build_bridge_for_brainrots.lua` |
 | Chicken Farm | `137233438285284` | `chicken_farm.lua` |
+| Dig Into Secrets | `119409763193569` | `dig_into_secrets.lua` |
 | Fake a Brainrot | `110627433764494` | `fake_a_brainrot.lua` |
 | Fall For Brainrots! | `86368783421928` | `fall_for_brainrots.lua` |
 | Fish an Anime! | `74729868188364` | `fish_for_anime_rng.lua` |
+| Jump for SCP | `123724279728430` | `jump_for_scp.lua` |
 | Jump To Steal Soccer Players | `133294838637122` | `jump_for_soccer_players.lua` |
 | My Dancing Animals! | `102602309625870` | `dancing_animals.lua` |
 | My Seafood Stand! | `72896199592423` | `my_seafood_stand.lua` |
