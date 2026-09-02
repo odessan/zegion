@@ -15,7 +15,11 @@
      Keys:  RightControl  minimise / expand -- the body rolls up to a bare Zegion pill
             RightAlt      hide the window outright, for a screenshot
 
-     Loops keep running under either one. ]]
+     Loops keep running under either one.
+
+     The window is raised above the Roblox menu, so Esc no longer buries it -- see the
+     "above" block for why that needs a reparent, a DisplayOrder and a blur flag rather
+     than any one of the three. ]]
 
 -- brand ----------------------------------------------------------------------
 local BRAND = "Zegion"
@@ -209,6 +213,38 @@ local function installShade(WindUI, Window, setAuthorVisible, shadeKey)
 	end
 end
 
+-- above ----------------------------------------------------------------------
+-- The Roblox menu (Esc) is CoreGui, and CoreGui draws over PlayerGui whatever
+-- DisplayOrder says -- so a panel living in PlayerGui is underneath it by construction
+-- and no amount of ordering fixes that. Three things, and all three are needed:
+--
+--   * be in CoreGui at all. gethui() is the executor's own slot inside it, and is where
+--     WindUI already puts itself on most executors -- this only moves the window when it
+--     didn't, which is also the case where nothing else here would have helped.
+--   * DisplayOrder above the core menu's. Roblox's own screens sit in single digits;
+--     max int is not subtle, but there is nothing above it to collide with.
+--   * OnTopOfCoreBlur, or the menu's blur is laid over the panel and you get a legible
+--     window behind frosted glass. Newer clients only, hence the pcall.
+local DISPLAY_ORDER = 2147483647
+
+local function raise(gui)
+	if not gui or not gui:IsA("ScreenGui") then
+		return false
+	end
+	if gethui and gui:IsDescendantOf(game:GetService("Players").LocalPlayer) then
+		pcall(function()
+			gui.Parent = gethui()
+		end)
+	end
+	pcall(function()
+		gui.DisplayOrder = DISPLAY_ORDER
+	end)
+	pcall(function()
+		gui.OnTopOfCoreBlur = true
+	end)
+	return not gui:IsDescendantOf(game:GetService("Players").LocalPlayer)
+end
+
 -- panel ----------------------------------------------------------------------
 -- opts.game   the fallback subtitle, used until the live name lands (required)
 -- opts.folder where WindUI saves configs -- keep whatever the script already used, or
@@ -245,6 +281,17 @@ local function panel(opts)
 	pcall(function()
 		Window:SetUIScale(opts.scale or SCALE)
 	end)
+
+	-- Only the window's OWN ScreenGui, found by walking up from a frame we hold rather
+	-- than by name. Deliberately not its siblings: when WindUI lands directly in CoreGui
+	-- those siblings are Roblox's own screens, and handing them max DisplayOrder would
+	-- reorder the player's actual game UI to fix ours. If WindUI ever splits the open
+	-- button or the toasts into their own ScreenGui, those stay under the menu -- a
+	-- cosmetic gap, and the cheap price of not touching instances we don't own.
+	local mine = Window.UIElements.Main:FindFirstAncestorOfClass("ScreenGui")
+	if mine and not raise(mine) then
+		warn("[zegion] panel is still in PlayerGui -- no gethui, so the Esc menu will cover it")
+	end
 
 	-- WindUI selects nothing on its own, so a fresh panel opens on an empty body and the
 	-- first tab has to be clicked before anything shows. Wrapped here rather than a
