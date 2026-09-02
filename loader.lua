@@ -88,6 +88,10 @@ local GAMES = {
 	-- Map.SafetyBase all match. Farms by grabbing brainrots by uid -- no character movement.
 	["86259628805375"] = "strength_to_grow_arms.lua", -- Strength to Grow Arms
 
+	-- Confirmed from its own dump: Teams.Killer/Survivors/Spectator, the
+	-- ReplicatedStorage.Remotes.Killers tree and Map.Spawns.KillerSpawn all match.
+	["93978595733734"] = "violence_district.lua", -- Violence District
+
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
 }

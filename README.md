@@ -69,6 +69,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Swing Obby for Brainrots! | `114640202062357` | `swing_obby_for_brainrots.lua` |
 | TBOD^2 | `139063887391814` | `one_dropper_tycoon.lua` |
 | Tornado for Brainrots | `72833051149233` | `tornado_for_brainrots.lua` |
+| Violence District | `93978595733734` | `violence_district.lua` |
 
 `GAMES` in `loader.lua` is the source of truth. Only ids that were actually confirmed
 are in it — a wrong id is worse than a missing one, because the loader would quietly run
