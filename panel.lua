@@ -225,9 +225,15 @@ end
 --     max int is not subtle, but there is nothing above it to collide with.
 --   * OnTopOfCoreBlur, or the menu's blur is laid over the panel and you get a legible
 --     window behind frosted glass. Newer clients only, hence the pcall.
-local DISPLAY_ORDER = 2147483647
+--
+-- WindUI splits its UI across FOUR sibling ScreenGuis -- the window ("WindUI") plus
+-- separate ones for notifications, dropdown popups and tooltips. Raising only the window
+-- buries every dropdown menu BEHIND the panel: the popup lives in "WindUI/Dropdowns" at a
+-- default DisplayOrder while the window sat at max int. So raise all four, and keep the
+-- overlays a hair ABOVE the window or they open underneath it.
+local DISPLAY_ORDER = 2147483643 -- window; overlays sit just above, still under max int
 
-local function raise(gui)
+local function lift(gui, order)
 	if not gui or not gui:IsA("ScreenGui") then
 		return false
 	end
@@ -237,12 +243,33 @@ local function raise(gui)
 		end)
 	end
 	pcall(function()
-		gui.DisplayOrder = DISPLAY_ORDER
+		gui.DisplayOrder = order
 	end)
 	pcall(function()
 		gui.OnTopOfCoreBlur = true
 	end)
 	return not gui:IsDescendantOf(game:GetService("Players").LocalPlayer)
+end
+
+-- Raise the window and its overlay siblings together. They share a parent (gethui, or
+-- PlayerGui on executors without it); matching on the "WindUI" names keeps this to
+-- WindUI's own guis and never touches Roblox's screens sitting next to them in CoreGui.
+local function raise(mine)
+	if not mine or not mine:IsA("ScreenGui") then
+		return false
+	end
+	local parent = mine.Parent -- captured before lift() reparents mine into gethui
+	local ok = lift(mine, DISPLAY_ORDER)
+	for _, gui in ipairs(parent and parent:GetChildren() or {}) do
+		if gui ~= mine and gui:IsA("ScreenGui") then
+			if gui.Name == "WindUI/Dropdowns" or gui.Name == "WindUI/Tooltips" then
+				lift(gui, DISPLAY_ORDER + 2) -- popups on top of the window, not under it
+			elseif gui.Name == "WindUI/Notifications" then
+				lift(gui, DISPLAY_ORDER + 1)
+			end
+		end
+	end
+	return ok
 end
 
 -- panel ----------------------------------------------------------------------
@@ -282,12 +309,9 @@ local function panel(opts)
 		Window:SetUIScale(opts.scale or SCALE)
 	end)
 
-	-- Only the window's OWN ScreenGui, found by walking up from a frame we hold rather
-	-- than by name. Deliberately not its siblings: when WindUI lands directly in CoreGui
-	-- those siblings are Roblox's own screens, and handing them max DisplayOrder would
-	-- reorder the player's actual game UI to fix ours. If WindUI ever splits the open
-	-- button or the toasts into their own ScreenGui, those stay under the menu -- a
-	-- cosmetic gap, and the cheap price of not touching instances we don't own.
+	-- Walk up from a frame we hold to find the window's ScreenGui; raise() lifts it and
+	-- its "WindUI/*" overlay siblings, matched by name so Roblox's own CoreGui screens
+	-- (which would reorder the player's actual game UI) are left alone.
 	local mine = Window.UIElements.Main:FindFirstAncestorOfClass("ScreenGui")
 	if mine and not raise(mine) then
 		warn("[zegion] panel is still in PlayerGui -- no gethui, so the Esc menu will cover it")
