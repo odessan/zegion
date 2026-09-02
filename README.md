@@ -64,6 +64,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Run For Brainrots! | `94702395375549` | `run_for_brainrots.lua` |
 | Run For Soccer Players | `140417239274110` | `run_for_soccer_players.lua` |
 | Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua` |
+| Strength to Grow Arms | `86259628805375` | `strength_to_grow_arms.lua` |
 | Surf for Lucky Blocks | `98916904742148` | `surf_for_brainrots.lua` |
 | Swing Obby for Brainrots! | `114640202062357` | `swing_obby_for_brainrots.lua` |
 | TBOD^2 | `139063887391814` | `one_dropper_tycoon.lua` |

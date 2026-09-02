@@ -83,6 +83,11 @@ local GAMES = {
 	-- eighteen SpawnPlace<Rarity> folders and ReplicatedStorage.BrainrotData all match.
 	["72833051149233"] = "tornado_for_brainrots.lua", -- Tornado for Brainrots
 
+	-- Confirmed from its own dump: ReplicatedStorage.RemoteEvent (BridgeNet), the
+	-- Manager_获取脑红 PickUpBrainrot/HitWall remotes, workspace.BrainrotFolder.data and
+	-- Map.SafetyBase all match. Farms by grabbing brainrots by uid -- no character movement.
+	["86259628805375"] = "strength_to_grow_arms.lua", -- Strength to Grow Arms
+
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
 }
