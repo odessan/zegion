@@ -204,6 +204,20 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 
+if getgenv and getgenv().cutGrassStop then
+	getgenv().cutGrassStop() -- re-running must not stack a second panel/loop
+end
+
+-- Every :Connect() goes through track() so one stopAll() can drop them all. Without it a
+-- re-paste (or a close) leaves the old panel's listeners live -- CARRY_UPD, the Zones
+-- watchers, CurrentWorld -- and a debounced refresh then fires against a destroyed UI.
+local conns = {}
+local function track(c)
+	conns[#conns + 1] = c
+	return c
+end
+local stopped = false -- flips true on teardown; delayed callbacks bail on it
+
 local function log(...)
 	print("[cut_grass]", ...)
 end
@@ -422,7 +436,7 @@ local function readCarry(state, trusted)
 end
 
 if CARRY_UPD then
-	CARRY_UPD.OnClientEvent:Connect(readCarry)
+	track(CARRY_UPD.OnClientEvent:Connect(readCarry))
 end
 
 -- true, false, or nil meaning "no remote -- go back to guessing". Free to call per item
@@ -505,15 +519,17 @@ local function scanZones()
 	-- directly and now holds W1..W5 containers with the zones inside. Told apart by SHAPE,
 	-- not by version, so both layouts work and neither is named in a path:
 	--
-	--   has a SpawnZone           -> a zone, whatever it's called
-	--   has children, no SpawnZone -> a world container, descend into it
-	--   has nothing at all         -> hasn't streamed in; take it as a zone, which puts you
+	--   named W<n>, no SpawnZone   -> a world container: descend into its zones. Empty just
+	--                                 means it hasn't streamed yet -- take nothing and let
+	--                                 watchZones refill when its zones arrive; the container's
+	--                                 own origin is not a zone to teleport to.
+	--   has a SpawnZone            -> a zone, whatever it's called
+	--   nothing at all, not W<n>   -> a real zone streamed as a bare model; take it so you land
 	--                                 in roughly the right place instead of dropping it
 	for _, child in ipairs(folder:GetChildren()) do
 		local w = tonumber(child.Name:match("^[Ww](%d+)$"))
-		local kids = child:GetChildren()
-		if w and #kids > 0 and not child:FindFirstChild("SpawnZone") then
-			for _, zone in ipairs(kids) do
+		if w and not child:FindFirstChild("SpawnZone") then
+			for _, zone in ipairs(child:GetChildren()) do
 				take(zone, w)
 			end
 		else
@@ -813,7 +829,11 @@ local function travelToZone(entry)
 			local root = hrp()
 			arrived = root ~= nil and (root.Position - target).Magnitude < ZONE_RADIUS
 		end
-		if not arrived then
+		-- Only condemn the remote when we had a REAL target to check against. When blind
+		-- (SpawnZone not streamed) the target is the bare model pivot, which on the big zones
+		-- is nowhere near where the remote actually drops you -- failing that check would write
+		-- off a working remote forever. Fall through to PivotTo for this zone, keep the remote.
+		if not arrived and not blind then
 			zoneRemoteDead = true
 			log(("%s didn't put me in %s -- PivotTo for the rest of the session"):format(TP_ZONE.Name, entry.name))
 		end
@@ -850,7 +870,15 @@ local function travelToZone(entry)
 			task.wait(POLL)
 		end
 		if zoneSpawn(entry) then
-			arrived = goTo(CFrame.new(zoneTarget(entry) + Vector3.new(0, ZONE_LIFT, 0)), true)
+			-- Re-verify the second hop the same way as the first: goTo only reports that
+			-- PivotTo was CALLED, and the server can bounce this hop too.
+			local target2 = zoneTarget(entry)
+			arrived = goTo(CFrame.new(target2 + Vector3.new(0, ZONE_LIFT, 0)), true)
+			if arrived then
+				task.wait(ZONE_SETTLE)
+				local root = hrp()
+				arrived = root ~= nil and (root.Position - target2).Magnitude < ZONE_RADIUS
+			end
 		end
 	end
 	return arrived
@@ -1114,7 +1142,7 @@ end
 local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
 local panel = loadstring(game:HttpGet(PANEL_URL))()
 
-local Window, WindUI = panel({
+local Window = panel({
 	game = "Cut Grass", -- fallback until the live name lands
 	folder = "CutGrass", -- unchanged: renaming it orphans configs already saved in-game
 	size = UDim2.fromOffset(520, 400),
@@ -1362,43 +1390,59 @@ farm:Button({
 -- The Zones folder swapping its children IS a world change, so this is all the world
 -- handling there is. Debounced, because a world load adds them one at a time.
 local pendingRefresh = false
-local function watchZones()
-	local folder = zonesFolder()
-	if not folder then
+local function bump()
+	if pendingRefresh or stopped then
 		return
 	end
-	local function bump()
-		if pendingRefresh then
+	pendingRefresh = true
+	-- Coalesce hard. Streaming fires these in bursts and every one of them used to cost
+	-- a scan; the signature check downstream makes the usual case free anyway.
+	task.delay(WATCH_DEBOUNCE, function()
+		pendingRefresh = false
+		if not stopped then -- the window may have closed during the debounce
+			refresh()
+		end
+	end)
+end
+
+local watchedFolder
+local function watchZones()
+	-- Attach to a Zones folder, once. Re-callable: if the folder streams in after startup or
+	-- is swapped wholesale, the workspace watcher below calls this again with the new one --
+	-- without it a streaming client that joined before Zones existed would sit empty forever.
+	local function attach(folder)
+		if not folder or folder == watchedFolder then
 			return
 		end
-		pendingRefresh = true
-		-- Coalesce hard. Streaming fires these in bursts and every one of them used to cost
-		-- a scan; the signature check downstream makes the usual case free anyway.
-		task.delay(WATCH_DEBOUNCE, function()
-			pendingRefresh = false
-			refresh()
-		end)
-	end
-	-- Descendant, not Child. In the old flat layout the zones WERE this folder's children;
-	-- now they stream in one level down, inside the W containers, and a ChildAdded watcher
-	-- on the top folder never hears about them -- the dropdown would show five worlds and
-	-- never notice their zones arriving. WATCH_DEBOUNCE is what makes the wider net
-	-- affordable: a world load fires these by the hundred and they coalesce into one scan.
-	-- ...but only for the two levels that can BE a zone: a child of the Zones folder, or a
-	-- child of a W container. Everything deeper is a zone's own parts streaming in, and
-	-- there are thousands of those -- this check is what keeps the wider net cheap.
-	local function maybeZone(inst)
-		local p = inst.Parent
-		if p == folder or (p and p.Parent == folder) then
-			bump()
+		watchedFolder = folder
+		-- Descendant, not Child. In the old flat layout the zones WERE this folder's children;
+		-- now they stream in one level down, inside the W containers, and a ChildAdded watcher
+		-- on the top folder never hears about them. WATCH_DEBOUNCE makes the wider net
+		-- affordable: a world load fires these by the hundred and they coalesce into one scan.
+		-- ...but only for the two levels that can BE a zone: a child of the Zones folder, or a
+		-- child of a W container. Everything deeper is a zone's own parts streaming in, and
+		-- there are thousands of those -- this check is what keeps the wider net cheap.
+		local function maybeZone(inst)
+			local p = inst.Parent
+			if p == folder or (p and p.Parent == folder) then
+				bump()
+			end
 		end
+		track(folder.DescendantAdded:Connect(maybeZone))
+		track(folder.DescendantRemoving:Connect(maybeZone))
+		bump() -- the folder may have arrived already full
 	end
-	folder.DescendantAdded:Connect(maybeZone)
-	folder.DescendantRemoving:Connect(maybeZone)
+
+	attach(zonesFolder())
+	track(workspace.ChildAdded:Connect(function(child)
+		if child.Name == "Zones" then
+			attach(child)
+		end
+	end))
 	-- A world change swaps which zones are YOURS without necessarily touching the folder:
 	-- every unlocked world's zones can already be sitting there loaded. So the list has to
 	-- follow the attribute the server sets on you, not just the tree.
-	player:GetAttributeChangedSignal("CurrentWorld"):Connect(bump)
+	track(player:GetAttributeChangedSignal("CurrentWorld"):Connect(bump))
 end
 
 -- farm ----------------------------------------------------------------------------
@@ -1686,8 +1730,13 @@ function startFarm(mode, state)
 				errs = errs + 1
 				log(("cycle error (%d of %d): %s"):format(errs, ERR_GIVEUP, tostring(err)))
 				if errs >= ERR_GIVEUP then
-					setFarming(nil)
-					say("erroring every lap -- stopped, see console (F9)")
+					-- Only this generation may pull the plug: a newer farm may have started
+					-- while this retiring one was mid-cycle, and setFarming(nil) here would
+					-- shut IT down instead.
+					if farmGen == mine then
+						setFarming(nil)
+						say("erroring every lap -- stopped, see console (F9)")
+					end
 					return
 				end
 				say("hiccup -- restarting the walk")
@@ -1792,15 +1841,29 @@ watchZones()
 -- The red button destroys the window after WindUI's own confirm dialog, so teardown hangs
 -- off OnDestroy rather than a close handler of our own. ponytail: rerun the script to come
 -- back.
-Window:OnDestroy(function()
+-- One idempotent teardown, shared by the red button and the getgenv stop. Flags stop the
+-- loops (each checks its own), `stopped` bails the debounced refresh, and disconnecting the
+-- tracked connections is what stops a re-paste stacking listeners on the old panel.
+local function stopAll()
+	stopped = true
 	-- Set directly rather than through setFarming: the toggles are on their way out.
 	farming, farmMode, clicking = false, nil, false
-end)
+	for _, c in ipairs(conns) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	table.clear(conns)
+end
+
+Window:OnDestroy(stopAll)
 
 if getgenv then
 	getgenv().cutGrassStop = function()
-		setFarming(nil) -- every loop exits on its own flag, so this really does stop them
-		clicking = false
-		Window:Destroy()
+		stopAll()
+		pcall(function()
+			Window:Destroy()
+		end)
+		getgenv().cutGrassStop = nil
 	end
 end
