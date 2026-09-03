@@ -5,3 +5,7 @@ CLAUDE.md
 # fetches them, so serving them from the repo only meant keeping them tidy for no one.
 dump.lua
 dump_v2.lua
+
+# Local-only: plan + review notes from a build session, not served by the loader.
+PLAN.md
+PLAN-REVIEW-LOG.md
