@@ -4,21 +4,36 @@
                  number with Frenzy last. Ticking only ticks -- TELEPORT goes to the
                  first one ticked, AUTO FARM visits them all.
      AUTO FARM : toggle. Cycles the ticked zones. At each one it TPs in, waits for
-                 Brainrots to stream, and works the list BEST FIRST:
+                 Brainrots to stream, and works the list BEST FIRST, carrying up to
+                 the carry limit before it banks:
 
-                     brainrot -> StealPrompt -> walk the line -> next brainrot
+                     brainrot -> StealPrompt -> ... -> full -> bank -> next brainrot
 
                  PRIORITY_ZONE (Frenzy) goes first every cycle and REPEATS while it
                  keeps yielding, so an active event gets worked to empty before the
-                 other zones get a turn. There is no event detection: Brainrots streams
-                 by chunk, so standing there IS the check -- inactive costs one TP.
-                 A whole rotation that finds nothing parks for IDLE rather than
-                 bouncing between empty zones.
+                 other zones get a turn. A whole rotation that finds nothing parks for
+                 IDLE rather than bouncing between empty zones.
 
      Targets are whatever is in workspace.Brainrots with a StealPrompt inside and
      within RADIUS of the island pivot. That prompt check is also the zone filter for
      free: the base plots (0,0,0 and -2,0,0) hold brainrots with no StealPrompt, so
      they never make the list.
+
+     A zone can only be read by STANDING IN IT, and there is no way around that. Two
+     things hide it, and only one of them is beatable:
+
+       - the client culls its own world. BrainrotsWorkspaceCuller moves brainrots more
+         than ~15 zones (1500 studs) away OUT of workspace.Brainrots and into
+         ReplicatedStorage.BrainrotsHidden, same folder names and pivots. Beatable:
+         both roots get scanned, and the culler re-parents within half a second of
+         arriving (PlayerZoneTracker polls position at 0.5s).
+       - Roblox streaming withholds the Models themselves. The "<x>,<y>,<z>" folders
+         always replicate -- no BaseParts in them -- so a zone you have never visited
+         is an EMPTY folder, not a missing one, and reads exactly like a zone you
+         picked clean. NOT beatable from here: it's the server's copy that's missing.
+
+     That second one is why "score the zone before flying there" cannot work, however
+     much it looks like it should.
 
      Ordering, both read off the billboard because that is the ONLY place this game puts
      either -- no attributes, no value objects. Income comes from the "$2.98B/s" label,
@@ -29,12 +44,17 @@
 
      Anything whose billboard hasn't streamed scores 0 on both and goes last.
 
-     LINE      : cross once, on foot. The line is WALKED, never teleported through --
-                 a PivotTo from one side to the other never touches the part in
-                 between, so a Touched-based finish line never fires. That is why
-                 teleporting to BASE did nothing. Crossing banks the carry into your
-                 BACKPACK; putting brainrots into base slots is a separate job you do
-                 from the inventory, and it is not what this loop is for.
+     BANK      : land ON Workspace.Map.Walls.TouchStart. Banking is one client-side
+                 Touched connection (Source.GameModules.TouchEvents) that clears
+                 isInGame and calls GameHandler.ClaimRewards -> Knit Game.RF
+                 ClaimRewards, so a touch is the entire mechanism. A PivotTo THROUGH
+                 a part never touches it, but a PivotTo ONTO one overlaps it, which
+                 is a real touch; firetouchinterest is the backstop for the frame
+                 physics misses. There is no walk and no lava: the strip this used to
+                 land on was at y=55, and TouchStart is at y=90.8 -- 35 studs up,
+                 which is why crossing never banked. Banking fills your BACKPACK;
+                 putting brainrots into base slots is a separate job from the
+                 inventory, and not what this loop is for.
      BASE      : plain TP, kept for getting out of trouble by hand. Not in the loop.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
@@ -43,29 +63,19 @@
 
 -- config ---------------------------------------------------------------------
 local BASE = CFrame.new(26.7890625, 58.0223694, 74.3964844, -1, 0, 0, 0, 1, 0, 0, 0, -1)
-local LINE = CFrame.new(-93.2106934, 55.2238808, -58.6269531, -1, 0, -0, 0, 0, -1, 0, -1, -0)
 
--- Size 260 x 1.994 x 1 under that rotation: local X -> world X (260 long), local Y ->
--- world Z (~2 studs WIDE), local Z -> world Y (1 tall). A narrow floor strip with lava
--- either side of it, so the crossing runs along Z and there is almost no room to stand.
--- Its UpVector is (0,0,-1); negated because +Z is the base side and you come at it from
--- the islands. Flip if you end up walking away from base.
-local CROSS_FLIP = false
-local CROSS_LIFT = 4 -- studs above the strip to land, so you drop onto it, not through it
-local CROSS_BACK = 0 -- studs back from center to land. The strip is 2 wide -- 1 is already off it
-local CROSS_FWD = 3 -- studs to walk forward; just enough to get the whole character over
-local CROSS_SETTLE = 0.3 -- after landing, before walking
-
--- ponytail: the rest are guesses until you run it once. These waits are latency and
--- streaming, which no amount of code can work out from here.
+-- ponytail: the waits are latency and streaming, which no amount of code can work out
+-- from here. Everything else below is read off the game, not guessed.
 local TP_OFFSET = Vector3.new(0, 10, 0) -- above an island pivot (model center, not surface)
-local GRAB_OFFSET = Vector3.new(0, 3, 0) -- above a brainrot pivot; must land in prompt range
+local GRAB_OFFSET = Vector3.new(0, 3, 0) -- above a brainrot pivot; StealPrompt reaches 10 studs
 local RADIUS = 500 -- how far from the island pivot still counts as "this zone"
 local PICK_RADIUS = 25 -- re-finding the brainrot after landing on its old spot
-local STREAM_WAIT = 2 -- after landing on the island, before brainrots have streamed in
+local STREAM_POLL = 0.25 -- how often to re-scan a zone that hasn't shown anything yet
+local ZONE_DWELL = 4 -- seconds of polling before an island counts as genuinely empty
 local APPROACH_WAIT = 0.35 -- after landing on a brainrot, before the prompt is live
-local GRAB_WAIT = 0.6 -- after firing, before the carry has attached
-local CROSS_WAIT = 0.5 -- after crossing, before the drop registers
+local GRAB_WAIT = 1 -- how long to wait for the carry model to appear before calling it a miss
+local BANK_TRIES = 3 -- touches of TouchStart before giving up on this carry
+local BANK_WAIT = 0.35 -- after a touch, before isCarryingRewards clears (handler debounces at 0.1)
 local STREAM_TIMEOUT = 3 -- max seconds to wait for a region to stream before jumping in anyway
 local IDLE = 5 -- seconds parked after a full cycle that found nothing in any zone
 local PRIORITY_ZONE = "Frenzy" -- worked first and repeated while it pays; "" for a flat rotation
@@ -108,14 +118,13 @@ local SUFFIX = {
 }
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage") -- BrainrotsHidden lives here
 local RunService = game:GetService("RunService") -- only the status drain uses this
 local player = Players.LocalPlayer
 
 if getgenv and getgenv().islandTpStop then
 	getgenv().islandTpStop()
 end
-
-local CROSS_DIR = LINE.UpVector * (CROSS_FLIP and 1 or -1)
 
 -- world ----------------------------------------------------------------------
 -- The numbered folders each hold a Model that carries the pivot, but a folder being
@@ -142,8 +151,8 @@ local function scanIslands()
 		end
 	end
 	-- Islands 7 and 8 each appear twice, so the name alone can't identify a row --
-	-- sort numerically, keep explorer order as the tiebreak, and let the coordinates
-	-- on the row tell the duplicates apart. Frenzy sorts last, being unnumbered.
+	-- sort numerically, keep explorer order as the tiebreak. Frenzy sorts last, being
+	-- unnumbered, which is also where it sits on the map.
 	table.sort(out, function(a, b)
 		local na, nb = tonumber(a.name), tonumber(b.name)
 		if na and nb and na ~= nb then
@@ -154,6 +163,26 @@ local function scanIslands()
 		end
 		return a.order < b.order
 	end)
+	-- Labelled for the LIST, not for the folder. The folder names are bare numbers that
+	-- repeat, so "8. 7" was the row index and the folder name disagreeing in public --
+	-- and a repeated name can't key a tick either. Numbered by position instead, which
+	-- is the order you'd work them in anyway; unnumbered folders keep their own name.
+	-- The seen check is cheap insurance: two rows sharing a label would share a tick.
+	local seen, n = {}, 0
+	for _, entry in ipairs(out) do
+		if tonumber(entry.name) then
+			n += 1
+			entry.label = "Island " .. n
+		else
+			entry.label = entry.name
+		end
+		local base, k = entry.label, 1
+		while seen[entry.label] do
+			k += 1
+			entry.label = ("%s (%d)"):format(base, k)
+		end
+		seen[entry.label] = true
+	end
 	return out
 end
 
@@ -204,28 +233,43 @@ end
 -- Brainrots is a chunk grid: folders named "<x>,<y>,<z>" on a 100-stud step, only a
 -- few of which hold anything. Rather than decode the names we just measure distance
 -- from the island pivot, which is the same answer without a grid constant to get wrong.
+--
+-- BOTH roots, because the client culls its own world: BrainrotsWorkspaceCuller keeps
+-- the far chunks in ReplicatedStorage.BrainrotsHidden with pivots and billboards
+-- intact. Scanning those is how a zone gets scored without going there. The prompt on
+-- a hidden model can't be fired, which is fine -- runZone re-scans after it lands, and
+-- by then the culler has moved the chunk back into workspace.
 local function scanBrainrots(pos, radius, rarityFirst)
 	local out = {}
-	local root = workspace:FindFirstChild("Brainrots")
-	if not root then
-		return out
+	-- Two ifs, not a two-element literal: a nil in the middle of a table constructor
+	-- makes ipairs stop early and silently drops the other root.
+	local roots = {}
+	local live = workspace:FindFirstChild("Brainrots")
+	local hidden = ReplicatedStorage:FindFirstChild("BrainrotsHidden")
+	if live then
+		table.insert(roots, live)
 	end
-	for _, folder in ipairs(root:GetChildren()) do
-		for _, model in ipairs(folder:GetChildren()) do
-			local prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
-			local ok, cf = pcall(model.GetPivot, model)
-			if prompt and ok then
-				local dist = (cf.Position - pos).Magnitude
-				if dist <= radius then
-					local value, rarity = infoOf(model)
-					table.insert(out, {
-						model = model,
-						prompt = prompt,
-						cf = cf,
-						dist = dist,
-						value = value,
-						rarity = rarity,
-					})
+	if hidden then
+		table.insert(roots, hidden)
+	end
+	for _, root in ipairs(roots) do
+		for _, folder in ipairs(root:GetChildren()) do
+			for _, model in ipairs(folder:GetChildren()) do
+				local prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
+				local ok, cf = pcall(model.GetPivot, model)
+				if prompt and ok then
+					local dist = (cf.Position - pos).Magnitude
+					if dist <= radius then
+						local value, rarity = infoOf(model)
+						table.insert(out, {
+							model = model,
+							prompt = prompt,
+							cf = cf,
+							dist = dist,
+							value = value,
+							rarity = rarity,
+						})
+					end
 				end
 			end
 		end
@@ -270,6 +314,15 @@ local function tp(cf, offset)
 		return false
 	end
 	char:PivotTo(target)
+	-- Then wait out the streaming pause. The islands are up to 10,000 studs apart, so
+	-- RequestStreamAroundAsync timing out is normal on the long jumps, and landing
+	-- inside an unreceived region freezes the character mid-air with GameplayPaused
+	-- set -- a farm that fires prompts through that pause does nothing at all. Capped,
+	-- because a pause that never lifts should cost one zone, not the whole run.
+	local t0 = os.clock()
+	while player.GameplayPaused and os.clock() - t0 < STREAM_TIMEOUT do
+		task.wait(0.1)
+	end
 	return true
 end
 
@@ -285,46 +338,91 @@ local function fire(prompt)
 	end
 end
 
--- Land ON the strip, walk the couple of studs that take you across, then leave at once.
--- Landing short of it and walking well past it is what dropped us in the lava: there is
--- only about a stud of solid ground either side of center. Standing on it already counts
--- as a touch; the short walk is what makes it a crossing.
-local function crossLine()
-	if not tp(CFrame.new(LINE.Position - CROSS_DIR * CROSS_BACK + Vector3.new(0, CROSS_LIFT, 0))) then
-		return false
+-- A picked-up brainrot is parented into your CHARACTER as a Model -- that's what
+-- PlayerManagers.PlayerCarriedRewardsAnimator watches Character.ChildAdded for.
+--
+-- The DELTA is the confirm, never the total: the equipped jetpack is a Model under the
+-- character too ("Jetpack8"), so the baseline isn't zero, and comparing before/after
+-- means never having to know which of the character's Models are its own.
+local function models()
+	local char, n = player.Character, 0
+	for _, m in ipairs(char and char:GetChildren() or {}) do
+		if m:IsA("Model") then
+			n += 1
+		end
 	end
-	task.wait(CROSS_SETTLE)
-	local char = player.Character
-	local hum = char and char:FindFirstChildWhichIsA("Humanoid")
-	if not hum then
-		return false
+	return n
+end
+
+-- Returns whether the server actually handed one over. A fire that changes nothing
+-- while you're already carrying means the carry is full (GameConfigs.CARRY_LIMIT caps
+-- at 6, less until you've bought the upgrades) -- there is no "you're full" signal
+-- anywhere else, so the miss IS the signal.
+local function grab(prompt)
+	local before = models()
+	fire(prompt)
+	local t0 = os.clock()
+	repeat
+		task.wait(0.05)
+		if models() > before then
+			return true
+		end
+	until os.clock() - t0 > GRAB_WAIT
+	return false
+end
+
+-- The whole banking mechanism is one client-side Touched on Workspace.Map.Walls
+-- TouchStart (Source.GameModules.TouchEvents): it clears isInGame and calls
+-- GameHandler.ClaimRewards. So all that has to happen is a touch of that part.
+--
+-- Landing ON it is a genuine one -- a PivotTo THROUGH a part never overlaps it, but a
+-- PivotTo onto it does, and overlap is what Touched is. firetouchinterest is the
+-- backstop for the frame physics doesn't notice, and costs nothing when it isn't there.
+-- Confirmed by isCarryingRewards, the server attribute the HUD's own Drop button reads,
+-- rather than by a wait: "the deposit silently didn't take" is the failure this hides.
+local function bank()
+	if not player:GetAttribute("isCarryingRewards") then
+		return true -- nothing to bank
 	end
-	hum:MoveTo(LINE.Position + CROSS_DIR * CROSS_FWD)
-	hum.MoveToFinished:Wait() -- self-times-out at 8s if the walk is blocked
-	-- Straight back onto the strip rather than waiting out CROSS_WAIT wherever the walk
-	-- ended. The touch has already registered by now, and the strip is the only ground
-	-- here we know holds -- everything either side of it is lava.
-	tp(CFrame.new(LINE.Position + Vector3.new(0, CROSS_LIFT, 0)))
-	task.wait(CROSS_WAIT)
-	return true
+	local map = workspace:FindFirstChild("Map")
+	local walls = map and map:FindFirstChild("Walls")
+	local part = walls and walls:WaitForChild("TouchStart", 3) -- always a timeout
+	if not part then
+		return false -- unstreamed; the caller keeps the carry and comes back
+	end
+	for _ = 1, BANK_TRIES do
+		if not tp(part.CFrame) then
+			return false
+		end
+		local char = player.Character
+		local head = char and char:FindFirstChild("Head")
+		if firetouchinterest and head then
+			pcall(function()
+				firetouchinterest(head, part, true)
+				task.wait()
+				firetouchinterest(head, part, false)
+			end)
+		end
+		task.wait(BANK_WAIT)
+		if not player:GetAttribute("isCarryingRewards") then
+			return true
+		end
+	end
+	return false
 end
 
 -- zones ----------------------------------------------------------------------
--- Held as island ENTRIES rather than names: two islands are both called 7 and two more
--- are both called 8, so a name can't identify a row. The dropdown carries a numbered
--- label per entry to keep WindUI's rows unique, and byLabel maps back.
-local zoneItems, byLabel, chosen = {}, {}, {}
-
-local function rowLabel(i, entry)
-	return ("%d. %s"):format(i, entry.name)
-end
+-- Keyed by entry.label, not by the entry itself: WindUI hands the callback back the
+-- {Title=, Desc=} row it was given, which is a fresh table on every redraw, so the
+-- label assigned in scanIslands is the one thing both sides can agree on.
+local zoneItems, chosen = {}, {}
 
 -- Ticked zones in list order. Read fresh per cycle, so a zone that stops existing drops
 -- out on its own instead of erroring mid-farm.
 local function orderedZones()
 	local out = {}
 	for _, entry in ipairs(zoneItems) do
-		if chosen[entry] then
+		if chosen[entry.label] then
 			table.insert(out, entry)
 		end
 	end
@@ -347,27 +445,40 @@ end
 
 -- Returns how many it took, so the cycle can tell an empty rotation from a working one.
 local function runZone(island, rarityFirst)
+	-- Go, THEN look. Scoring a zone from base doesn't work and can't be made to:
+	-- BrainrotsHidden is not a map of the world, it is a cache of what this client has
+	-- already been sent. Roblox replicates the "<x>,<y>,<z>" folders (no BaseParts, so
+	-- streaming never withholds them) but withholds the Models inside until you are in
+	-- range, so a zone you haven't visited reads as an EMPTY zone rather than an
+	-- unknown one, and the two are indistinguishable from here. Reading it as empty is
+	-- what made every far island answer "nothing in any zone" without moving.
+	say(island.name .. ": arriving")
 	tp(island.cf, TP_OFFSET)
-	task.wait(STREAM_WAIT)
-
-	local targets = scanBrainrots(island.cf.Position, RADIUS, rarityFirst)
+	-- Polled, not scanned once. A zone up to 10,000 studs from the last one takes a
+	-- moment to arrive, and a single scan on landing calls a busy island empty and
+	-- leaves. Bails the instant something shows up, so a loaded zone costs one beat.
+	local targets, t0 = {}, os.clock()
+	repeat
+		task.wait(STREAM_POLL)
+		targets = scanBrainrots(island.cf.Position, RADIUS, rarityFirst)
+	until #targets > 0 or os.clock() - t0 > ZONE_DWELL
 	if #targets == 0 then
-		-- This is also the whole of the Frenzy handling. Frenzy only fills during its
-		-- event, and an empty zone is an empty zone -- skip it, come back next cycle.
-		-- Detecting the event itself would be a second thing to keep in sync with a
-		-- fact the scan already tells us.
+		-- Also the whole of the Frenzy handling: the event only fills the zone while
+		-- it's up, and an empty zone is an empty zone. Standing there IS the check,
+		-- and an inactive one costs one teleport.
 		say(island.name .. ": empty -- next zone")
 		return 0
 	end
 
-	-- Positions are a snapshot: the models unstream while we're away at the line, so
-	-- each trip returns to the remembered spot and re-finds whatever is standing there
-	-- now. Anything already taken is simply gone, and gets skipped.
-	local got = 0
-	for i, t in ipairs(targets) do
-		if not farming then
-			break
-		end
+	-- Positions are a snapshot: the models move in and out of workspace while we're
+	-- away banking, so each trip returns to the remembered spot and re-finds whatever
+	-- is standing there now. Anything already taken is simply gone, and gets skipped.
+	--
+	-- Indexed by hand rather than ipairs because a full carry has to retry the SAME
+	-- target after banking, and a miss with nothing in hand has to move past it.
+	local got, i = 0, 1
+	while farming and i <= #targets do
+		local t = targets[i]
 		say(
 			string.format(
 				"%s: %d/%d %s [%s $%.3g/s]",
@@ -382,14 +493,30 @@ local function runZone(island, rarityFirst)
 		tp(t.cf, GRAB_OFFSET)
 		task.wait(APPROACH_WAIT)
 		local here = scanBrainrots(t.cf.Position, PICK_RADIUS)[1]
-		if here then
-			fire(here.prompt)
-			task.wait(GRAB_WAIT)
-			got += 1
-			stolen += 1
-			say(string.format("%s: crossing with %s", island.name, here.model.Name))
-			crossLine()
+		if not here then
+			i += 1 -- taken, or never streamed in
+		elseif grab(here.prompt) then
+			got, stolen, i = got + 1, stolen + 1, i + 1
+		elseif player:GetAttribute("isCarryingRewards") then
+			-- Full: bank and come straight back to this one. If banking itself fails
+			-- there is nowhere to put the next brainrot either, so stop rather than
+			-- spin -- and say so, because it's the one failure worth looking at.
+			say(island.name .. ": full -- banking")
+			if not bank() then
+				say("couldn't bank -- carry stuck, see console (F9)")
+				warn("[IslandFarm] bank failed; still carrying")
+				break
+			end
+		else
+			i += 1 -- prompt fired, server said no, and we aren't carrying: not a full carry
 		end
+	end
+
+	-- The trip back is per ZONE now, not per brainrot: the carry holds up to
+	-- CARRY_LIMIT, so banking after every single grab was five wasted round trips
+	-- out of six.
+	if farming then
+		bank()
 	end
 	return got
 end
@@ -397,11 +524,11 @@ end
 local function runCycle(zones)
 	local any = false
 
-	-- Whether Frenzy is active can't be seen from anywhere else: Brainrots streams by
-	-- chunk, so the only way to know is to stand there. So we don't detect the event at
-	-- all -- we go there FIRST and stay while it keeps paying. An inactive Frenzy costs
-	-- one wasted TP; an active one gets worked to empty before any other zone gets a
-	-- turn, and the cycle comes straight back to it.
+	-- Whether Frenzy is active can't be seen from anywhere else -- see runZone: the
+	-- client is only sent the brainrots it's near, so the only way to know is to stand
+	-- there. So we don't detect the event at all -- we go there FIRST and stay while it
+	-- keeps paying. An inactive Frenzy costs one wasted TP; an active one gets worked
+	-- to empty before any other zone gets a turn, and the cycle comes straight back.
 	local priority, rest = nil, {}
 	for _, island in ipairs(zones) do
 		if not priority and PRIORITY_ZONE ~= "" and island.name:lower() == PRIORITY_ZONE:lower() then
@@ -508,7 +635,7 @@ local Farm = Tab:Section({ Title = "Farm", Icon = "solar:magic-stick-3-bold", Bo
 
 farmToggle = Farm:Toggle({
 	Title = "Auto farm",
-	Desc = "Cycle the ticked zones, best first, crossing the line after each grab",
+	Desc = "Cycle the ticked zones, best first, banking each time the carry fills up",
 	Value = false,
 	Callback = setFarming, -- :Set() re-fires this, so setFarming has to be re-entrant
 })
@@ -520,13 +647,14 @@ local zoneDrop = Farm:Dropdown({
 	Value = {},
 	Multi = true,
 	AllowNone = true,
+	-- WindUI hands back the whole {Title=, Desc=} row it was given, not the label
+	-- string -- ticking a zone used to write nothing into `chosen`, which is why the
+	-- list looked ticked and AUTO FARM answered "tick at least one zone". Both shapes
+	-- are handled because a plain-string Values list is one edit away.
 	Callback = function(picked)
 		chosen = {}
-		for _, name in ipairs(picked) do
-			local entry = byLabel[name]
-			if entry then
-				chosen[entry] = true
-			end
+		for _, v in ipairs(picked) do
+			chosen[typeof(v) == "table" and v.Title or v] = true
 		end
 		say(#orderedZones() .. " zones ticked")
 	end,
@@ -554,14 +682,15 @@ end)
 -- Rebuilding drops the ticks, because the entries they point at are new objects. That's
 -- the honest outcome: the list you re-read is not the list you ticked.
 local function refresh()
-	zoneItems, byLabel, chosen = scanIslands(), {}, {}
+	zoneItems, chosen = scanIslands(), {}
 	local values = {}
-	for i, entry in ipairs(zoneItems) do
-		local label = rowLabel(i, entry)
-		byLabel[label] = entry
+	for _, entry in ipairs(zoneItems) do
+		-- Distance out, because the map is a corridor along -Z and how far out an
+		-- island is IS what you're choosing between. The folder name comes along so a
+		-- renumbered row is still traceable back to Islands.<name> in the explorer.
 		table.insert(values, {
-			Title = label,
-			Desc = ("%d, %d, %d"):format(entry.cf.X, entry.cf.Y, entry.cf.Z),
+			Title = entry.label,
+			Desc = ("%.0f studs out -- Islands.%s"):format(math.abs(entry.cf.Z), entry.name),
 		})
 	end
 	zoneDrop:Refresh(values)
@@ -585,10 +714,11 @@ Manual:Button({
 })
 
 Manual:Button({
-	Title = "Cross line",
+	Title = "Bank carry",
+	Desc = "Touch the finish line to hand whatever you're carrying to your backpack",
 	Callback = function()
 		task.spawn(function()
-			say(crossLine() and "crossed" or "no character")
+			say(bank() and "banked" or "couldn't bank -- line not loaded?")
 		end)
 	end,
 })
