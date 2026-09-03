@@ -49,6 +49,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | +1 Wings for Brainrots | `84332574190497` | `wings_for_brainrots.lua` |
 | Be Flash For Brainrots! | `136066387156306` | `flash_for_brainrots.lua` |
 | Become a Brainrot | `99255447043899` | `become_a_brainrot.lua` |
+| Brainblast for Brainrot | `102990893659741` | `brainblast_for_brainrot.lua` |
 | Break Tape For Brainrots | `104339804279870` | `break_tape_for_brainrots.lua` |
 | Build a Bridge for Brainrots | `88207898227053` | `build_bridge_for_brainrots.lua` |
 | Chicken Farm | `137233438285284` | `chicken_farm.lua` |

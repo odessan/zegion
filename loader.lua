@@ -46,6 +46,7 @@ local GAMES = {
 	["119822977170203"] = "power_blast_lucky_block.lua", -- Power Blast Lucky Block
 	["114640202062357"] = "swing_obby_for_brainrots.lua", -- Swing Obby for Brainrots!
 	["88207898227053"] = "build_bridge_for_brainrots.lua", -- Build a Bridge for Brainrots
+	["102990893659741"] = "brainblast_for_brainrot.lua", -- Brainblast for Brainrot
 
 	-- Two soccer games fit this one and I couldn't tell them apart from the outside.
 	-- The script scans for models named "Lucky Block" and carries them to a base, which
