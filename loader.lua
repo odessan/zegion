@@ -93,6 +93,11 @@ local GAMES = {
 	-- ReplicatedStorage.Remotes.Killers tree and Map.Spawns.KillerSpawn all match.
 	["93978595733734"] = "violence_district.lua", -- Violence District
 
+	-- Confirmed from its own dump: workspace.Live.Friends with RootPart.StealPrompt,
+	-- SharedModules.Network.Remotes (Place to Bank / Open Lucky Block / Collect Earnings)
+	-- and Database.Friends all match. Farms without moving where the server allows it.
+	["80861715191104"] = "pull_a_lucky_block.lua", -- Pull a Lucky Block
+
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
 }

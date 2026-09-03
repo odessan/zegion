@@ -62,6 +62,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | My Dancing Animals! | `102602309625870` | `dancing_animals.lua` |
 | My Seafood Stand! | `72896199592423` | `my_seafood_stand.lua` |
 | Power Blast Lucky Block | `119822977170203` | `power_blast_lucky_block.lua` |
+| Pull a Lucky Block | `80861715191104` | `pull_a_lucky_block.lua` |
 | Run For Brainrots! | `94702395375549` | `run_for_brainrots.lua` |
 | Run For Soccer Players | `140417239274110` | `run_for_soccer_players.lua` |
 | Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua` |
