@@ -24,10 +24,10 @@ way.
 
 ## Using the panel
 
-| Key | What |
-|---|---|
+| Key            | What                                                        |
+| -------------- | ----------------------------------------------------------- |
 | `RightControl` | minimise / expand — the body rolls up to a bare Zegion pill |
-| `RightAlt` | hide the window outright, for a screenshot |
+| `RightAlt`     | hide the window outright, for a screenshot                  |
 
 Loops keep running under either. The red topbar button unloads the script; re-paste to
 bring it back. Every script also owns a `getgenv().<name>Stop()`, and re-running one
@@ -40,38 +40,39 @@ progress. When a script "does nothing", the answer is in there.
 
 Names drift on Roblox; trust the id. The panel shows the live name on its topbar.
 
-| Game | PlaceId | Script |
-|---|---|---|
-| +1 Cut Grass Adventure | `90086669327265` | `cut_grass_adventure.lua` |
-| +1 Jetpack for Brainrots | `80234914611737` | `jetpack_for_brainrots.lua` |
-| +1 Poop for Brainrots | `87810710637189` | `poop_for_brainrots.lua` |
-| +1 Skate for Brainrots | `115852335239914` | `skate_for_brainrots.lua` |
-| +1 Wings for Brainrots | `84332574190497` | `wings_for_brainrots.lua` |
-| Be Flash For Brainrots! | `136066387156306` | `flash_for_brainrots.lua` |
-| Become a Brainrot | `99255447043899` | `become_a_brainrot.lua` |
-| Brainblast for Brainrot | `102990893659741` | `brainblast_for_brainrot.lua` |
-| Break Tape For Brainrots | `104339804279870` | `break_tape_for_brainrots.lua` |
-| Build a Bridge for Brainrots | `88207898227053` | `build_bridge_for_brainrots.lua` |
-| Chicken Farm | `137233438285284` | `chicken_farm.lua` |
-| Dig Into Secrets | `119409763193569` | `dig_into_secrets.lua` |
-| Fake a Brainrot | `110627433764494` | `fake_a_brainrot.lua` |
-| Fall For Brainrots! | `86368783421928` | `fall_for_brainrots.lua` |
-| Fish an Anime! | `74729868188364` | `fish_for_anime_rng.lua` |
-| Jump for SCP | `123724279728430` | `jump_for_scp.lua` |
-| Jump To Steal Soccer Players | `133294838637122` | `jump_for_soccer_players.lua` |
-| My Dancing Animals! | `102602309625870` | `dancing_animals.lua` |
-| My Seafood Stand! | `72896199592423` | `my_seafood_stand.lua` |
-| Power Blast Lucky Block | `119822977170203` | `power_blast_lucky_block.lua` |
-| Pull a Lucky Block | `80861715191104` | `pull_a_lucky_block.lua` |
-| Run For Brainrots! | `94702395375549` | `run_for_brainrots.lua` |
-| Run For Soccer Players | `140417239274110` | `run_for_soccer_players.lua` |
-| Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua` |
-| Strength to Grow Arms | `86259628805375` | `strength_to_grow_arms.lua` |
-| Surf for Lucky Blocks | `98916904742148` | `surf_for_brainrots.lua` |
-| Swing Obby for Brainrots! | `114640202062357` | `swing_obby_for_brainrots.lua` |
-| TBOD^2 | `139063887391814` | `one_dropper_tycoon.lua` |
-| Tornado for Brainrots | `72833051149233` | `tornado_for_brainrots.lua` |
-| Violence District | `93978595733734` | `violence_district.lua` |
+| Game                                | PlaceId           | Script                           |
+| ----------------------------------- | ----------------- | -------------------------------- |
+| +1 Cut Grass Adventure              | `90086669327265`  | `cut_grass_adventure.lua`        |
+| +1 Jetpack for Brainrots            | `80234914611737`  | `jetpack_for_brainrots.lua`      |
+| +1 Poop for Brainrots               | `87810710637189`  | `poop_for_brainrots.lua`         |
+| +1 Skate for Brainrots              | `115852335239914` | `skate_for_brainrots.lua`        |
+| +1 Wings for Brainrots              | `84332574190497`  | `wings_for_brainrots.lua`        |
+| Be Flash For Brainrots!             | `136066387156306` | `flash_for_brainrots.lua`        |
+| Become a Brainrot                   | `99255447043899`  | `become_a_brainrot.lua`          |
+| Brainblast for Brainrot             | `102990893659741` | `brainblast_for_brainrot.lua`    |
+| Break Tape For Brainrots            | `104339804279870` | `break_tape_for_brainrots.lua`   |
+| Build a Bridge for Brainrots        | `88207898227053`  | `build_bridge_for_brainrots.lua` |
+| Chicken Farm                        | `137233438285284` | `chicken_farm.lua`               |
+| Dig Into Secrets                    | `119409763193569` | `dig_into_secrets.lua`           |
+| Fake a Brainrot                     | `110627433764494` | `fake_a_brainrot.lua`            |
+| Fall For Brainrots!                 | `86368783421928`  | `fall_for_brainrots.lua`         |
+| Fish an Anime!                      | `74729868188364`  | `fish_for_anime_rng.lua`         |
+| Jump for SCP                        | `123724279728430` | `jump_for_scp.lua`               |
+| Jump To Steal Soccer Players        | `133294838637122` | `jump_for_soccer_players.lua`    |
+| My Dancing Animals!                 | `102602309625870` | `dancing_animals.lua`            |
+| My Seafood Stand!                   | `72896199592423`  | `my_seafood_stand.lua`           |
+| Power Blast Lucky Block             | `119822977170203` | `power_blast_lucky_block.lua`    |
+| Pull a Lucky Block                  | `80861715191104`  | `pull_a_lucky_block.lua`         |
+| Run For Brainrots!                  | `94702395375549`  | `run_for_brainrots.lua`          |
+| Run For Soccer Players              | `140417239274110` | `run_for_soccer_players.lua`     |
+| Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua`            |
+| Steal a Brainrot Base               | `103050497819513` | `steal_a_brainrot_base.lua`      |
+| Strength to Grow Arms               | `86259628805375`  | `strength_to_grow_arms.lua`      |
+| Surf for Lucky Blocks               | `98916904742148`  | `surf_for_brainrots.lua`         |
+| Swing Obby for Brainrots!           | `114640202062357` | `swing_obby_for_brainrots.lua`   |
+| TBOD^2                              | `139063887391814` | `one_dropper_tycoon.lua`         |
+| Tornado for Brainrots               | `72833051149233`  | `tornado_for_brainrots.lua`      |
+| Violence District                   | `93978595733734`  | `violence_district.lua`          |
 
 `GAMES` in `loader.lua` is the source of truth. Only ids that were actually confirmed
 are in it — a wrong id is worse than a missing one, because the loader would quietly run

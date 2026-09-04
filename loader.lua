@@ -47,56 +47,18 @@ local GAMES = {
 	["114640202062357"] = "swing_obby_for_brainrots.lua", -- Swing Obby for Brainrots!
 	["88207898227053"] = "build_bridge_for_brainrots.lua", -- Build a Bridge for Brainrots
 	["102990893659741"] = "brainblast_for_brainrot.lua", -- Brainblast for Brainrot
-
-	-- Two soccer games fit this one and I couldn't tell them apart from the outside.
-	-- The script scans for models named "Lucky Block" and carries them to a base, which
-	-- is what "Jump To Steal Soccer Players" describes; "Jump for Soccer Players!"
-	-- (122816304079935) matches the filename but spawns players, not blocks. Wrong one?
-	-- Swap the id -- the panel opening in a game where nothing spawns is the tell.
 	["133294838637122"] = "jump_for_soccer_players.lua", -- Jump To Steal Soccer Players
-
-	-- Confirmed from its own dump, not guessed: SharedModules.SoccerPlayerRegistry,
-	-- workspace.Live.Slimes and the Place Slime / Open Lucky Block remotes all match.
 	["140417239274110"] = "run_for_soccer_players.lua", -- Run For Soccer Players
-
-	-- Its own update board calls it "Fish an Anime! [v1.9.10416]"; it's listed as an
-	-- anime RNG fishing game, so both names find it.
-	["74729868188364"] = "fish_for_anime_rng.lua", -- Fish an Anime!
-
-	-- Confirmed from its own dump: Events.SummonBrainrots, workspace.Locations 1..16+End
-	-- and GuardClient's catch loop all match. The panel shows the live name on top.
+	["74729868188364"] = "fish_for_anime_rng.lua", -- Fish an Anime RNG!
 	["99255447043899"] = "become_a_brainrot.lua", -- Become a Brainrot
-
-	-- Confirmed from its own dump: workspace.ActiveItems, Shared.BrainrotConfig and the
-	-- FakeSystem_StartFake remotes all match.
 	["110627433764494"] = "fake_a_brainrot.lua", -- Fake a Brainrot
-
-	-- Same engine as the two soccer games -- workspace.Live.Slimes, SlimeRegistry, the
-	-- Drop Slime / Open Lucky Block remotes -- with an SCP skin and a vertical tower.
-	-- Confirmed from its own dump.
 	["123724279728430"] = "jump_for_scp.lua", -- Jump for SCP
-
-	-- Confirmed from its own dump: workspace.GeneratedStages.Stage_N.Ores, the single
-	-- Remotes.MessageBus dispatcher and Shared.Config.MineConfig all match.
 	["119409763193569"] = "dig_into_secrets.lua", -- Dig Into Secrets
-
-	-- Confirmed from its own dump: the TornadoRemotes trio, workspace.Spawners with its
-	-- eighteen SpawnPlace<Rarity> folders and ReplicatedStorage.BrainrotData all match.
 	["72833051149233"] = "tornado_for_brainrots.lua", -- Tornado for Brainrots
-
-	-- Confirmed from its own dump: ReplicatedStorage.RemoteEvent (BridgeNet), the
-	-- Manager_获取脑红 PickUpBrainrot/HitWall remotes, workspace.BrainrotFolder.data and
-	-- Map.SafetyBase all match. Farms by grabbing brainrots by uid -- no character movement.
 	["86259628805375"] = "strength_to_grow_arms.lua", -- Strength to Grow Arms
-
-	-- Confirmed from its own dump: Teams.Killer/Survivors/Spectator, the
-	-- ReplicatedStorage.Remotes.Killers tree and Map.Spawns.KillerSpawn all match.
 	["93978595733734"] = "violence_district.lua", -- Violence District
-
-	-- Confirmed from its own dump: workspace.Live.Friends with RootPart.StealPrompt,
-	-- SharedModules.Network.Remotes (Place to Bank / Open Lucky Block / Collect Earnings)
-	-- and Database.Friends all match. Farms without moving where the server allows it.
 	["80861715191104"] = "pull_a_lucky_block.lua", -- Pull a Lucky Block
+	["103050497819513"] = "steal_a_brainrot_base.lua", -- Steal a Brainrot Base
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
