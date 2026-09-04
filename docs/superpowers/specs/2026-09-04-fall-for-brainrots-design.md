@@ -20,8 +20,12 @@ Four things are wrong or missing today:
    flat 1.5s wait when `Player:GetAttribute("IsInCollectionZone")` says when you arrived.
 4. Both hardcoded ladders are stale: `RarityConfigurations` has `Supreme`,
    `ZoneConfigurations` has `SUPREME`, and neither list has it. A SUPREME zone does not
-   appear in the dropdown at all. `Rarity` is also live in the wild as `OG`, which is in
-   no module list.
+   appear in the dropdown at all, and `DropperParts.Guards` in the dump has a live
+   `SUPREME-GUARD`.
+
+   (`attrs.txt` also samples `Rarity = "OG"`, but that traces to a lone `StringValue` in
+   the manifest, not to a spawned item — no item in `ItemConfigurations` carries it. So
+   it's covered by a runtime warning rather than by putting a guess in the ladder.)
 
 ## Scope
 
@@ -48,7 +52,9 @@ gui                panel.lua -> Window -> three tabs
 close              stopAll, OnDestroy, getgenv().ffbStop
 ```
 
-Target ~600 lines against today's 1260.
+The ~350-line widget kit goes; the value scoring, carry reading, notification channel,
+guard handling, plot upgrades and three tabs come in. Net, expect the file to stay around
+the size it is — this is not a shrink, it's a swap of GUI code for behaviour.
 
 ## Value scoring
 
@@ -81,8 +87,12 @@ own. A refusal parks that model for `RETRY_AFTER` seconds; a success is permanen
 Rarity and Mutation dropdown values are built as **ladder ∪ module keys**: the hardcoded
 ladder supplies the order (the modules are dictionaries and `require` cannot recover it),
 and any key the module has that the ladder does not is appended at the end rather than
-being invisible. That covers `Supreme` and `OG` without guessing where they rank, and
-covers the next update for free.
+being invisible. That covers `Supreme` without guessing where it ranks, and covers the
+next update for free. `RarityConfigurations` and the set of `Rarity` values present in
+`ItemConfigurations.Items` are both unioned in, since either one can carry a tier the
+other doesn't. An item wearing a rarity neither list has warns once in the console —
+that's the one case the union can't fix, because a rarity that exists only on an instance
+has no rank to give it.
 
 The zone ladder gets the same union, for a different reason: zone dropdown values are
 Workspace model names, but `zoneTier(name)` recognises a zone by finding a ladder entry as
