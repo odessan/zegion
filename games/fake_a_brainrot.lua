@@ -369,6 +369,10 @@ end
 local statusRow, fieldRow, lastRow, needsRow, buyToggle
 local running = true
 local buying, bought, placed = false, 0, 0
+-- Generation counter. `buying` alone isn't enough: toggling off then on inside one CYCLE
+-- wait leaves the sleeping thread alive, and it wakes to find buying == true again and
+-- carries on beside the new one -- two loops driving one character.
+local buyGen = 0
 -- Off by default. It works, but it decides where your brainrots go, and that's a call
 -- worth leaving with the person whose plot it is -- turn it on for an unattended run.
 local autoPlace = false
@@ -582,8 +586,10 @@ local function startBuying()
 	end
 	buying = true
 	bought = 0
+	buyGen += 1
+	local mine = buyGen
 	task.spawn(function()
-		while buying and running do
+		while buying and running and buyGen == mine do
 			local ok, err = pcall(cycle)
 			if not ok then
 				-- A model can die between the scan and the reach for it, and indexing the
