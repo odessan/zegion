@@ -4,7 +4,7 @@
              grab it, tp to base -- arriving banks it -- and go again.
      ZONE  : Auto Farm Zone works one zone -- 14 today, highest income in it first.
              When a higher one unlocks, type its number in and grab a fresh park spot
-             with pivot_tp.
+             off the pivot column in the dump's manifest.txt.
      RARITY: Auto Farm Rarity hunts the ticked rarities in ANY zone, highest income
              first. It REPLACES the zone filter rather than narrowing it: rarity is
              spread across every zone (a Legendary showed up in zone 9), so asking for

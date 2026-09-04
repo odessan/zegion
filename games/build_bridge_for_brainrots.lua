@@ -34,8 +34,8 @@
      Stop: getgenv().bridgeRotsStop() ]]
 
 -- config ---------------------------------------------------------------------
-local BASE = Vector3.new(-129, 12, -120) -- where a load is carried to. Grabbed by hand
--- with pivot_tp, which is one constant instead of matching the Owner attribute.
+local BASE = Vector3.new(-129, 12, -120) -- where a load is carried to. Read by hand off
+-- the dump's manifest.txt, which is one constant instead of matching the Owner attribute.
 --
 -- ponytail: it's YOUR plot's spot, so it's wrong the moment the server hands you a
 -- different base -- re-grab it if the farm starts coming home to nowhere.

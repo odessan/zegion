@@ -1,4 +1,4 @@
---[[ TP for Brainrots -- tp to each spawned item, hold E, run it back to base
+--[[ Run For Brainrots -- tp to each spawned item, hold E, run it back to base (94702395375549)
 
      FARM   : sit in the Divine area, tp to every SpawnedItem in turn, grab it, bank it
      TP     : jump to the area or the base by hand

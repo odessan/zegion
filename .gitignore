@@ -2,7 +2,8 @@
 CLAUDE.md
 
 # Local-only: tools you paste into the executor by hand when you want a dump. Nothing
-# fetches them, so serving them from the repo only meant keeping them tidy for no one.
+# fetches them, so serving them from the repo only meant keeping them tidy for no one --
+# and dump_v2's PROBE moves your character, which you do not want firing on join.
 dump.lua
 dump_v2.lua
 
