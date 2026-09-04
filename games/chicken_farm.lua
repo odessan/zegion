@@ -61,8 +61,10 @@ task.spawn(function()
 		return
 	end
 	print("[ChickenFarm] rejoin-on-disconnect armed")
+	-- Guarded on `running`: this lives in CoreGui, so teardown can't disconnect it, and
+	-- without the guard a stopped script still teleports you back into the game.
 	overlay.ChildAdded:Connect(function(child)
-		if child.Name:find("ErrorPrompt") then
+		if child.Name:find("ErrorPrompt") and running then
 			warn("[ChickenFarm] disconnected - rejoining")
 			pcall(function()
 				game:GetService("TeleportService"):Teleport(game.PlaceId, player)
