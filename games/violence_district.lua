@@ -82,11 +82,11 @@ local OBJECTS = {
 		key = "gens",
 		tag = "Generator", -- Workspace.Map.Generators.* models carry it
 		title = "Generators",
-		desc = "Every generator and how far along it is",
-		mode = "tag",
+		desc = "Outline + repair percentage on every generator",
+		mode = "both", -- outline to find it, label for the number
 		color = Color3.fromRGB(255, 205, 70),
 		text = function(inst)
-			return ("Gen %d%%"):format(inst:GetAttribute("RepairProgress") or 0)
+			return ("%d%%"):format(inst:GetAttribute("RepairProgress") or 0)
 		end,
 	},
 	{
