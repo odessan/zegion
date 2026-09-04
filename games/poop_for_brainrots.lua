@@ -233,6 +233,22 @@ end
 -- server has never been asked to build a Tool for a loose backpack item and may well
 -- refuse to. If no Tool appears, stage the item into a free hotbar slot with
 -- SwapStorage and ask again. Returns (ok, reason) so the caller can say which step lost.
+-- Poll a predicate until it returns something truthy. Declared here rather than down
+-- with the other helpers because equipItem below is its first caller: a `local function`
+-- used above its own declaration resolves as a global, which is nil at runtime, and the
+-- pcall in withCharacter turns that into a warn instead of a stack.
+local function waitFor(pred, timeout)
+	local t0 = os.clock()
+	repeat
+		local v = pred()
+		if v then
+			return v
+		end
+		task.wait(POLL)
+	until os.clock() - t0 > timeout
+	return nil
+end
+
 local function equipItem(id)
 	local hum = humanoid()
 	if not hum then
@@ -320,18 +336,6 @@ local function slotModels()
 	local base = area and area:FindFirstChild("Base")
 	local folder = base and base:FindFirstChild("BrainrotSlots")
 	return folder and folder:GetChildren() or {}
-end
-
-local function waitFor(pred, timeout)
-	local t0 = os.clock()
-	repeat
-		local v = pred()
-		if v then
-			return v
-		end
-		task.wait(POLL)
-	until os.clock() - t0 > timeout
-	return nil
 end
 
 -- ranking --------------------------------------------------------------------
