@@ -248,7 +248,9 @@ btn.MouseButton1Click:Connect(function()
 	setOn(not on)
 end)
 
-UIS.InputBegan:Connect(function(input, typing)
+-- Held so the stop can drop it: teardown destroys the gui, and without this the key
+-- still calls setOn against destroyed rows, one more handler per re-paste.
+local keyConn = UIS.InputBegan:Connect(function(input, typing)
 	if not typing and input.KeyCode == KEY_TOGGLE then
 		setOn(not on)
 	end
@@ -258,7 +260,13 @@ if getgenv then
 	getgenv().flashStop = function()
 		running, on = false, false
 		skipOpen(false)
-		gui:Destroy()
+		pcall(function()
+			keyConn:Disconnect()
+		end)
+		pcall(function()
+			gui:Destroy()
+		end)
+		getgenv().flashStop = nil -- or the next paste calls a stop for a destroyed gui
 		print("[Flash] stopped")
 	end
 end

@@ -63,12 +63,19 @@ local status = "idle"
 -- Firing it does nothing (it's the popup, not the payout) but LISTENING to it is
 -- proof a collect actually landed. "collected" counts what we tried; "ok" counts
 -- what the server paid out. If they diverge, the touch isn't registering.
+-- Both connections here are held in `conns` and dropped by stop(): they outlive
+-- gui:Destroy otherwise, and every re-paste arms another set against dead rows.
+local conns = {}
+
 local popup = game:GetService("ReplicatedStorage"):WaitForChild("Events", 5)
 popup = popup and popup:FindFirstChild("ShowCashPopUp")
 if popup then
-	popup.OnClientEvent:Connect(function()
-		confirmed = confirmed + 1
-	end)
+	table.insert(
+		conns,
+		popup.OnClientEvent:Connect(function()
+			confirmed = confirmed + 1
+		end)
+	)
 else
 	warn("[SlotFarm] no ShowCashPopUp -- collect confirmation is off")
 end
@@ -422,18 +429,21 @@ stat.TextXAlignment = Enum.TextXAlignment.Left
 stat.Text = "idle"
 stat.Parent = panel
 
-UIS.InputBegan:Connect(function(input, typing)
-	if typing then
-		return
-	end
-	if input.KeyCode == KEY_BRAINROT then
-		autoBrainrot = not autoBrainrot
-		paintBrainrot()
-	elseif input.KeyCode == KEY_COLLECT then
-		autoCollect = not autoCollect
-		paintCollect()
-	end
-end)
+table.insert(
+	conns,
+	UIS.InputBegan:Connect(function(input, typing)
+		if typing then
+			return
+		end
+		if input.KeyCode == KEY_BRAINROT then
+			autoBrainrot = not autoBrainrot
+			paintBrainrot()
+		elseif input.KeyCode == KEY_COLLECT then
+			autoCollect = not autoCollect
+			paintCollect()
+		end
+	end)
+)
 
 -- Counters in the panel, so "is it actually doing anything?" is answerable at a glance.
 task.spawn(function()
@@ -445,7 +455,18 @@ end)
 
 local function stop()
 	alive, autoBrainrot, autoCollect = false, false, false
-	gui:Destroy()
+	for _, c in ipairs(conns) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	table.clear(conns)
+	pcall(function()
+		gui:Destroy()
+	end)
+	if getgenv then
+		getgenv().slotStop = nil -- or the next paste calls a stop for a destroyed gui
+	end
 	print(("[SlotFarm] stopped -- %d laps, %d grabs, %d/%d collects confirmed"):format(laps, grabs, confirmed, collected))
 end
 

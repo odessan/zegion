@@ -706,11 +706,19 @@ local function shutdown()
 	running, farming, cashing = false, false, false
 end
 
-Window:OnDestroy(shutdown)
+Window:OnDestroy(function()
+	shutdown()
+	if getgenv then
+		getgenv().soccerRunStop = nil -- both exits clear the slot, or the next paste calls
+	end -- a stop closure whose Window is already destroyed
+end)
 
 if getgenv then
 	getgenv().soccerRunStop = function()
 		shutdown()
-		Window:Destroy()
+		pcall(function()
+			Window:Destroy()
+		end)
+		getgenv().soccerRunStop = nil
 	end
 end

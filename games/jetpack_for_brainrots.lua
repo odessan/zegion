@@ -665,7 +665,10 @@ local line = Farm:Paragraph({ Title = "Status", Desc = "idle" })
 -- Drains whatever the farm thread last left. pcall'd anyway: if even this can't write
 -- the panel, the run carries on with the status going to the console instead of taking
 -- the loop down with it.
-RunService.Heartbeat:Connect(function()
+-- Held in an upvalue and disconnected by stop(): it outlives Window:Destroy otherwise,
+-- re-pcalling into a destroyed row every frame, and every re-paste adds another.
+local drain
+drain = RunService.Heartbeat:Connect(function()
 	if pending == nil then
 		return
 	end
@@ -745,6 +748,10 @@ refresh()
 -- ponytail: rerun the script to come back.
 local function stop()
 	farming = false
+	if drain then
+		drain:Disconnect()
+		drain = nil
+	end
 	getgenv().islandTpStop = nil
 	pcall(function()
 		Window:Destroy()

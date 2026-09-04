@@ -592,8 +592,11 @@ local function specialAttr()
 end
 
 readSpecial()
-workspace:GetAttributeChangedSignal("NextSpecialLabel"):Connect(readSpecial)
-workspace:GetAttributeChangedSignal("NextSpecialLeft"):Connect(readSpecial)
+local watchers = {} -- every load-time connection, dropped by shutdown
+-- Held for teardown. They only write locals, so a leak costs nothing at runtime -- but
+-- they outlive the window, and every re-paste arms another pair.
+table.insert(watchers, workspace:GetAttributeChangedSignal("NextSpecialLabel"):Connect(readSpecial))
+table.insert(watchers, workspace:GetAttributeChangedSignal("NextSpecialLeft"):Connect(readSpecial))
 
 -- The server's mutation and spawn events -- Cursed, Gold, Rainbow, Volcanic, Taco,
 -- Alien, US -- each publish their own end time as a workspace attribute called
@@ -1145,13 +1148,27 @@ end)
 -- teardown hangs off OnDestroy and both exits share it. ponytail: rerun to come back.
 local function shutdown()
 	running, farming, cashing = false, false, false
+	for _, c in ipairs(watchers) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	table.clear(watchers)
 end
 
-Window:OnDestroy(shutdown)
+Window:OnDestroy(function()
+	shutdown()
+	if getgenv then
+		getgenv().jumpSCPStop = nil -- both exits clear the slot, or the next paste calls
+	end -- a stop closure whose Window is already destroyed
+end)
 
 if getgenv then
 	getgenv().jumpSCPStop = function()
 		shutdown()
-		Window:Destroy()
+		pcall(function()
+			Window:Destroy()
+		end)
+		getgenv().jumpSCPStop = nil
 	end
 end

@@ -1226,11 +1226,19 @@ local function shutdown()
 	allowPurchases()
 end
 
-Window:OnDestroy(shutdown)
+Window:OnDestroy(function()
+	shutdown()
+	if getgenv then
+		getgenv().becomeRotStop = nil -- both exits clear the slot, or the next paste calls
+	end -- a stop closure whose Window is already destroyed
+end)
 
 if getgenv then
 	getgenv().becomeRotStop = function()
 		shutdown()
-		Window:Destroy()
+		pcall(function()
+			Window:Destroy()
+		end)
+		getgenv().becomeRotStop = nil
 	end
 end

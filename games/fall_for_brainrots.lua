@@ -417,6 +417,18 @@ end
 -- people's pay you nothing.
 local plot, pads = nil, nil
 
+-- Every connection made outside a toggle, so teardown can reach them. Without this they
+-- outlive gui:Destroy and keep firing against destroyed rows, one more set per re-paste.
+local conns = {}
+local function track(c)
+	table.insert(conns, c)
+	return c
+end
+
+-- findPlot re-runs whenever the plot is rebuilt, so its pair has to replace the previous
+-- pair rather than stack on it.
+local plotConns = {}
+
 local function findPlot()
 	local found = workspace:FindFirstChild("Plot_" .. player.Name, true)
 	if not found then
@@ -435,8 +447,15 @@ local function findPlot()
 		local function drop()
 			pads = nil
 		end
-		found.DescendantAdded:Connect(drop)
-		found.DescendantRemoving:Connect(drop)
+		for _, c in ipairs(plotConns) do
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+		plotConns = {
+			track(found.DescendantAdded:Connect(drop)),
+			track(found.DescendantRemoving:Connect(drop)),
+		}
 	end
 	return found
 end
@@ -1134,6 +1153,18 @@ local function stopAll()
 	end
 end
 
+-- Deliberately NOT part of stopAll: the close button stops the loops but only hides the
+-- gui, and one of these connections is the key that brings it back. Only the real
+-- teardown, which destroys the gui, may drop them.
+local function disconnectAll()
+	for _, c in ipairs(conns) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	table.clear(conns)
+end
+
 tpBtn.MouseButton1Click:Connect(function()
 	closeMenus()
 	local ok, msg = teleport(orderedZones()[1]) -- highest tier you ticked
@@ -1191,11 +1222,11 @@ closeBtn.MouseButton1Click:Connect(function()
 	gui.Enabled = false
 end)
 
-UIS.InputBegan:Connect(function(input, typing)
+track(UIS.InputBegan:Connect(function(input, typing)
 	if not typing and input.KeyCode == KEY_TOGGLE then
 		gui.Enabled = not gui.Enabled
 	end
-end)
+end))
 
 -- Guards can repopulate mid-round; keep the list honest without a poll loop. Debounced,
 -- because a repopulate fires one event PER ZONE and each one used to tear down and
@@ -1211,8 +1242,8 @@ local function scheduleRebuild()
 		rebuild()
 	end)
 end
-zoneRoot.ChildAdded:Connect(scheduleRebuild)
-zoneRoot.ChildRemoved:Connect(scheduleRebuild)
+track(zoneRoot.ChildAdded:Connect(scheduleRebuild))
+track(zoneRoot.ChildRemoved:Connect(scheduleRebuild))
 
 rarityDrop.setItems(RARITIES) -- static list; built once, never rebuilt
 rebuild()
@@ -1220,6 +1251,10 @@ rebuild()
 if getgenv then
 	getgenv().ffbStop = function()
 		stopAll() -- every loop exits on its own flag, so this really does stop them
-		gui:Destroy()
+		disconnectAll()
+		pcall(function()
+			gui:Destroy()
+		end)
+		getgenv().ffbStop = nil -- or the next paste calls a stop for a destroyed gui
 	end
 end

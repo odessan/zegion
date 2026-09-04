@@ -865,11 +865,19 @@ local function shutdown()
 	end
 end
 
-Window:OnDestroy(shutdown)
+Window:OnDestroy(function()
+	shutdown()
+	if getgenv then
+		getgenv().fishAnimeStop = nil -- both exits clear the slot, or the next paste calls
+	end -- a stop closure whose Window is already destroyed
+end)
 
 if getgenv then
 	getgenv().fishAnimeStop = function()
 		shutdown()
-		Window:Destroy()
+		pcall(function()
+			Window:Destroy()
+		end)
+		getgenv().fishAnimeStop = nil
 	end
 end
