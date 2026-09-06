@@ -55,6 +55,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Chicken Farm                        | `137233438285284` | `chicken_farm.lua`               |
 | Dig Into Secrets                    | `119409763193569` | `dig_into_secrets.lua`           |
 | Drill Block for Dumpling Squishy    | `86943068337855`  | `drill_block_for_dumpling_squishy.lua` |
+| Drill Ores                          | `122572082932179` | `drill_ores.lua`                 |
 | Fake a Brainrot                     | `110627433764494` | `fake_a_brainrot.lua`            |
 | Fall For Brainrots!                 | `86368783421928`  | `fall_for_brainrots.lua`         |
 | Fish an Anime!                      | `74729868188364`  | `fish_for_anime_rng.lua`         |
