@@ -59,6 +59,7 @@ local GAMES = {
 	["93978595733734"] = "violence_district.lua", -- Violence District
 	["80861715191104"] = "pull_a_lucky_block.lua", -- Pull a Lucky Block
 	["103050497819513"] = "steal_a_brainrot_base.lua", -- Steal a Brainrot Base
+	["86943068337855"] = "drill_block_for_dumpling_squishy.lua", -- Drill Block for Dumpling Squishy
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
