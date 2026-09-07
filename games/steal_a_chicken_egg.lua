@@ -358,6 +358,144 @@ local function claim(fn)
 end
 
 -- farm -----------------------------------------------------------------------
+-- "You need ..." strings exist in NO client script -- the notification remote is the
+-- only place the server's real reason is ever worded. A refusal is also proof the
+-- press reached the server, which rules out a whole class of bug in one line.
+local lastNote, noteAt = nil, 0
+local noteConn = remotes.game.notifications.showNotification:connect(function(a, b)
+	lastNote, noteAt = string.format("%s %s", tostring(a), tostring(b)), os.clock()
+end)
+
+local function freshNote()
+	if lastNote and os.clock() - noteAt < 3 then
+		return lastNote
+	end
+	return nil
+end
+
+local misses = {} -- {[key] = consecutive nils}
+
+-- Three answers, not two. Conflating "refused" with "could not reach" makes a
+-- streaming hiccup look like a server refusal, and an unreachable target then sits
+-- at the head of a best-first queue blocking everything under it, silently.
+local function grab(c, alive)
+	if not goTo(c.pos, alive) then
+		return nil
+	end
+	task.wait(SETTLE)
+	local r = root()
+	local d = r and (r.Position - c.pos).Magnitude or math.huge
+	if d > STEAL_RANGE then
+		return nil -- firing from out of range returns false and reads as a refusal
+	end
+	lastNote = nil
+	local ok, res = req(remotes.game.nests.stealEgg:request(c.zone, c.pos))
+	if ok and res == true then
+		return true
+	end
+	return false
+end
+
+-- Arriving at the base deposits by itself -- no dropChicken, no placeChicken.
+-- equipBestChickens then places anything sitting in the backpack, which is the
+-- game's own auto-place button and knows your slot count better than we would.
+local function deposit(alive)
+	local _, pos = myBase()
+	if not pos then
+		warnf("no base found, cannot deposit")
+		return false
+	end
+	if not goTo(pos, alive) then
+		return false
+	end
+	task.wait(SETTLE)
+	pcall(function()
+		remotes.data.base.equipBestChickens:fire()
+	end)
+	return true
+end
+
+local status = { target = "-", value = "-", weight = "-", rarity = "-", zone = "-", nest = "-", note = "-" }
+local farm = { on = false, gen = 0 }
+local priority = PRIORITIES[1].label
+-- preferInsane is declared in the world section, above best(), since best() reads it
+
+local mark, markAt = "idle", os.clock()
+local function step(s)
+	mark, markAt = s, os.clock()
+end
+
+local function setFarming(state)
+	farm.on = state
+	if not state then
+		step("idle")
+		return
+	end
+	farm.gen += 1
+	local mine = farm.gen
+	task.spawn(function()
+		local cands, lastScan = {}, 0
+		local function alive()
+			return farm.on and farm.gen == mine
+		end
+		while alive() do
+			if os.clock() - lastScan > SCAN_EVERY or #cands == 0 then
+				step("scan")
+				cands = scan()
+				lastScan = os.clock()
+			end
+			local c = best(cands, priority)
+			if not c then
+				step("no target")
+				task.wait(1)
+			else
+				status.target, status.zone, status.nest = c.desc.label, c.zone, c.key
+				status.value = string.format("%d", c.desc.value)
+				status.weight = string.format("%.1f", c.desc.weight)
+				status.rarity = string.format("%d", c.desc.rarity)
+				local ran = claim(function()
+					step("grab " .. c.key .. " / press")
+					local got = grab(c, alive)
+					if got == true then
+						misses[c.key] = nil
+						status.note = "stole " .. c.desc.label
+						step("grab " .. c.key .. " / home")
+						deposit(alive)
+					elseif got == false then
+						misses[c.key] = nil
+						parked[c.key] = os.clock() + PARK
+						status.note = freshNote() or "refused"
+					else
+						misses[c.key] = (misses[c.key] or 0) + 1
+						if misses[c.key] >= MISS_STRIKES then
+							parked[c.key] = os.clock() + PARK
+							misses[c.key] = nil
+							say("parking %s -- could not reach it %d times", c.key, MISS_STRIKES)
+						end
+					end
+				end)
+				if not ran then
+					task.wait(0.2)
+				end
+			end
+		end
+		if farm.gen == mine then -- only the current generation may switch it off
+			farm.on = false
+		end
+	end)
+end
+
+-- A parked farm thread is indistinguishable from a dead one -- no error, no log,
+-- toggle still lit. A separate thread is the only thing that can report it.
+task.spawn(function()
+	while true do
+		task.wait(5)
+		if farm.on and os.clock() - markAt > GRAB_TIMEOUT * 4 then
+			warnf("stuck %.0fs at: %s", os.clock() - markAt, mark)
+		end
+	end
+end)
+
 -- base -----------------------------------------------------------------------
 -- gui ------------------------------------------------------------------------
 local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
@@ -372,6 +510,76 @@ if not Window then
 end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:egg-bold" })
+
+local secFarm = Tab:Section({ Title = "Egg Farming", Icon = "solar:egg-bold", Box = true, Opened = true })
+
+secFarm:Toggle({ Title = "Auto Farm Egg", Value = false, Callback = function(state)
+	setFarming(state)
+end })
+
+local prioLabels = {}
+for _, p in ipairs(PRIORITIES) do
+	table.insert(prioLabels, p.label)
+end
+secFarm:Dropdown({
+	Title = "Egg Priority",
+	Values = prioLabels,
+	Value = PRIORITIES[1].label,
+	Callback = function(v)
+		if priorityByLabel(v).label == v then
+			priority = v -- ignore unknowns: Refresh re-fires this with "" on its own thread
+		end
+	end,
+})
+
+-- WindUI hands a Multi callback a list, a map, or the row tables back, depending on
+-- the build panel.lua fetched. Reading a map as a list leaves the set empty, and an
+-- empty set filters EVERYTHING out -- which is exactly what "the zone filter does
+-- nothing" looks like.
+local function ticked(v)
+	local out = {}
+	if type(v) ~= "table" then
+		return out
+	end
+	for k, val in pairs(v) do
+		if type(k) == "string" and val == true then
+			out[k] = true -- map shape
+		elseif type(val) == "string" then
+			out[val] = true -- list shape
+		elseif type(val) == "table" and type(val.Title) == "string" then
+			out[val.Title] = true -- row shape
+		end
+	end
+	return out
+end
+
+do -- self-check: all three shapes must produce the same set
+	assert(ticked({ "forest", "abyss" }).forest, "list shape")
+	assert(ticked({ forest = true }).forest, "map shape")
+	assert(ticked({ { Title = "forest" } }).forest, "row shape")
+	assert(next(ticked(nil)) == nil, "nil is empty, not everything")
+end
+
+local allZones = zones()
+for _, z in ipairs(allZones) do
+	wanted[z] = true -- default: the whole map
+end
+secFarm:Dropdown({
+	Title = "Zones",
+	Values = allZones,
+	Value = allZones,
+	Multi = true,
+	Callback = function(v)
+		local set = ticked(v)
+		if next(set) == nil then
+			return -- a cleared dropdown means "no targets ever"; keep the old set
+		end
+		table.clear(wanted) -- the loop holds `wanted` as an upvalue; never reassign
+		for z in pairs(set) do
+			wanted[z] = true
+		end
+	end,
+})
 
 local secDebug = Tab:Section({ Title = "Debug", Box = true, Opened = true })
 secDebug:Button({ Title = "Scan now", Callback = function()
@@ -418,7 +626,10 @@ end })
 
 -- close ----------------------------------------------------------------------
 local function stopAll()
-	-- later tasks add their loop flags here
+	setFarming(false)
+	pcall(function()
+		noteConn()
+	end)
 end
 
 Window:OnDestroy(function()
