@@ -178,12 +178,15 @@ local function req(promise, timeout)
 	return ok, val
 end
 
-local function scan()
+local function scan(alive)
 	local out, any = {}, false
 	local seen = {}
 	local answeredZones = {} -- track which zones actually answered, to distinguish
 	-- a request failure (must not prune parked nests) from a nest reroll (may prune)
 	for _, z in ipairs(zones()) do
+		if alive and not alive() then
+			break -- farm toggled off mid-scan; bail early with what we have
+		end
 		local ok, map = req(remotes.game.nests.getNestContents:request(z))
 		if ok and type(map) == "table" then
 			any = true
@@ -461,6 +464,9 @@ local function grab(c, alive)
 	if ok and res == true then
 		return true
 	end
+	if ok == nil then
+		return nil -- timeout is not a refusal; the nest still exists and may try again
+	end
 	return false
 end
 
@@ -509,7 +515,7 @@ local function setFarming(state)
 		while alive() do
 			if os.clock() - lastScan > SCAN_EVERY or #cands == 0 then
 				step("scan")
-				cands = scan()
+				cands = scan(alive)
 				lastScan = os.clock()
 			end
 			local c = best(cands, priority)
