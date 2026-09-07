@@ -571,6 +571,69 @@ task.spawn(function()
 end)
 
 -- base -----------------------------------------------------------------------
+-- The store is the game's own mirror of your save, so streaming cannot touch it and
+-- it is what the game's HUD reads. ripeAt is an ABSOLUTE SERVER TIME.
+-- Report whether we could READ, not just the number: failing open to 0 reads as
+-- "no eggs", which silently inverts every gate built on it.
+local function penEggs()
+	local p = producer()
+	if not p then
+		return {}, false
+	end
+	local okS, sel = pcall(require, RS.shared.state.selectors.sessionSelectors.penEggSelectors)
+	if not okS then
+		return {}, false
+	end
+	local okG, eggs = pcall(function()
+		return p:getState(sel.selectPenEggs(player.Name))
+	end)
+	if not okG or type(eggs) ~= "table" then
+		return {}, false
+	end
+	return eggs, true
+end
+
+-- This loop never moves the character, so it must NOT take the claim() lock --
+-- there is nothing here for it to fight the farm over.
+local claimer = { on = false, gen = 0 }
+
+local function setClaiming(state)
+	claimer.on = state
+	if not state then
+		return
+	end
+	claimer.gen += 1
+	local mine = claimer.gen
+	task.spawn(function()
+		while claimer.on and claimer.gen == mine do
+			local eggs, ok = penEggs()
+			if ok then
+				local now = workspace:GetServerTimeNow()
+				for id, e in pairs(eggs) do
+					if not (claimer.on and claimer.gen == mine) then
+						break
+					end
+					if type(e) == "table" and type(e.ripeAt) == "number" and now >= e.ripeAt then
+						local okC, res = req(remotes.data.base.claimEgg:request(id))
+						say("claim %s -> %s %s", tostring(id):sub(1, 8), tostring(okC), tostring(res))
+						task.wait(0.4)
+					end
+				end
+			else
+				-- ponytail: store unreadable, fall back to the blunt instrument.
+				-- claimAllEggs takes no argument and the server sorts out which are ripe.
+				pcall(function()
+					remotes.data.base.claimAllEggs:fire()
+				end)
+			end
+			task.wait(CLAIM_POLL)
+		end
+		if claimer.gen == mine then -- only the current generation may switch itself off
+			claimer.on = false
+		end
+	end)
+end
+
 -- gui ------------------------------------------------------------------------
 local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
 local panel = loadstring(game:HttpGet(PANEL_URL))()
@@ -589,6 +652,10 @@ local secFarm = Tab:Section({ Title = "Egg Farming", Icon = "solar:egg-bold", Bo
 
 secFarm:Toggle({ Title = "Auto Farm Egg", Value = false, Callback = function(state)
 	setFarming(state)
+end })
+
+secFarm:Toggle({ Title = "Auto Claim Completed Eggs", Value = false, Callback = function(state)
+	setClaiming(state)
 end })
 
 -- takeInsaneEgg has never actually been fired -- it is dump-derived -- so it stays
@@ -718,6 +785,7 @@ end })
 -- close ----------------------------------------------------------------------
 local function stopAll()
 	setFarming(false)
+	setClaiming(false)
 	pcall(function()
 		noteConn()
 	end)
