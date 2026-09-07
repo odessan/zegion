@@ -223,6 +223,125 @@ local function best(cands, label)
 end
 
 -- travel ---------------------------------------------------------------------
+-- There is no teleport cap and no post-steal lock: hops of 40/80/150/600 studs all
+-- stuck, and three 60-stud hops 0.1s apart all stuck. What DOES fail is a long hop
+-- that lands inside terrain, which physics then ejects you from. So: try the direct
+-- hop, and fall back to chunks, which covered 1759 studs in 39 hops with none lost.
+local function root()
+	local c = player.Character
+	return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function hop(pos)
+	local c = player.Character
+	local r = root()
+	if not (c and r) then
+		return false
+	end
+	pcall(function()
+		c:PivotTo(CFrame.new(pos + Vector3.new(0, 3, 0)))
+	end)
+	task.wait(CHUNK_GAP)
+	local now = root()
+	return now ~= nil and (now.Position - pos).Magnitude < 12
+end
+
+local function goTo(pos, alive)
+	if hop(pos) then
+		return true
+	end
+	for _ = 1, 200 do -- bounded: never spin forever on a spot we cannot reach
+		if alive and not alive() then
+			return false
+		end
+		local r = root()
+		if not r then
+			task.wait(0.2) -- respawning
+		else
+			local left = (pos - r.Position).Magnitude
+			if left < 12 then
+				return true
+			end
+			local step = (pos - r.Position).Unit * math.min(CHUNK, left)
+			pcall(function()
+				player.Character:PivotTo(CFrame.new(r.Position + step + Vector3.new(0, 3, 0)))
+			end)
+			task.wait(CHUNK_GAP)
+		end
+	end
+	return false
+end
+
+-- The BaseBillb title reads "YOUR BASE" on every UNCLAIMED slot too, so it cannot
+-- identify yours. The store knows; the pens confirm it.
+local function producer()
+	local ok, p = pcall(function()
+		return require(player.PlayerScripts.modules.state.producer)
+	end)
+	return ok and p or nil
+end
+
+local function myBase()
+	local bases = {}
+	for _, b in ipairs(CS:GetTagged("Base")) do
+		if b:IsDescendantOf(workspace) then
+			table.insert(bases, b)
+		end
+	end
+
+	local idx
+	local p = producer()
+	if p then
+		local okS, sel = pcall(require, RS.shared.state.selectors.sessionSelectors.baseSelectors)
+		if okS then
+			local okG, v = pcall(function()
+				return p:getState(sel.selectPlayerBase(player.Name))
+			end)
+			idx = okG and v or nil
+		end
+	end
+
+	if not idx then -- fallback: my pens sit inside my base
+		local pens = workspace:FindFirstChild("PenEggs")
+		local bestN = 0
+		for _, b in ipairs(bases) do
+			local n = 0
+			for _, pen in ipairs(pens and pens:GetChildren() or {}) do
+				if penUT.isInside(b, pen:GetPivot().Position) then
+					n += 1
+				end
+			end
+			if n > bestN then
+				idx, bestN = b:GetAttribute("index"), n
+			end
+		end
+	end
+
+	for _, b in ipairs(bases) do
+		if b:GetAttribute("index") == idx then
+			local cf = penUT.getBounds(b)
+			return b, cf and cf.Position or b:GetPivot().Position
+		end
+	end
+	return nil, nil
+end
+
+-- Two things drive the character: the farm and the sell trip. One lock, taken per
+-- sweep. Returns whether fn RAN, not whether it succeeded, and releases on a throw.
+local busy = false
+local function claim(fn)
+	if busy then
+		return false
+	end
+	busy = true
+	local ok, err = pcall(fn)
+	busy = false
+	if not ok then
+		warnf("claimed body errored: %s", tostring(err))
+	end
+	return true
+end
+
 -- farm -----------------------------------------------------------------------
 -- base -----------------------------------------------------------------------
 -- gui ------------------------------------------------------------------------
@@ -254,6 +373,32 @@ secDebug:Button({ Title = "Scan now", Callback = function()
 				label, b.zone, b.desc.label, b.desc.weight, b.desc.value, b.desc.rarity, b.key)
 		end
 	end
+end })
+
+secDebug:Button({ Title = "Go to best", Callback = function()
+	for _, z in ipairs(zones()) do
+		wanted[z] = true
+	end
+	local cands = scan()
+	local b = best(cands, "Highest Value")
+	if not b then
+		return say("no target")
+	end
+	local ran = claim(function()
+		local t0 = os.clock()
+		local got = goTo(b.pos)
+		local r = root()
+		say("goTo %s -> %s in %.1fs, %.1f studs off", b.key, tostring(got), os.clock() - t0,
+			r and (r.Position - b.pos).Magnitude or -1)
+	end)
+	if not ran then
+		say("busy")
+	end
+end })
+
+secDebug:Button({ Title = "Where is my base", Callback = function()
+	local b, pos = myBase()
+	say("base=%s at %s", b and tostring(b:GetAttribute("index")) or "NOT FOUND", tostring(pos))
 end })
 
 -- close ----------------------------------------------------------------------
