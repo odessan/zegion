@@ -107,16 +107,17 @@ end
 -- come from the game's own struct, so a balance patch lands for free.
 -- getSellValue already folds weight in, which is why Value and Weight are different
 -- orderings rather than independent axes.
-local function describe(name, variant, size)
+local function describe(name, variant, size, kind)
 	local def = chickenUT.getChicken(name, variant) -- NOT chickensIF[name]
 	if not def then
 		return nil
 	end
 	local okV, value = pcall(def.getSellValue, def, size)
 	local rar = def:getRarity()
+	local mult = (kind == "insane") and (insaneIF.eggValueMultiplier or 1) or 1
 	return {
-		label = def:getName(),
-		value = okV and value or 0,
+		label = def:getName() .. (kind == "insane" and " (INSANE)" or ""),
+		value = (okV and value or 0) * mult,
 		weight = size,
 		rarity = rar and rar:getOrder() or 0,
 	}
@@ -220,12 +221,55 @@ end
 
 local preferInsane = false -- batch 2 wires the toggle to this; declared here because best reads it
 
+-- One InsaneEgg per zone, a direct child of the zone folder rather than of Nests,
+-- so getNestContents never sees it. Everything needed is on the model as attributes.
+-- Strictly better than any ordinary nest in the same zone: eggValueMultiplier 2,
+-- species drawn from the rarest three of the zone roster, weight pinned to the top
+-- of the band instead of rolled within it.
+local function scanInsane()
+	local out = {}
+	for _, m in ipairs(CS:GetTagged("InsaneEgg")) do
+		local zone = m:GetAttribute("insaneZone")
+		local name = m:GetAttribute("chickenName")
+		local size = m:GetAttribute("chickenSize")
+		-- only "idle" -- once a guard picks it up its position is a lerp along a
+		-- trip, so a cached pivot sends you where it WAS
+		if m:IsDescendantOf(workspace) and zone and name and size and m:GetAttribute("insaneState") == "idle" then
+			table.insert(out, {
+				kind = "insane",
+				zone = zone,
+				key = "insane:" .. zone,
+				model = m,
+				name = name,
+				variant = m:GetAttribute("chickenVariant") or "normal",
+				size = size,
+			})
+		end
+	end
+	return out
+end
+
 local function best(cands, label)
 	local score = priorityByLabel(label).score
-	local now, top, topScore = os.clock(), nil, -math.huge
+	local now = os.clock()
+	if preferInsane then
+		local top, topScore = nil, -math.huge
+		for _, c in ipairs(scanInsane()) do
+			if wanted[c.zone] and (parked[c.key] or 0) <= now then
+				local d = describe(c.name, c.variant, c.size, c.kind)
+				if d and score(d) > topScore then
+					top, topScore, c.desc = c, score(d), d
+				end
+			end
+		end
+		if top then
+			return top
+		end
+	end
+	local top, topScore = nil, -math.huge
 	for _, c in ipairs(cands) do
 		if wanted[c.zone] and (parked[c.key] or 0) <= now then
-			local d = describe(c.name, c.variant, c.size)
+			local d = describe(c.name, c.variant, c.size, c.kind)
 			if d then
 				local s = score(d)
 				if s > topScore then
@@ -375,21 +419,45 @@ end
 
 local misses = {} -- {[key] = consecutive nils}
 
+-- An insane has no key to parse -- its position is read live from the model each
+-- pass, since a guard may be walking it along a trip between our scan and our grab.
+local function targetPos(c)
+	if c.kind == "insane" then
+		if not (c.model and c.model.Parent) then
+			return nil
+		end
+		local p = c.model:GetPivot().Position
+		return p.Magnitude > 1 and p or nil -- a partless model reports the origin
+	end
+	return c.pos
+end
+
 -- Three answers, not two. Conflating "refused" with "could not reach" makes a
 -- streaming hiccup look like a server refusal, and an unreachable target then sits
 -- at the head of a best-first queue blocking everything under it, silently.
 local function grab(c, alive)
-	if not goTo(c.pos, alive) then
+	local pos = targetPos(c)
+	if not pos then
+		return nil
+	end
+	if not goTo(pos, alive) then
 		return nil
 	end
 	task.wait(SETTLE)
 	local r = root()
-	local d = r and (r.Position - c.pos).Magnitude or math.huge
-	if d > STEAL_RANGE then
+	local live = targetPos(c) or pos -- an insane may have moved while we travelled
+	local d = r and (r.Position - live).Magnitude or math.huge
+	local range = (c.kind == "insane") and INSANE_RANGE or STEAL_RANGE
+	if d > range then
 		return nil -- firing from out of range returns false and reads as a refusal
 	end
 	lastNote = nil
-	local ok, res = req(remotes.game.nests.stealEgg:request(c.zone, c.pos))
+	local ok, res
+	if c.kind == "insane" then
+		ok, res = req(remotes.game.nests.takeInsaneEgg:request(c.zone))
+	else
+		ok, res = req(remotes.game.nests.stealEgg:request(c.zone, c.pos))
+	end
 	if ok and res == true then
 		return true
 	end
@@ -517,6 +585,19 @@ secFarm:Toggle({ Title = "Auto Farm Egg", Value = false, Callback = function(sta
 	setFarming(state)
 end })
 
+-- takeInsaneEgg has never actually been fired -- it is dump-derived -- so it stays
+-- off until proven. INSANE_RANGE is still unmeasured (see config comment at top);
+-- this cannot be verified without a live session, so it ships at the nest distance
+-- until someone with a running game raises it and records the working value.
+secFarm:Toggle({
+	Title = "Prefer Insane Chickens",
+	Desc = "Untested remote -- watch F9 the first time",
+	Value = false,
+	Callback = function(state)
+		preferInsane = state
+	end,
+})
+
 local prioLabels = {}
 for _, p in ipairs(PRIORITIES) do
 	table.insert(prioLabels, p.label)
@@ -607,12 +688,16 @@ secDebug:Button({ Title = "Go to best", Callback = function()
 	if not b then
 		return say("no target")
 	end
+	local pos = targetPos(b) -- b.pos is nil for an insane candidate; it carries .model instead
+	if not pos then
+		return say("target %s has no position (not streamed in?)", b.key)
+	end
 	local ran = claim(function()
 		local t0 = os.clock()
-		local got = goTo(b.pos)
+		local got = goTo(pos)
 		local r = root()
 		say("goTo %s -> %s in %.1fs, %.1f studs off", b.key, tostring(got), os.clock() - t0,
-			r and (r.Position - b.pos).Magnitude or -1)
+			r and (r.Position - pos).Magnitude or -1)
 	end)
 	if not ran then
 		say("busy")
