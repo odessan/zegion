@@ -634,6 +634,77 @@ local function setClaiming(state)
 	end)
 end
 
+-- Backpack items are the game's own struct too, read the same way as penEggs:
+-- report whether we could READ, not just the count.
+local function eggCount()
+	local p = producer()
+	if not p then
+		return 0, false
+	end
+	local okS, sel = pcall(require, RS.shared.state.selectors.storeSelectors.backpackSelectors)
+	if not okS then
+		return 0, false
+	end
+	local okG, items = pcall(function()
+		return p:getState(sel.selectBackpackItems(player.Name))
+	end)
+	if not okG or type(items) ~= "table" then
+		return 0, false
+	end
+	local n = 0
+	for _, it in pairs(items) do
+		if type(it) == "table" and it.egg then
+			n += 1
+		end
+	end
+	return n, true
+end
+
+-- This loop teleports, so unlike the claim loop it DOES take the claim() lock --
+-- it must not run mid-grab and steal the character out from under a farm sweep.
+local seller = { on = false, gen = 0 }
+local sellAt = SELL_AT -- live-tunable via the Input below
+
+local function setSelling(state)
+	seller.on = state
+	if not state then
+		return
+	end
+	seller.gen += 1
+	local mine = seller.gen
+	task.spawn(function()
+		while seller.on and seller.gen == mine do
+			local n, ok = eggCount()
+			if ok and n >= sellAt then
+				-- takes the lock: this teleports, so it must not run mid-grab
+				local ran = claim(function()
+					pcall(function()
+						remotes.game.teleport.teleportTo:fire("sell")
+					end)
+					task.wait(2) -- a SERVER teleport; firing the sell before it lands loses it
+					pcall(function()
+						remotes.data.backpack.sellAllItems:fire("egg")
+					end)
+					task.wait(1)
+					local after, okAfter = eggCount()
+					if okAfter then
+						say("sold: %d -> %d eggs", n, after)
+					else
+						say("sold: %d eggs, but could not re-read the backpack after", n)
+					end
+				end)
+				if not ran then
+					task.wait(1) -- lock held by the farm right now; retry next poll, don't drop it
+				end
+			end
+			task.wait(CLAIM_POLL)
+		end
+		if seller.gen == mine then -- only the current generation may switch itself off
+			seller.on = false
+		end
+	end)
+end
+
 -- gui ------------------------------------------------------------------------
 local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
 local panel = loadstring(game:HttpGet(PANEL_URL))()
@@ -735,6 +806,23 @@ secFarm:Dropdown({
 	end,
 })
 
+secFarm:Toggle({ Title = "Auto Sell Eggs", Value = false, Callback = function(state)
+	setSelling(state)
+end })
+
+secFarm:Input({
+	Title = "Sell at",
+	Value = tostring(SELL_AT),
+	Placeholder = "eggs held",
+	Callback = function(v)
+		local n = tonumber(v)
+		if n and n >= 1 then
+			sellAt = math.floor(n)
+			say("sell threshold now %d", sellAt)
+		end
+	end,
+})
+
 local secDebug = Tab:Section({ Title = "Debug", Box = true, Opened = true })
 secDebug:Button({ Title = "Scan now", Callback = function()
 	for _, z in ipairs(zones()) do
@@ -786,6 +874,7 @@ end })
 local function stopAll()
 	setFarming(false)
 	setClaiming(false)
+	setSelling(false)
 	pcall(function()
 		noteConn()
 	end)
