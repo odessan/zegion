@@ -34,6 +34,14 @@ local SELL_AT = 10 -- eggs held before a sell trip. An Input, tunable live.
 local INSANE_RANGE = 19 -- approach distance for an insane chicken. Its prompt reaches
 -- 31-48, but that is a CLIENT gate and says nothing about the server's, so this stays
 -- at the nest distance until someone measures it.
+local ARRIVE_TOLERANCE = 12 -- studs from target position to confirm arrival. hop() and
+-- goTo() both use this; they must agree, or one reports arrival while the other keeps
+-- trying. Raise if you get stuck on terrain spikes; lower if you pass through targets.
+local LAND_OFFSET = Vector3.new(0, 3, 0) -- vertical offset when landing. Prevents
+-- landing inside terrain on a Top surface. Used in hop() and goTo().
+local FALLBACK_HOPS = 200 -- max iterations in goTo's chunked fallback. Bounded to
+-- prevent spinning forever on an unreachable spot. Raise if distance is regularly
+-- longer than this many CHUNK-sized steps; lower to abort faster on bad spots.
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -59,7 +67,6 @@ if not ok then
 end
 local nestsIF = require(RS.shared.gameData.nests.nestsIF)
 local insaneIF = require(RS.shared.gameData.nests.insaneEggsIF)
-local nestUT = require(RS.shared.utils.nestUT)
 local chickenUT = require(RS.shared.utils.chickenUT)
 local penUT = require(RS.shared.utils.penUT)
 
@@ -173,10 +180,13 @@ end
 local function scan()
 	local out, any = {}, false
 	local seen = {}
+	local answeredZones = {} -- track which zones actually answered, to distinguish
+	-- a request failure (must not prune parked nests) from a nest reroll (may prune)
 	for _, z in ipairs(zones()) do
 		local ok, map = req(remotes.game.nests.getNestContents:request(z))
 		if ok and type(map) == "table" then
 			any = true
+			answeredZones[z] = true
 			for key, v in pairs(map) do
 				local zone, pos = parseKey(key)
 				if pos and v.name then
@@ -197,7 +207,12 @@ local function scan()
 	end
 	for key in pairs(parked) do
 		if not seen[key] then
-			parked[key] = nil -- rerolled away; stop remembering it
+			local zone, _ = parseKey(key)
+			-- prune only if this zone answered and the key was absent from its reply.
+			-- if the zone did not answer, a request failure is not evidence the nest is gone.
+			if answeredZones[zone] then
+				parked[key] = nil -- rerolled away; stop remembering it
+			end
 		end
 	end
 	return out, any
@@ -239,18 +254,18 @@ local function hop(pos)
 		return false
 	end
 	pcall(function()
-		c:PivotTo(CFrame.new(pos + Vector3.new(0, 3, 0)))
+		c:PivotTo(CFrame.new(pos + LAND_OFFSET))
 	end)
 	task.wait(CHUNK_GAP)
 	local now = root()
-	return now ~= nil and (now.Position - pos).Magnitude < 12
+	return now ~= nil and (now.Position - pos).Magnitude < ARRIVE_TOLERANCE
 end
 
 local function goTo(pos, alive)
 	if hop(pos) then
 		return true
 	end
-	for _ = 1, 200 do -- bounded: never spin forever on a spot we cannot reach
+	for _ = 1, FALLBACK_HOPS do -- bounded: never spin forever on a spot we cannot reach
 		if alive and not alive() then
 			return false
 		end
@@ -259,12 +274,12 @@ local function goTo(pos, alive)
 			task.wait(0.2) -- respawning
 		else
 			local left = (pos - r.Position).Magnitude
-			if left < 12 then
+			if left < ARRIVE_TOLERANCE then
 				return true
 			end
 			local step = (pos - r.Position).Unit * math.min(CHUNK, left)
 			pcall(function()
-				player.Character:PivotTo(CFrame.new(r.Position + step + Vector3.new(0, 3, 0)))
+				player.Character:PivotTo(CFrame.new(r.Position + step + LAND_OFFSET))
 			end)
 			task.wait(CHUNK_GAP)
 		end
@@ -318,7 +333,7 @@ local function myBase()
 	end
 
 	for _, b in ipairs(bases) do
-		if b:GetAttribute("index") == idx then
+		if idx and b:GetAttribute("index") == idx then
 			local cf = penUT.getBounds(b)
 			return b, cf and cf.Position or b:GetPivot().Position
 		end
