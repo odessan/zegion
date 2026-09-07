@@ -66,14 +66,48 @@ local function warnf(fmt, ...)
 	warn("[chickenegg] " .. string.format(fmt, ...))
 end
 
-local ok, remotes = pcall(require, RS.shared.remotes)
-if not ok then
-	return warnf("cannot require shared.remotes (%s) -- game updated?", tostring(remotes))
+-- pcall must wrap the INDEXING too, not just the require -- RS.shared.remotes throws
+-- outside the pcall if `shared` itself moved, and then the friendly "game updated?"
+-- message never prints. All five modules route through this so a renamed one always
+-- says which.
+local function safeRequire(name, fn)
+	local ok, mod = pcall(fn)
+	if not ok then
+		warnf("cannot require %s (%s) -- game updated?", name, tostring(mod))
+	end
+	return ok, mod
 end
-local nestsIF = require(RS.shared.gameData.nests.nestsIF)
-local insaneIF = require(RS.shared.gameData.nests.insaneEggsIF)
-local chickenUT = require(RS.shared.utils.chickenUT)
-local penUT = require(RS.shared.utils.penUT)
+
+local okRemotes, remotes = safeRequire("shared.remotes", function()
+	return require(RS.shared.remotes)
+end)
+if not okRemotes then
+	return
+end
+local okNests, nestsIF = safeRequire("shared.gameData.nests.nestsIF", function()
+	return require(RS.shared.gameData.nests.nestsIF)
+end)
+if not okNests then
+	return
+end
+local okInsane, insaneIF = safeRequire("shared.gameData.nests.insaneEggsIF", function()
+	return require(RS.shared.gameData.nests.insaneEggsIF)
+end)
+if not okInsane then
+	return
+end
+local okChicken, chickenUT = safeRequire("shared.utils.chickenUT", function()
+	return require(RS.shared.utils.chickenUT)
+end)
+if not okChicken then
+	return
+end
+local okPen, penUT = safeRequire("shared.utils.penUT", function()
+	return require(RS.shared.utils.penUT)
+end)
+if not okPen then
+	return
+end
 
 local STEAL_RANGE = nestsIF.maxStealDistance -- 19 at time of writing; read, never typed
 
@@ -110,20 +144,26 @@ end
 
 -- getNestContents gives {name, variant, size} and nothing else. Value and rarity
 -- come from the game's own struct, so a balance patch lands for free.
--- getSellValue already folds weight in, which is why Value and Weight are different
--- orderings rather than independent axes.
+-- getSellValue takes a WEIGHT, not a size -- chickenUT.getWeight(size) converts one
+-- to the other (size^2 * 0.105, floored at 0.5) -- which is why Value and Weight are
+-- different orderings rather than independent axes: value scales with the SQUARE of
+-- size, so an ordering built on raw size can invert against the true value ordering.
 local function describe(name, variant, size, kind)
 	local def = chickenUT.getChicken(name, variant) -- NOT chickensIF[name]
 	if not def then
 		return nil
 	end
-	local okV, value = pcall(def.getSellValue, def, size)
+	local weight = chickenUT.getWeight(size)
+	local okV, value = pcall(def.getSellValue, def, weight)
 	local rar = def:getRarity()
+	-- eggValueMultiplier is the game's multiplier on EGG value; used here as a proxy
+	-- for the chicken's own worth, since the farm ultimately sells eggs, not chickens --
+	-- so this ranking number is not a figure the game itself displays.
 	local mult = (kind == "insane") and (insaneIF.eggValueMultiplier or 1) or 1
 	return {
 		label = def:getName() .. (kind == "insane" and " (INSANE)" or ""),
 		value = (okV and value or 0) * mult,
-		weight = size,
+		weight = weight,
 		rarity = rar and rar:getOrder() or 0,
 	}
 end
@@ -165,6 +205,9 @@ local wanted = {} -- {[zone] = true}; the gui writes it, the loop reads it live.
 local parked = {} -- {[key] = retryAfter}. Plain table: the keys are strings, so weak
 -- keys would do nothing. Rebuilt against the live candidate list on each scan, which
 -- is what drops nests that rerolled out of existence.
+local misses = {} -- {[key] = consecutive nils}. Pruned alongside parked in scan(),
+-- under the same "zone answered" guard -- a key that rerolls away must not sit here
+-- forever waiting for a nest that no longer exists.
 
 local function req(promise, timeout)
 	local done, ok, val = false, false, nil
@@ -221,6 +264,14 @@ local function scan(alive)
 			-- if the zone did not answer, a request failure is not evidence the nest is gone.
 			if answeredZones[zone] then
 				parked[key] = nil -- rerolled away; stop remembering it
+			end
+		end
+	end
+	for key in pairs(misses) do
+		if not seen[key] then
+			local zone, _ = parseKey(key)
+			if answeredZones[zone] then
+				misses[key] = nil -- rerolled away; stop counting misses against it
 			end
 		end
 	end
@@ -418,14 +469,20 @@ local noteConn = remotes.game.notifications.showNotification:connect(function(a,
 	lastNote, noteAt = string.format("%s %s", tostring(a), tostring(b)), os.clock()
 end)
 
+-- The server-pushed reroll signal. SCAN_EVERY is only the backstop -- without this
+-- the farm chases keys the server already rerolled away for up to 20s, each a wasted
+-- travel plus a stealEgg that comes back false against a nest that no longer exists.
+local rescanNow = false
+local rescanConn = remotes.game.nests.refreshNests:connect(function()
+	rescanNow = true
+end)
+
 local function freshNote()
 	if lastNote and os.clock() - noteAt < 3 then
 		return lastNote
 	end
 	return nil
 end
-
-local misses = {} -- {[key] = consecutive nils}
 
 -- An insane has no key to parse -- its position is read live from the model each
 -- pass, since a guard may be walking it along a trip between our scan and our grab.
@@ -508,20 +565,44 @@ local function setFarming(state)
 	farm.on = state
 	if not state then
 		step("idle")
+		-- a stopped farm must not keep showing its last target -- otherwise "stopped"
+		-- and "still working the same nest" look identical on the panel
+		status.target, status.value, status.weight = "-", "-", "-"
+		status.rarity, status.zone, status.nest, status.note = "-", "-", "-", "-"
 		return
 	end
 	farm.gen += 1
 	local mine = farm.gen
+
+	-- Its own thread, and that is the entire point: a farm thread parked in a yield
+	-- cannot report anything, and everything goes quiet at once. Gated the same as the
+	-- farm loop -- gen-checked -- so it dies with this generation instead of stacking
+	-- one immortal ticker per paste (it used to be spawned once at file scope, forever).
 	task.spawn(function()
-		local cands, lastScan = {}, 0
+		while farm.on and farm.gen == mine do
+			task.wait(5)
+			if farm.on and farm.gen == mine and os.clock() - markAt > GRAB_TIMEOUT * 4 then
+				warnf("stuck %.0fs at: %s", os.clock() - markAt, mark)
+			end
+		end
+	end)
+
+	task.spawn(function()
+		local cands, lastScan, lastScanWarn = {}, 0, 0
 		local function alive()
 			return farm.on and farm.gen == mine
 		end
 		while alive() do
-			if os.clock() - lastScan > SCAN_EVERY or #cands == 0 then
+			if os.clock() - lastScan > SCAN_EVERY or #cands == 0 or rescanNow then
 				step("scan")
-				cands = scan(alive)
+				local out, any = scan(alive)
+				cands = out
 				lastScan = os.clock()
+				rescanNow = false
+				if not any and os.clock() - lastScanWarn > 30 then
+					warnf("no zone answered getNestContents -- server not responding, or remotes changed shape?")
+					lastScanWarn = os.clock()
+				end
 			end
 			local c = best(cands, priority)
 			if not c then
@@ -544,8 +625,17 @@ local function setFarming(state)
 						misses[c.key] = nil
 						parked[c.key] = os.clock() + PARK
 						status.note = freshNote() or "refused"
-					else
+					elseif alive() then
+						-- alive() guards this whole branch: goTo returns false (grab maps it
+						-- to nil) when the farm is toggled off mid-travel, and a cancelled
+						-- sweep is not a miss against the target -- it never got a real shot.
 						misses[c.key] = (misses[c.key] or 0) + 1
+						status.note = string.format(
+							"could not reach %s -- strike %d of %d",
+							c.desc.label,
+							misses[c.key],
+							MISS_STRIKES
+						)
 						if misses[c.key] >= MISS_STRIKES then
 							parked[c.key] = os.clock() + PARK
 							misses[c.key] = nil
@@ -563,17 +653,6 @@ local function setFarming(state)
 		end
 	end)
 end
-
--- A parked farm thread is indistinguishable from a dead one -- no error, no log,
--- toggle still lit. A separate thread is the only thing that can report it.
-task.spawn(function()
-	while true do
-		task.wait(5)
-		if farm.on and os.clock() - markAt > GRAB_TIMEOUT * 4 then
-			warnf("stuck %.0fs at: %s", os.clock() - markAt, mark)
-		end
-	end
-end)
 
 -- base -----------------------------------------------------------------------
 -- The store is the game's own mirror of your save, so streaming cannot touch it and
@@ -719,7 +798,16 @@ local Window, WindUI = panel({
 	size = UDim2.fromOffset(520, 460),
 })
 if not Window then
-	return -- panel.lua already said why
+	-- panel.lua already said why -- but noteConn/rescanConn are live connections
+	-- installed before this fetch, and nothing else can ever reach them past this
+	-- return; leaving them would leak one more of each per re-paste.
+	pcall(function()
+		noteConn()
+	end)
+	pcall(function()
+		rescanConn()
+	end)
+	return
 end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:egg-bold" })
@@ -858,6 +946,9 @@ local function stopAll()
 	setSelling(false)
 	pcall(function()
 		noteConn()
+	end)
+	pcall(function()
+		rescanConn()
 	end)
 	pcall(function()
 		drain:Disconnect()
