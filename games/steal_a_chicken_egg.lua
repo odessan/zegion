@@ -30,6 +30,11 @@ local MISS_STRIKES = 3 -- consecutive "could not get in range" before parking a 
 -- this it sits at the head of a best-first queue forever.
 local GRAB_TIMEOUT = 8 -- seconds for one whole grab, watchdog only
 local CLAIM_POLL = 5 -- seconds between ripe-egg checks
+local CLAIM_GAP = 0.4 -- seconds between individual claims. Paces claimEgg against the
+-- server's rate limit; raise if claims start coming back refused.
+local SELL_POLL = 5 -- seconds between backpack checks before a sell trip. Same default
+-- as CLAIM_POLL but its own constant: one paces ripe-egg checks, the other paces
+-- sell-threshold checks, and retuning one must never silently retune the other.
 local SELL_AT = 10 -- eggs held before a sell trip. An Input, tunable live.
 local INSANE_RANGE = 19 -- approach distance for an insane chicken. Its prompt reaches
 -- 31-48, but that is a CLIENT gate and says nothing about the server's, so this stays
@@ -616,7 +621,7 @@ local function setClaiming(state)
 					if type(e) == "table" and type(e.ripeAt) == "number" and now >= e.ripeAt then
 						local okC, res = req(remotes.data.base.claimEgg:request(id))
 						say("claim %s -> %s %s", tostring(id):sub(1, 8), tostring(okC), tostring(res))
-						task.wait(0.4)
+						task.wait(CLAIM_GAP)
 					end
 				end
 			else
@@ -697,7 +702,7 @@ local function setSelling(state)
 					task.wait(1) -- lock held by the farm right now; retry next poll, don't drop it
 				end
 			end
-			task.wait(CLAIM_POLL)
+			task.wait(SELL_POLL)
 		end
 		if seller.gen == mine then -- only the current generation may switch itself off
 			seller.on = false
@@ -823,52 +828,28 @@ secFarm:Input({
 	end,
 })
 
-local secDebug = Tab:Section({ Title = "Debug", Box = true, Opened = true })
-secDebug:Button({ Title = "Scan now", Callback = function()
-	for _, z in ipairs(zones()) do
-		wanted[z] = true
-	end
-	local t0 = os.clock()
-	local cands, ok = scan()
-	say("scan ok=%s %d candidates in %.1fs", tostring(ok), #cands, os.clock() - t0)
-	for _, label in ipairs({ "Highest Value", "Highest Weight", "Highest Rarity" }) do
-		local b = best(cands, label)
-		if b then
-			say("  %-16s %s %s size=%.1f value=%d rarity=%d  %s",
-				label, b.zone, b.desc.label, b.desc.weight, b.desc.value, b.desc.rarity, b.key)
-		end
-	end
-end })
+local secStatus = Tab:Section({ Title = "Status", Icon = "solar:info-circle-bold", Box = true, Opened = true })
+local statusRow = secStatus:Paragraph({ Title = "Idle", Desc = "-" })
 
-secDebug:Button({ Title = "Go to best", Callback = function()
-	for _, z in ipairs(zones()) do
-		wanted[z] = true
+-- A resumed thread loses the capability to touch the hidden GUI: the farm gets away
+-- with its first write and throws "lacking capability Plugin" on every one after a
+-- task.wait, which kills the loop with the toggle stuck ON. Heartbeat is called by
+-- the engine with our own identity, so the drain runs there and the loops only ever
+-- write to a plain table.
+local lastDrawn = ""
+local drain = RunService.Heartbeat:Connect(function()
+	local line = string.format(
+		"%s  |  value %s  weight %s  rarity %s\nzone %s  |  nest %s\n%s",
+		status.target, status.value, status.weight, status.rarity, status.zone, status.nest, status.note
+	)
+	if line ~= lastDrawn then
+		lastDrawn = line
+		pcall(function()
+			statusRow:SetTitle(status.target)
+			statusRow:SetDesc(line)
+		end)
 	end
-	local cands = scan()
-	local b = best(cands, "Highest Value")
-	if not b then
-		return say("no target")
-	end
-	local pos = targetPos(b) -- b.pos is nil for an insane candidate; it carries .model instead
-	if not pos then
-		return say("target %s has no position (not streamed in?)", b.key)
-	end
-	local ran = claim(function()
-		local t0 = os.clock()
-		local got = goTo(pos)
-		local r = root()
-		say("goTo %s -> %s in %.1fs, %.1f studs off", b.key, tostring(got), os.clock() - t0,
-			r and (r.Position - pos).Magnitude or -1)
-	end)
-	if not ran then
-		say("busy")
-	end
-end })
-
-secDebug:Button({ Title = "Where is my base", Callback = function()
-	local b, pos = myBase()
-	say("base=%s at %s", b and tostring(b:GetAttribute("index")) or "NOT FOUND", tostring(pos))
-end })
+end)
 
 -- close ----------------------------------------------------------------------
 local function stopAll()
@@ -877,6 +858,9 @@ local function stopAll()
 	setSelling(false)
 	pcall(function()
 		noteConn()
+	end)
+	pcall(function()
+		drain:Disconnect()
 	end)
 end
 
