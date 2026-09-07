@@ -66,6 +66,162 @@ local penUT = require(RS.shared.utils.penUT)
 local STEAL_RANGE = nestsIF.maxStealDistance -- 19 at time of writing; read, never typed
 
 -- world ----------------------------------------------------------------------
+-- getNestContents answers for EVERY zone from anywhere on the map, and its map key
+-- is nestUT.nestKey(zone, origin) -- literally "zone:x:y:z" of the rounded nest
+-- origin. So the nest's position is IN the key: no walking a zone to see it, no
+-- waiting for a model to stream, and a steal lands on a nest that never streamed in.
+local function zones()
+	local t = {}
+	for z in pairs(nestsIF.zoneAreas) do
+		table.insert(t, z)
+	end
+	table.sort(t)
+	return t
+end
+
+local function parseKey(key)
+	local zone, x, y, z = key:match("^(.-):(-?%d+):(-?%d+):(-?%d+)$")
+	if not zone then
+		return nil, nil
+	end
+	return zone, Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+end
+
+do -- self-check: the key format is the one thing everything else is built on
+	local z, p = parseKey("forest:25:32:-299")
+	assert(z == "forest", "parseKey zone")
+	assert(p == Vector3.new(25, 32, -299), "parseKey position")
+	assert(select(1, parseKey("crystal:3511:30:-334")) == "crystal", "parseKey negative Z")
+	assert(parseKey("not a key") == nil, "parseKey rejects junk")
+	assert(parseKey("") == nil, "parseKey rejects empty")
+end
+
+-- getNestContents gives {name, variant, size} and nothing else. Value and rarity
+-- come from the game's own struct, so a balance patch lands for free.
+-- getSellValue already folds weight in, which is why Value and Weight are different
+-- orderings rather than independent axes.
+local function describe(name, variant, size)
+	local def = chickenUT.getChicken(name, variant) -- NOT chickensIF[name]
+	if not def then
+		return nil
+	end
+	local okV, value = pcall(def.getSellValue, def, size)
+	local rar = def:getRarity()
+	return {
+		label = def:getName(),
+		value = okV and value or 0,
+		weight = size,
+		rarity = rar and rar:getOrder() or 0,
+	}
+end
+
+local PRIORITIES = {
+	{ label = "Highest Value", score = function(d)
+		return d.value
+	end },
+	{ label = "Highest Weight", score = function(d)
+		return d.weight
+	end },
+	-- rarity ties are common (a whole zone shares one), so value breaks them
+	{ label = "Highest Rarity", score = function(d)
+		return d.rarity * 1e12 + d.value
+	end },
+}
+
+local function priorityByLabel(label)
+	for _, p in ipairs(PRIORITIES) do
+		if p.label == label then
+			return p
+		end
+	end
+	return PRIORITIES[1]
+end
+
+do -- self-check: rarity must dominate value, and value must still break ties
+	local rare = { value = 1, weight = 1, rarity = 9 }
+	local rich = { value = 5e11, weight = 1, rarity = 8 }
+	local s = priorityByLabel("Highest Rarity").score
+	assert(s(rare) > s(rich), "rarity outranks value")
+	local a = { value = 2, weight = 1, rarity = 8 }
+	local b = { value = 1, weight = 1, rarity = 8 }
+	assert(s(a) > s(b), "value breaks a rarity tie")
+end
+
+local wanted = {} -- {[zone] = true}; the gui writes it, the loop reads it live.
+-- Held as an upvalue, so the gui must table.clear + refill, never reassign.
+local parked = {} -- {[key] = retryAfter}. Plain table: the keys are strings, so weak
+-- keys would do nothing. Rebuilt against the live candidate list on each scan, which
+-- is what drops nests that rerolled out of existence.
+
+local function req(promise, timeout)
+	local done, ok, val = false, false, nil
+	promise:andThen(function(v)
+		ok, val, done = true, v, true
+	end):catch(function(e)
+		ok, val, done = false, e, true
+	end)
+	local t0 = os.clock()
+	while not done and os.clock() - t0 < (timeout or 6) do
+		task.wait()
+	end
+	if not done then
+		return nil, "timeout" -- pcall does not bound a yield; a clock does
+	end
+	return ok, val
+end
+
+local function scan()
+	local out, any = {}, false
+	local seen = {}
+	for _, z in ipairs(zones()) do
+		local ok, map = req(remotes.game.nests.getNestContents:request(z))
+		if ok and type(map) == "table" then
+			any = true
+			for key, v in pairs(map) do
+				local zone, pos = parseKey(key)
+				if pos and v.name then
+					seen[key] = true
+					table.insert(out, {
+						kind = "nest",
+						zone = zone or z,
+						key = key,
+						pos = pos,
+						name = v.name,
+						variant = v.variant,
+						size = v.size,
+					})
+				end
+			end
+		end
+		task.wait(0.3) -- bucket is 20 per 5s across ten zones
+	end
+	for key in pairs(parked) do
+		if not seen[key] then
+			parked[key] = nil -- rerolled away; stop remembering it
+		end
+	end
+	return out, any
+end
+
+local preferInsane = false -- batch 2 wires the toggle to this; declared here because best reads it
+
+local function best(cands, label)
+	local score = priorityByLabel(label).score
+	local now, top, topScore = os.clock(), nil, -math.huge
+	for _, c in ipairs(cands) do
+		if wanted[c.zone] and (parked[c.key] or 0) <= now then
+			local d = describe(c.name, c.variant, c.size)
+			if d then
+				local s = score(d)
+				if s > topScore then
+					top, topScore, c.desc = c, s, d
+				end
+			end
+		end
+	end
+	return top
+end
+
 -- travel ---------------------------------------------------------------------
 -- farm -----------------------------------------------------------------------
 -- base -----------------------------------------------------------------------
@@ -82,6 +238,23 @@ if not Window then
 end
 
 local Tab = Window:Tab({ Title = "Main", Icon = "solar:egg-bold" })
+
+local secDebug = Tab:Section({ Title = "Debug", Box = true, Opened = true })
+secDebug:Button({ Title = "Scan now", Callback = function()
+	for _, z in ipairs(zones()) do
+		wanted[z] = true
+	end
+	local t0 = os.clock()
+	local cands, ok = scan()
+	say("scan ok=%s %d candidates in %.1fs", tostring(ok), #cands, os.clock() - t0)
+	for _, label in ipairs({ "Highest Value", "Highest Weight", "Highest Rarity" }) do
+		local b = best(cands, label)
+		if b then
+			say("  %-16s %s %s size=%.1f value=%d rarity=%d  %s",
+				label, b.zone, b.desc.label, b.desc.weight, b.desc.value, b.desc.rarity, b.key)
+		end
+	end
+end })
 
 -- close ----------------------------------------------------------------------
 local function stopAll()
