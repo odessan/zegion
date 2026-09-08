@@ -72,7 +72,11 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Run For Soccer Players              | `140417239274110` | `run_for_soccer_players.lua`     |
 | Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua`            |
 | Steal a Brainrot Base               | `103050497819513` | `steal_a_brainrot_base.lua`      |
+<<<<<<< HEAD
 | Steal a Chicken Egg                 | `76503495566299`  | `steal_a_chicken_egg.lua`        |
+=======
+| Steal a Fish Egg                    | `99183404085821`  | `steal_a_fish_egg.lua`           |
+>>>>>>> 03105d0 (Add new script 'steal_a_fish_egg' for PlaceId 99183404085821 and update loader and README.md to include it.)
 | Strength to Grow Arms               | `86259628805375`  | `strength_to_grow_arms.lua`      |
 | Surf for Lucky Blocks               | `98916904742148`  | `surf_for_brainrots.lua`         |
 | Swing Obby for Brainrots!           | `114640202062357` | `swing_obby_for_brainrots.lua`   |
