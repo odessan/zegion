@@ -15,10 +15,10 @@
      Stop: getgenv().stealChickenEggStop() ]]
 
 -- config ---------------------------------------------------------------------
-local CHUNK = 60 -- studs per teleport step. A single long hop can land you inside
+local CHUNK = 120 -- studs per teleport step. A single long hop can land you inside
 -- terrain and get you ejected; 60 was measured covering 1759 studs in 39 hops with
 -- nothing reverted. Raise for speed, lower if hops start coming up short.
-local CHUNK_GAP = 0.25 -- seconds between hops. Not a rate limit -- three hops 0.1s
+local CHUNK_GAP = 0.1 -- seconds between hops. Not a rate limit -- three hops 0.1s
 -- apart all stuck -- just time for the server to see each one.
 local SETTLE = 0.35 -- seconds after arriving before firing. The server range-checks
 -- against where it thinks you are, not where you are.
@@ -44,9 +44,34 @@ local ARRIVE_TOLERANCE = 12 -- studs from target position to confirm arrival. ho
 -- trying. Raise if you get stuck on terrain spikes; lower if you pass through targets.
 local LAND_OFFSET = Vector3.new(0, 3, 0) -- vertical offset when landing. Prevents
 -- landing inside terrain on a Top surface. Used in hop() and goTo().
-local FALLBACK_HOPS = 200 -- max iterations in goTo's chunked fallback. Bounded to
+local FALLBACK_HOPS = 200 -- max REAL hops in goTo's chunked fallback. Bounded to
 -- prevent spinning forever on an unreachable spot. Raise if distance is regularly
 -- longer than this many CHUNK-sized steps; lower to abort faster on bad spots.
+-- Waiting out a respawn does NOT spend one of these: a death used to eat the whole
+-- travel budget at 0.2s a turn and then report the target as unreachable.
+local DIRECT_MAX = 600 -- studs. Above this, skip the direct hop and chunk from the
+-- start. 600 is the longest single hop that was ever actually measured landing; a
+-- full-map PivotTo lands inside terrain, physics ejects you, and the fallback then
+-- starts from wherever the ejection threw you instead of from where you set off.
+local STALL_HOPS = 6 -- consecutive fallback hops that fail to close any distance
+-- before goTo gives up. Without it a reverted or ejected hop re-fires from the same
+-- spot for the whole FALLBACK_HOPS budget -- 50 seconds of teleporting on the spot.
+local STALL_EPSILON = 2 -- studs. Progress smaller than this is not progress; a hop
+-- that only moves you by the gravity drop during CHUNK_GAP must not reset the count.
+local RESPAWN_WAIT = 15 -- seconds goTo will wait out a missing character before
+-- giving up. Roblox respawns in about 5; this is the ceiling on that, and it exists
+-- because the respawn branch spends no hops, so without a clock it never terminates.
+local BANK_TRIES = 3 -- deposit attempts for one carried chicken before giving up on
+-- it. Every steal after a failed bank is refused for space and parks its nest, so a
+-- silent bank failure used to park the whole map one nest at a time.
+local BANK_CONFIRM = 3 -- seconds to wait for the carry to clear after arriving home.
+-- Arriving deposits by itself, but it is a round trip -- poll, never assume.
+local TIMEOUT_STRIKES = 6 -- consecutive server timeouts on one nest before parking it.
+-- Deliberately looser than MISS_STRIKES: a timeout is proof the press REACHED the
+-- server, so it is not the nest's fault -- but a nest that never answers still has to
+-- step aside rather than sit at the head of a best-first queue retrying forever.
+local IDLE_RESCAN = 5 -- seconds with no eligible target before forcing a rescan. An
+-- all-parked candidate list is not an empty one, so #cands never triggers it.
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -208,6 +233,9 @@ local parked = {} -- {[key] = retryAfter}. Plain table: the keys are strings, so
 local misses = {} -- {[key] = consecutive nils}. Pruned alongside parked in scan(),
 -- under the same "zone answered" guard -- a key that rerolls away must not sit here
 -- forever waiting for a nest that no longer exists.
+local stalls = {} -- {[key] = consecutive timeouts}. Its own table rather than a share
+-- of `misses`: the two have different causes and different limits, and folding them
+-- together is the exact conflation grab()'s four answers exist to avoid.
 
 local function req(promise, timeout)
 	local done, ok, val = false, false, nil
@@ -272,6 +300,14 @@ local function scan(alive)
 			local zone, _ = parseKey(key)
 			if answeredZones[zone] then
 				misses[key] = nil -- rerolled away; stop counting misses against it
+			end
+		end
+	end
+	for key in pairs(stalls) do
+		if not seen[key] then
+			local zone, _ = parseKey(key)
+			if answeredZones[zone] then
+				stalls[key] = nil -- rerolled away; stop counting timeouts against it
 			end
 		end
 	end
@@ -365,25 +401,50 @@ local function hop(pos)
 end
 
 local function goTo(pos, alive)
-	if hop(pos) then
+	-- Only take the direct hop over a distance one has been measured landing. Beyond
+	-- that it is a coin flip that costs a teleport AND leaves you somewhere unplanned
+	-- when it loses, because physics ejects you from wherever it put you inside the map.
+	local r0 = root()
+	if r0 and (pos - r0.Position).Magnitude <= DIRECT_MAX and hop(pos) then
 		return true
 	end
-	for _ = 1, FALLBACK_HOPS do -- bounded: never spin forever on a spot we cannot reach
+	local hops, stalled, prev, waited = 0, 0, math.huge, 0
+	while hops < FALLBACK_HOPS do -- bounded: never spin forever on a spot we cannot reach
 		if alive and not alive() then
 			return false
 		end
 		local r = root()
 		if not r then
-			task.wait(0.2) -- respawning
+			-- respawning costs time but must not cost a hop, or a death eats the whole
+			-- travel budget at 0.2s a turn and the target gets blamed for it. Bounded on
+			-- its own clock, though: with no budget at all this loop never terminates.
+			waited += 0.2
+			if waited > RESPAWN_WAIT then
+				return false
+			end
+			task.wait(0.2)
 		else
 			local left = (pos - r.Position).Magnitude
 			if left < ARRIVE_TOLERANCE then
 				return true
 			end
+			-- The distance has to actually be closing. A hop the server reverts, or one
+			-- terrain ejects you back out of, leaves `left` where it was -- and re-aiming
+			-- from the same spot does the same thing again, forever.
+			if prev - left < STALL_EPSILON then
+				stalled += 1
+				if stalled >= STALL_HOPS then
+					return false
+				end
+			else
+				stalled = 0
+			end
+			prev = left
 			local step = (pos - r.Position).Unit * math.min(CHUNK, left)
 			pcall(function()
 				player.Character:PivotTo(CFrame.new(r.Position + step + LAND_OFFSET))
 			end)
+			hops += 1
 			task.wait(CHUNK_GAP)
 		end
 	end
@@ -429,8 +490,12 @@ local function myBase()
 					n += 1
 				end
 			end
-			if n > bestN then
-				idx, bestN = b:GetAttribute("index"), n
+			-- read the attribute BEFORE committing bestN: a base with no index that
+			-- wins on pen count used to raise the bar for every later candidate while
+			-- leaving idx nil, so the search below could never match anything again
+			local i = b:GetAttribute("index")
+			if i and n > bestN then
+				idx, bestN = i, n
 			end
 		end
 	end
@@ -497,9 +562,15 @@ local function targetPos(c)
 	return c.pos
 end
 
--- Three answers, not two. Conflating "refused" with "could not reach" makes a
+-- Four answers, not two. Conflating "refused" with "could not reach" makes a
 -- streaming hiccup look like a server refusal, and an unreachable target then sits
--- at the head of a best-first queue blocking everything under it, silently.
+-- at the head of a best-first queue blocking everything under it, silently. And a
+-- timeout is neither: the press REACHED the server and we simply did not hear back,
+-- so counting it as a miss parks a nest we were standing on top of for being slow.
+--   true        the world changed, we have it
+--   false       the server refused -- park the nest
+--   "timeout"   no answer inside req's window -- retry, hold nothing against it
+--   nil         never got in range -- a miss strike
 local function grab(c, alive)
 	local pos = targetPos(c)
 	if not pos then
@@ -527,7 +598,27 @@ local function grab(c, alive)
 		return true
 	end
 	if ok == nil then
-		return nil -- timeout is not a refusal; the nest still exists and may try again
+		return "timeout" -- the nest still exists and we were in range; just try again
+	end
+	return false
+end
+
+-- A carried chicken is welded into the character, which is how the probe read it
+-- (probe T4's "still carrying"). Positive detection only: if we cannot see a carry we
+-- report false, because a detector that guesses "yes" would deadlock the farm on a
+-- bank that can never complete.
+local function carrying()
+	local c = player.Character
+	if not c then
+		return false
+	end
+	if c:FindFirstChild("Chicken") then
+		return true
+	end
+	for _, d in ipairs(c:GetChildren()) do
+		if d:GetAttribute("chickenName") then
+			return true -- the model name varies by species; the attribute does not
+		end
 	end
 	return false
 end
@@ -535,6 +626,11 @@ end
 -- Arriving at the base deposits by itself -- no dropChicken, no placeChicken.
 -- equipBestChickens then places anything sitting in the backpack, which is the
 -- game's own auto-place button and knows your slot count better than we would.
+--
+-- It is still a round trip, so the fire is not the confirm: poll for the carry to
+-- clear. A deposit that silently did not take leaves you holding the chicken, and
+-- then EVERY later steal is refused for space and parks its nest -- which is how one
+-- bad bank used to park the whole map, one nest at a time, without a word.
 local function deposit(alive)
 	local _, pos = myBase()
 	if not pos then
@@ -548,11 +644,28 @@ local function deposit(alive)
 	pcall(function()
 		remotes.data.base.equipBestChickens:fire()
 	end)
-	return true
+	local t0 = os.clock()
+	while os.clock() - t0 < BANK_CONFIRM do
+		if not carrying() then
+			return true
+		end
+		if alive and not alive() then
+			return false
+		end
+		task.wait(0.1)
+	end
+	-- we arrived and it did not clear. Never seeing a carry at all reads the same way,
+	-- so treat that as success rather than looping on a chicken we cannot detect.
+	return not carrying()
 end
 
 local status = { target = "-", value = "-", weight = "-", rarity = "-", zone = "-", nest = "-", note = "-" }
 local farm = { on = false, gen = 0 }
+-- Set whenever a deposit comes back false, and the reason the sweep banks before it
+-- targets. Not the same as carrying(): carrying() is a live look at the character and
+-- reports false when it cannot see the carry at all, so this remembers what the last
+-- deposit told us in the case where detection is the thing that is failing.
+local mustBank = false
 local priority = PRIORITIES[1].label
 -- preferInsane is declared in the world section, above best(), since best() reads it
 
@@ -573,6 +686,8 @@ local function setFarming(state)
 	end
 	farm.gen += 1
 	local mine = farm.gen
+	mustBank = false -- a fresh run re-reads the world; do not inherit the last run's
+	-- verdict, which may have been about a base that has since been claimed
 
 	-- Its own thread, and that is the entire point: a farm thread parked in a yield
 	-- cannot report anything, and everything goes quiet at once. Gated the same as the
@@ -604,10 +719,47 @@ local function setFarming(state)
 					lastScanWarn = os.clock()
 				end
 			end
+			-- Bank before targeting anything. A chicken still on us means every steal
+			-- from here is refused for space, and a refusal parks its nest -- so going
+			-- for another nest while carrying used to park the whole map, one nest at a
+			-- time, and read from outside as "it just teleports around doing nothing".
+			if mustBank or carrying() then
+				local banked = false
+				local ran = claim(function()
+					step("bank / home")
+					for i = 1, BANK_TRIES do
+						if not alive() then
+							return
+						end
+						if deposit(alive) then
+							banked = true
+							return
+						end
+						status.note = string.format("bank failed -- try %d of %d", i, BANK_TRIES)
+						task.wait(1)
+					end
+				end)
+				if banked then
+					mustBank = false
+					status.note = "banked"
+				elseif not ran then
+					task.wait(0.2) -- the seller holds the lock; try again next pass
+				elseif alive() then
+					mustBank = true
+					warnf("still carrying after %d bank attempts -- backing off %ds", BANK_TRIES, PARK)
+					status.note = "cannot bank -- is the base claimed, and does it have a free slot?"
+					task.wait(PARK) -- OUTSIDE the lock: a stuck bank must not also stall the seller
+				end
+				continue
+			end
+
 			local c = best(cands, priority)
 			if not c then
 				step("no target")
-				task.wait(1)
+				-- an all-parked candidate list is not an empty one, so #cands never
+				-- forces the rescan and the loop would idle out the rest of SCAN_EVERY
+				task.wait(IDLE_RESCAN)
+				rescanNow = true
 			else
 				status.target, status.zone, status.nest = c.desc.label, c.zone, c.key
 				status.value = string.format("%d", c.desc.value)
@@ -617,14 +769,36 @@ local function setFarming(state)
 					step("grab " .. c.key .. " / press")
 					local got = grab(c, alive)
 					if got == true then
-						misses[c.key] = nil
+						misses[c.key], stalls[c.key] = nil, nil
 						status.note = "stole " .. c.desc.label
 						step("grab " .. c.key .. " / home")
-						deposit(alive)
+						-- the return is the whole point: a silent bank failure leaves the
+						-- chicken on us, and the top of the loop has to know that before it
+						-- picks another nest
+						if not deposit(alive) and alive() then
+							mustBank = true
+							status.note = "stole " .. c.desc.label .. ", but the bank did not take"
+						end
 					elseif got == false then
-						misses[c.key] = nil
+						misses[c.key], stalls[c.key] = nil, nil
 						parked[c.key] = os.clock() + PARK
 						status.note = freshNote() or "refused"
+					elseif got == "timeout" then
+						-- the press reached the server; we just did not hear back. Not the
+						-- nest's fault, so no miss strike -- but it cannot retry forever.
+						misses[c.key] = nil
+						stalls[c.key] = (stalls[c.key] or 0) + 1
+						status.note = string.format(
+							"no answer for %s -- timeout %d of %d",
+							c.desc.label,
+							stalls[c.key],
+							TIMEOUT_STRIKES
+						)
+						if stalls[c.key] >= TIMEOUT_STRIKES then
+							parked[c.key] = os.clock() + PARK
+							stalls[c.key] = nil
+							say("parking %s -- %d timeouts in a row", c.key, TIMEOUT_STRIKES)
+						end
 					elseif alive() then
 						-- alive() guards this whole branch: goTo returns false (grab maps it
 						-- to nil) when the farm is toggled off mid-travel, and a cancelled
@@ -775,6 +949,15 @@ local function setSelling(state)
 						say("sold: %d -> %d eggs", n, after)
 					else
 						say("sold: %d eggs, but could not re-read the backpack after", n)
+					end
+					-- Walk it back while we still hold the lock. Left at the sell zone,
+					-- the farm's next trip starts from the far side of the map -- the
+					-- longest travel in the run, and the one most likely to fail.
+					local _, home = myBase()
+					if home then
+						goTo(home, function()
+							return seller.on and seller.gen == mine
+						end)
 					end
 				end)
 				if not ran then
