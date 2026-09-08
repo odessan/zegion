@@ -62,13 +62,10 @@ local GAMES = {
 	["86943068337855"] = "drill_block_for_dumpling_squishy.lua", -- Drill Block for Dumpling Squishy
 	["122572082932179"] = "drill_ores.lua", -- Drill Ores
 	["112781315318195"] = "pull_a_lucky_fish.lua", -- Pull a Lucky Fish
-<<<<<<< HEAD
 	["70640255604878"] = "pull_an_egg.lua", -- Pull an Egg
 	["120135584963579"] = "dont_steal_a_bobo.lua", -- Don't Steal a Bobo
 	["76503495566299"] = "steal_a_chicken_egg.lua", -- Steal a Chicken Egg
-=======
 	["99183404085821"] = "steal_a_fish_egg.lua", -- Steal a Fish Egg
->>>>>>> 03105d0 (Add new script 'steal_a_fish_egg' for PlaceId 99183404085821 and update loader and README.md to include it.)
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
