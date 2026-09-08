@@ -54,6 +54,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Build a Bridge for Brainrots        | `88207898227053`  | `build_bridge_for_brainrots.lua` |
 | Chicken Farm                        | `137233438285284` | `chicken_farm.lua`               |
 | Dig Into Secrets                    | `119409763193569` | `dig_into_secrets.lua`           |
+| Don't Steal a Bobo                  | `120135584963579` | `dont_steal_a_bobo.lua`          |
 | Drill Block for Dumpling Squishy    | `86943068337855`  | `drill_block_for_dumpling_squishy.lua` |
 | Drill Ores                          | `122572082932179` | `drill_ores.lua`                 |
 | Fake a Brainrot                     | `110627433764494` | `fake_a_brainrot.lua`            |
@@ -66,6 +67,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Power Blast Lucky Block             | `119822977170203` | `power_blast_lucky_block.lua`    |
 | Pull a Lucky Block                  | `80861715191104`  | `pull_a_lucky_block.lua`         |
 | Pull a Lucky Fish                   | `112781315318195` | `pull_a_lucky_fish.lua`          |
+| Pull an Egg                         | `70640255604878`  | `pull_an_egg.lua`                |
 | Run For Brainrots!                  | `94702395375549`  | `run_for_brainrots.lua`          |
 | Run For Soccer Players              | `140417239274110` | `run_for_soccer_players.lua`     |
 | Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua`            |
