@@ -66,6 +66,9 @@ local GAMES = {
 	["120135584963579"] = "dont_steal_a_bobo.lua", -- Don't Steal a Bobo
 	["76503495566299"] = "steal_a_chicken_egg.lua", -- Steal a Chicken Egg
 	["99183404085821"] = "steal_a_fish_egg.lua", -- Steal a Fish Egg
+	["122216176958450"] = "steal_a_seed.lua", -- Steal a Seed
+	["119259569670784"] = "sniper_arena.lua", -- Sniper Arena
+	["113290951185459"] = "anime_dice.lua", -- Anime Dice
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
