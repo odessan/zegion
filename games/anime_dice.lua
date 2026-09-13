@@ -1294,6 +1294,15 @@ end
 -- from anywhere, at the same time as everything else, and shares nothing with them.
 local towerOn, towerGen = false, 0
 local selectedTower, autoSelectTower = nil, false
+
+-- Rotation: run each ticked tower `rotateAttempts` times, then move to the next ticked one
+-- in the game's own tower order, and loop. The position is tracked by tower NAME, not by
+-- index into the ticked list, so ticking or unticking a tower mid-run doesn't make the
+-- rotation jump to a different tower.
+local rotateOn = false
+local rotateTicked = {} -- [towerName] = true; cleared in place, never replaced (loop holds it)
+local rotateAttempts = 3
+local rotateCurrent, rotateDone = nil, 0
 -- Declared up here because the tower loop uses them and the boosts section is further
 -- down: TowerClass bakes the Damage Multiplier into a run at creation, so damage boosts
 -- have to be burned by the tower loop right before PlayTower, not by the boost loop
@@ -1437,6 +1446,50 @@ local function refreshTowerReport()
 	return best
 end
 
+-- The ticked towers in the game's own order (Towers.lua `order`), so the rotation walks
+-- them Dragon -> Cursed -> Pirate -> ... the way the game presents them.
+local function rotationList()
+	local list = {}
+	for _, entry in ipairs(towerNames) do
+		if rotateTicked[entry.name] then
+			table.insert(list, entry.name)
+		end
+	end
+	return list
+end
+
+-- Which tower the rotation is on. If the current one was unticked, start over at the
+-- first ticked tower rather than guessing where "next" would have been.
+local function rotationPick()
+	local list = rotationList()
+	if #list == 0 then
+		return nil
+	end
+	if not rotateCurrent or not table.find(list, rotateCurrent) then
+		rotateCurrent, rotateDone = list[1], 0
+	end
+	return rotateCurrent
+end
+
+-- Called once per run that genuinely started and ended.
+local function rotationCount()
+	rotateDone = rotateDone + 1
+	if rotateDone < rotateAttempts then
+		return
+	end
+	local list = rotationList()
+	if #list == 0 then
+		rotateCurrent, rotateDone = nil, 0
+		return
+	end
+	local at = table.find(list, rotateCurrent) or 0
+	local nextTower = list[at % #list + 1]
+	if nextTower and nextTower ~= rotateCurrent then
+		logEvent(("rotation: %s done (%d), moving to %s"):format(tostring(rotateCurrent), rotateDone, nextTower))
+	end
+	rotateCurrent, rotateDone = nextTower, 0
+end
+
 -- Ends a run and makes sure the SERVER agrees it ended. CancelTower only sets
 -- endingQueued; TowerClass destroys the tower object inside the NEXT completeFloor call,
 -- and TowerService keeps exactly one tower per player. The game's own controller gets
@@ -1516,7 +1569,16 @@ local function setTower(on)
 				continue
 			end
 
-			local pick = autoSelectTower and refreshTowerReport() or selectedTower
+			-- Rotation wins over the other two, then the simulator, then the dropdown.
+			local rotating = rotateOn and #rotationList() > 0
+			local pick
+			if rotating then
+				pick = rotationPick()
+			elseif autoSelectTower then
+				pick = refreshTowerReport()
+			else
+				pick = selectedTower
+			end
 			if not pick then
 				towerSay("pick a tower first")
 				task.wait(2)
@@ -1537,7 +1599,10 @@ local function setTower(on)
 				else
 					local floors = 0
 					local lastReply = os.clock()
-					towerSay(("%s -- started"):format(pick))
+					local label = rotating
+							and ("%s (attempt %d/%d)"):format(pick, rotateDone + 1, rotateAttempts)
+						or pick
+					towerSay(("%s -- started"):format(label))
 					while towerOn and towerGen == mine do
 						local seq = invoke("Towers", "CompleteTowerFloor")
 						if type(seq) ~= "table" or type(seq[1]) ~= "table" then
@@ -1546,7 +1611,7 @@ local function setTower(on)
 							-- twenty hits is a legitimate 13s+ of sequence to wait out,
 							-- and a fixed try count would abandon a healthy run.
 							if os.clock() - lastReply > 30 then
-								towerSay(("%s -- no reply for 30s, restarting"):format(pick))
+								towerSay(("%s -- no reply for 30s, restarting"):format(label))
 								break
 							end
 							task.wait(0.25)
@@ -1575,7 +1640,7 @@ local function setTower(on)
 									ended = true
 								end
 							end
-							towerSay(("%s -- %d floor%s cleared"):format(pick, floors, floors == 1 and "" or "s"))
+							towerSay(("%s -- %d floor%s cleared"):format(label, floors, floors == 1 and "" or "s"))
 							if ended then
 								logEvent(("%s ended at floor %d"):format(pick, floors))
 								break
@@ -1585,6 +1650,11 @@ local function setTower(on)
 					-- Whatever got us out, leave nothing running: a break on the timeout
 					-- above is exactly the state that would refuse the next PlayTower.
 					endTower()
+					-- One attempt = a run that started and then ended. A refused start never
+					-- reaches here, and switching Auto Tower off mid-run isn't an attempt.
+					if rotating and towerOn and towerGen == mine then
+						rotationCount()
+					end
 					task.wait(3.2)
 				end
 			end
@@ -1739,6 +1809,53 @@ local function boostKind(cfg)
 	return nil
 end
 
+-- What the panel calls a potion: buff type plus tier, e.g. "Damage II". Every family of the
+-- same type and tier -- plain, Dragon, Cursed, Pirate, Leaf -- shares one label, because
+-- they grant the same global buff (TowerClass reads one "Damage Multiplier" no matter
+-- which tower dropped the boost). The families differ only in strength and duration.
+local ROMAN = { "I", "II", "III", "IV", "V", "VI", "VII", "VIII" }
+local KIND_LABEL = { luck = "Luck", damage = "Damage", money = "Income" }
+local KIND_ORDER = { luck = 1, damage = 2, money = 3 }
+
+local function potionLabel(cfg)
+	local kind = boostKind(cfg)
+	local tier = tonumber(cfg.tier)
+	if not (kind and tier) then
+		return nil
+	end
+	return KIND_LABEL[kind] .. " " .. (ROMAN[tier] or tostring(tier))
+end
+
+-- The choices, read off the game's own boost list rather than typed out, so a tier V or a
+-- sixth family from the next update shows up without an edit.
+local potionChoices = {}
+do
+	local seen, rows = {}, {}
+	for name in pairs(Registry.entriesOfKind("Boost")) do
+		local cfg = Registry.getEntryConfig(name)
+		local label = cfg and potionLabel(cfg)
+		if label and not seen[label] then
+			seen[label] = true
+			table.insert(rows, { label = label, kind = KIND_ORDER[boostKind(cfg)], tier = tonumber(cfg.tier) })
+		end
+	end
+	table.sort(rows, function(a, b)
+		if a.kind ~= b.kind then
+			return a.kind < b.kind
+		end
+		return a.tier < b.tier
+	end)
+	for _, row in ipairs(rows) do
+		table.insert(potionChoices, row.label)
+	end
+end
+
+-- Everything ticked to start with, so turning the toggle on behaves the way it always has.
+local potionPick = {}
+for _, label in ipairs(potionChoices) do
+	potionPick[label] = true
+end
+
 -- Uses every boost of one kind that you hold. Returns how many went out.
 local function useBoostKind(kind)
 	local ok, inv = pcall(Data.Inventory)
@@ -1751,7 +1868,7 @@ local function useBoostKind(kind)
 	for key, item in pairs(inv) do
 		if type(item) == "table" and (item.amount or 0) > 0 then
 			local cfg = Registry.getEntryConfig(item.name)
-			if cfg and cfg.kind == "Boost" and boostKind(cfg) == kind then
+			if cfg and cfg.kind == "Boost" and boostKind(cfg) == kind and potionPick[potionLabel(cfg) or ""] then
 				table.insert(todo, { key = key, name = item.name, amount = item.amount })
 			end
 		end
@@ -2149,10 +2266,59 @@ TowerSec:Toggle({
 
 TowerSec:Toggle({
 	Title = "Auto-select best tower",
-	Desc = "Simulates all four with your team and takes the best expected drops/second",
+	Desc = "Simulates every tower with your team and takes the best expected drops/second",
 	Value = false,
 	Callback = function(v)
 		autoSelectTower = v
+	end,
+})
+
+TowerSec:Toggle({
+	Title = "Rotate towers",
+	Desc = "Runs each ticked tower the set number of times, then moves to the next. Overrides the two above.",
+	Value = false,
+	Callback = function(v)
+		rotateOn = v
+		if v then
+			rotateCurrent, rotateDone = nil, 0 -- a fresh start from the first ticked tower
+		end
+	end,
+})
+
+TowerSec:Dropdown({
+	Title = "Rotate through",
+	Values = names,
+	Value = {},
+	Multi = true,
+	AllowNone = true,
+	Callback = function(values)
+		-- Cleared in place, not replaced: the tower loop reads this table live. WindUI
+		-- hands back a list, a map, or row tables depending on its build.
+		table.clear(rotateTicked)
+		if type(values) == "table" then
+			for k, v in pairs(values) do
+				local name = type(v) == "string" and v or (v == true and k or nil)
+				if name and table.find(names, name) then
+					rotateTicked[name] = true
+				end
+			end
+		end
+	end,
+})
+
+TowerSec:Input({
+	Title = "Attempts per tower",
+	Desc = "One attempt is one run, ended by the team dying or clearing the top floor",
+	Value = tostring(rotateAttempts),
+	Placeholder = "3",
+	Callback = function(text)
+		local n = tonumber(text)
+		if n and n >= 1 then
+			rotateAttempts = math.floor(n)
+			towerSay(("rotation: %d attempt%s per tower"):format(rotateAttempts, rotateAttempts == 1 and "" or "s"))
+		else
+			towerSay(("attempts unchanged (still %d) -- needs a number of 1 or more"):format(rotateAttempts))
+		end
 	end,
 })
 
@@ -2212,10 +2378,30 @@ RewardSec:Button({
 })
 
 RewardSec:Toggle({
-	Title = "Auto use boosts",
-	Desc = "Luck only while rolling, Damage only while towering, Income always",
+	Title = "Auto use potions",
+	Desc = "Luck only while rolling, Damage right before each tower run, Income anytime",
 	Value = false,
 	Callback = setBoosts,
+})
+
+RewardSec:Dropdown({
+	Title = "Potions to use",
+	Desc = "Damage II covers every Damage II -- plain, Pirate, Leaf and the rest grant the same buff",
+	Values = potionChoices,
+	Value = table.clone(potionChoices),
+	Multi = true,
+	AllowNone = true,
+	Callback = function(values)
+		table.clear(potionPick)
+		if type(values) == "table" then
+			for k, v in pairs(values) do
+				local label = type(v) == "string" and v or (v == true and k or nil)
+				if label and table.find(potionChoices, label) then
+					potionPick[label] = true
+				end
+			end
+		end
+	end,
 })
 
 RewardSec:Button({
