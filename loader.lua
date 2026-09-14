@@ -69,6 +69,7 @@ local GAMES = {
 	["122216176958450"] = "steal_a_seed.lua", -- Steal a Seed
 	["119259569670784"] = "sniper_arena.lua", -- Sniper Arena
 	["113290951185459"] = "anime_dice.lua", -- Anime Dice
+	["101304595834078"] = "plus_one_tnt_mining.lua", -- +1 TNT Mining
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
