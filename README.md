@@ -78,6 +78,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Sniper Arena                        | `119259569670784` | `sniper_arena.lua`               |
 | Anime Dice                          | `113290951185459` | `anime_dice.lua`                 |
 | +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`        |
+| Ride a Pet                          | `124216119978534` | `ride_a_pet.lua`                 |
 | Strength to Grow Arms               | `86259628805375`  | `strength_to_grow_arms.lua`      |
 | Surf for Lucky Blocks               | `98916904742148`  | `surf_for_brainrots.lua`         |
 | Swing Obby for Brainrots!           | `114640202062357` | `swing_obby_for_brainrots.lua`   |
