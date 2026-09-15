@@ -71,6 +71,7 @@ local GAMES = {
 	["113290951185459"] = "anime_dice.lua", -- Anime Dice
 	["101304595834078"] = "plus_one_tnt_mining.lua", -- +1 TNT Mining
 	["124216119978534"] = "ride_a_pet.lua", -- Ride a Pet
+	["110730550789828"] = "chop_a_tree.lua", -- Chop a Tree
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
