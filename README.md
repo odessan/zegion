@@ -80,6 +80,8 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`        |
 | Ride a Pet                          | `124216119978534` | `ride_a_pet.lua`                 |
 | Chop a Tree                         | `110730550789828` | `chop_a_tree.lua`                |
+| Steal a Mysterious Egg (World 2)    | `117032685902228` | `steal_a_mysterious_egg.lua`     |
+| Deep Fishing                        | `132239307080610` | `deep_fishing.lua`               |
 | Strength to Grow Arms               | `86259628805375`  | `strength_to_grow_arms.lua`      |
 | Surf for Lucky Blocks               | `98916904742148`  | `surf_for_brainrots.lua`         |
 | Swing Obby for Brainrots!           | `114640202062357` | `swing_obby_for_brainrots.lua`   |
