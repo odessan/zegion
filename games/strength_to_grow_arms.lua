@@ -1,31 +1,42 @@
---[[ Strength to Grow Arms -- brainrot autofarm without moving (86259628805375)
+--[[ Strength to Grow Arms -- brainrot autofarm (86259628805375)
 
-     FARM     : grab a spawned brainrot by its uid, bank it at SafetyBase, repeat. The
-                character never walks the wall corridor, so the server's teleport-back
-                (which drops your carry and resets you the instant you're past an un-broken
-                wall) never fires. The game's PickUpBrainrot has no position check -- it
-                moves the brainrot to your CarryFolder from anywhere -- which is the whole
-                trick. Carry holds ONE at a time (MaxCarryNum=1), so it's strictly
-                grab -> bank -> grab.
+     FARM     : punch the walls open remotely, hop onto a spawned brainrot, grab it by uid,
+                hop back to where you started, bank it at SafetyBase, repeat. Start it from
+                your base. PickUpBrainrot is range-checked server-side now (20 studs from the
+                brainrot), so the hop is unavoidable; the server also sweeps every second and
+                returns anyone standing past an un-broken wall (dropping their carry). HitWall
+                has no position check and carries its damage forward wall to wall, so one
+                punch on the map's first wall from base clears the whole path -- the hop only
+                ever lands behind broken walls. Carry holds ONE at a time (MaxCarryNum=1), so
+                it's strictly grab -> bank -> grab.
 
      TARGET   : "Best available" ranks every live brainrot by the game's own
                 getBrainrotGoldPerSecond (base value x mutation) and takes the richest;
                 or pick a single AreaN to farm just that zone. "Min $/s" skips anything
-                cheaper in Best mode. Areas 1-12 are map 1, 13-21 map 2; by default only
-                the map you're on is farmed (a toggle opens the rest).
+                cheaper in Best mode. Areas 1-12 are map 1, 13-21 map 2, 22-30 map 3; only
+                the map you're on can be picked up (the server refuses the others). An area
+                that needs more than "Max punches" to open is benched for a minute -- the
+                count comes from the damage your last punch actually did.
+
+     CRYSTALS : "Collect crystals" makes every punch release the shards it earned and picks
+                up everything in your drop folder from wherever you are. Each bank resets the
+                walls, so the farm's re-punching pays crystals every cycle.
 
      COLLECT  : "Auto collect cash" banks the income from every brainrot on your plot on a
                 timer. No gamepass -- it fires the game's own collect-all remote, which has
                 no gamepass check (the pass only sells the convenience pad).
+     TRAIN    : "Auto train" runs your best owned treadmill from wherever you are, hands
+                empty. SetTreadmill/SetRunState have no position or tool check and the
+                server pays strength every 0.5s off the two attributes alone (probed: +3.9e25
+                per 4s on Treadmill_1, vs +4.5e25 holding a dumbbell), so it runs alongside
+                the farm -- which unequips tools on every grab and would break a dumbbell.
      PLACE    : "Auto place best" hands the game its own PlaceMaxBrainrot, which sorts your
                 inventory by $/s and fills empty slots + replaces weaker placed ones with
                 your best. Only fires when the inventory changed, so it doesn't churn.
 
-     HEADS UP : re-arming each deposit requires one punch at your CURRENT front wall
-                (there is no server path to clear the deposit guard without a punch), so
-                the farm also slowly advances you up the walls. It never moves your
-                character, so it can't trigger the teleport-back. If you don't want any
-                wall progress, this game can't be farmed without it.
+     HEADS UP : every bank resets all walls to full HP, so every cycle re-punches the path
+                (0.5s server cooldown per punch). Deep areas need the strength to break
+                their walls; the farm tells you when it can't.
 
      Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
      RightControl rolls it up to a bare Zegion pill, RightAlt hides it outright.
@@ -33,22 +44,36 @@
 
 -- config ---------------------------------------------------------------------
 local CYCLE_WAIT = 0.2 -- beat between grab cycles when there's nothing to do
-local GRAB_TIMEOUT = 2 -- give up on a pickup whose uid never lands in CarryFolder
--- (expired mid-flight, another player took it, or carry was somehow full)
+local GRAB_TIMEOUT = 3 -- give up on a pickup whose uid never lands in CarryFolder
+-- (expired mid-flight, another player took it, or the server never saw you arrive)
+local PRESS_GAP = 0.25 -- between pickup re-fires while parked on the brainrot. The first
+-- fire waits this long too, so the server has your new position before it range-checks
+local HOP_UP = 3 -- studs above the brainrot's spot to land the root
+local PUNCH_MAX = 12 -- default for the "Max punches" box: punches (~0.5s apart) to open an
+-- area's walls before benching it. Raise it to farm a deep area at ~0.5s a punch per cycle
+local PUNCH_SPAM = 0.05 -- HitWall re-fire gap while waiting out the server's 0.5s punch
+-- cooldown. Lower = lands closer to the 0.5s mark, at more wasted (harmless) calls
+local BENCH = 60 -- seconds an area you couldn't punch open is skipped
+local SHARD_BLOCKS = 500 -- mini-blocks reported per DropShard. The server pays one drop per
+-- 20 and never more than the damage earned, so this just means "release all of it"
+local SHARD_EVERY = 0.5 -- seconds between crystal pickup sweeps
 local BANK_TIMEOUT = 2 -- give up on a deposit whose carry never clears / inventory never grows
 local MIN_LIFE = 3 -- skip brainrots with fewer than this many seconds of life left, so the
 -- one you pick survives the round trip to the server (it destroys expired data every 1s)
 local SETTLE = 0.1 -- wait between the firetouchinterest begin/end pair
-local CLEAR_CD = 0.6 -- min age of the replicated HitWallTime before firing the guard-clearing
--- HitWall (server HitWallCD is 0.5; the margin covers clock skew). A manual punch right
--- before farming would otherwise get the clear rejected and stall the next deposit.
-local CLEAR_TIMEOUT = 1 -- how long to wait for ResetWallInfo to replicate back to nil
+local CLEAR_CD = 0.6 -- server HitWallCD (0.5) plus margin: how long punch() keeps re-firing
+-- before it starts counting CLEAR_TIMEOUT against a punch that never lands
+local CLEAR_TIMEOUT = 1 -- how long to wait for a punch's HitWallTime / a bank's guard to replicate
 local CLEAR_RETRIES = 3 -- clear attempts before pausing in a terminal clear_failed state
+local MAP_FIRST = { 1, 13, 22 } -- first wall id per map; the game's Config derives the maps
+-- from these exact ranges (1-12, 13-21, 22-30)
 
 local COLLECT_EVERY = 3 -- seconds between cash sweeps. Collecting resets each brainrot's
 -- accrual, so a short interval just banks income smoothly and keeps you under any storage cap
 local PLACE_EVERY = 2 -- seconds between auto-place passes. Spends nothing; only does work
 -- when the farm has added a new brainrot to your inventory
+local TRAIN_CHECK = 3 -- seconds between re-asserting the treadmill run (stepping on/off a real
+-- treadmill clears it) and re-picking your best owned treadmill
 
 local KEY_TOGGLE = Enum.KeyCode.RightControl
 
@@ -57,10 +82,13 @@ local KEY_TOGGLE = Enum.KeyCode.RightControl
 --   脑红     : GetBrainrotConfigInfo / getBrainrotGoldPerSecond (pure config, client-safe)
 local GRAB_MOD = "Manager_\232\142\183\229\143\150\232\132\145\231\186\162"
 local VALUE_MOD = "Manager_\232\132\145\231\186\162"
+--   跑步机   : SetTreadmill / SetRunState / GetTreadmillInfo / CheckTreadmill (treadmill)
+local TREAD_MOD = "Manager_\232\183\145\230\173\165\230\156\186"
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local CollectionService = game:GetService("CollectionService")
 local player = Players.LocalPlayer
 
 if getgenv and getgenv().growArmsStop then
@@ -96,9 +124,10 @@ end
 
 local grabMgr = tryRequire(GRAB_MOD)
 local valueMgr = tryRequire(VALUE_MOD)
+local treadMgr = tryRequire(TREAD_MOD)
 local rawEvent = ReplicatedStorage:FindFirstChild("RemoteEvent") -- BridgeNet's one socket
--- \24 == \x18: the captured BridgeNet compressed id for the 获取脑红 bridge. DUMP-VERSION
--- ONLY -- this id can shift on any game update, so it's a last resort behind the require,
+-- \14 == \x0E: the captured BridgeNet compressed id for the 获取脑红 bridge (was \x18 in the
+-- first dump). DUMP-VERSION ONLY -- it shifts on game updates, so it's a last resort behind the require,
 -- and a FireServer here is never trusted as success: a raw grab only "counts" once the uid
 -- actually lands in CarryFolder (see cycle()).
 local rawActive = false
@@ -110,7 +139,7 @@ local function pickup(uid)
 	if grabMgr and grabMgr.PickUpBrainrot then
 		grabMgr:PickUpBrainrot(player, { uid = uid })
 	elseif rawEvent then
-		rawEvent:FireServer({ { "\24", { "PickUpBrainrot", { uid = uid } } } })
+		rawEvent:FireServer({ { "\14", { "PickUpBrainrot", { uid = uid } } } })
 	end
 end
 
@@ -118,7 +147,7 @@ local function hitWall(wall)
 	if grabMgr and grabMgr.HitWall then
 		grabMgr:HitWall(player, wall)
 	elseif rawEvent then
-		rawEvent:FireServer({ { "\24", { "HitWall", wall } } })
+		rawEvent:FireServer({ { "\14", { "HitWall", wall } } })
 	end
 end
 
@@ -134,7 +163,6 @@ end)()
 
 local pdata = player:WaitForChild("PlayerData", 10)
 local ownBrainrot = pdata and pdata:WaitForChild("OwnBrainrot", 10)
-local statistics = pdata and pdata:WaitForChild("statistics", 10)
 local mapStat = pdata and pdata:WaitForChild("MapStat", 10)
 
 -- CarryFolder is rebuilt on respawn, so it's reacquired every cycle rather than cached.
@@ -173,42 +201,78 @@ local function decodeMutates(raw)
 	return ok and v or nil
 end
 
--- Every live brainrot in the data tree, filtered to the current map unless crossMaps.
-local function listBrainrots(target, minPerSec, crossMaps)
-	local out = {}
+local function mapNow()
+	return mapStat and mapStat.Value or 1
+end
+
+local function mapOf(areaIdx)
+	return areaIdx <= 12 and 1 or areaIdx <= 21 and 2 or 3
+end
+
+-- A spawn's pos attribute is relative to its AreaBox (tagged, named AreaN) -- the same sum the
+-- game's own client uses to place the model you'd walk up to.
+-- Remembered per map, never re-read as an Instance: a far AreaBox streams out while you stand
+-- at base, and requiring the live part made every brainrot in it vanish from the list after
+-- the first few grabs. Keyed by map because the client parks the maps it isn't showing.
+local boxPos = {} -- "map:AreaN" -> Vector3
+local function areaPos(areaName)
+	local m = mapNow()
+	for _, box in ipairs(CollectionService:GetTagged("AreaBox")) do
+		if box:IsA("BasePart") then
+			boxPos[m .. ":" .. box.Name] = box.Position
+		end
+	end
+	return boxPos[m .. ":" .. areaName]
+end
+
+-- Every live brainrot on the current map (the server refuses a pickup from any other), plus
+-- a tally of why the rest were dropped -- the idle line prints it.
+local function listBrainrots(target, minPerSec, benched)
+	local out, skip = {}, { map = 0, pos = 0, bench = 0, dying = 0, cheap = 0 }
 	if not dataFolder then
-		return out
+		return out, skip
 	end
 	local now = clientTime()
-	local mapVal = mapStat and mapStat.Value or 1
+	local mapVal = mapNow()
 	for _, areaFolder in ipairs(dataFolder:GetChildren()) do
 		local areaName = areaFolder.Name
 		local areaIdx = tonumber(areaName:match("Area(%d+)")) or 0
-		local onThisMap = (areaIdx <= 12 and mapVal == 1) or (areaIdx > 12 and mapVal == 2)
-		if crossMaps or onThisMap then
+		local n = #areaFolder:GetChildren()
+		local base = mapOf(areaIdx) == mapVal and areaPos(areaName)
+		if mapOf(areaIdx) ~= mapVal then
+			skip.map = skip.map + n
+		elseif not base then
+			skip.pos = skip.pos + n
+		elseif (benched[areaName] or 0) > os.clock() then
+			skip.bench = skip.bench + n
+		else
 			for _, sv in ipairs(areaFolder:GetChildren()) do
-				if sv:IsA("StringValue") then
-					local exp = sv:GetAttribute("ExpTime")
-					if exp and (exp - now) >= MIN_LIFE then
-						local name = sv:GetAttribute("brainrot")
-						local mutates = decodeMutates(sv:GetAttribute("mutates"))
-						local value = brainrotValue(name, mutates) or areaIdx -- fallback: rank by zone
-						if target ~= "Best available" or value >= minPerSec then
-							out[#out + 1] = {
-								uid = sv.Name,
-								area = areaName,
-								areaIdx = areaIdx,
-								name = name,
-								mutates = mutates,
-								value = value,
-							}
-						end
+				local exp = sv:IsA("StringValue") and sv:GetAttribute("ExpTime")
+				local rel = sv:GetAttribute("pos")
+				if not (exp and (exp - now) >= MIN_LIFE and typeof(rel) == "Vector3") then
+					skip.dying = skip.dying + 1
+				else
+					local name = sv:GetAttribute("brainrot")
+					local mutates = decodeMutates(sv:GetAttribute("mutates"))
+					local value = brainrotValue(name, mutates) or areaIdx -- fallback: rank by zone
+					if target ~= "Best available" or value >= minPerSec then
+						out[#out + 1] = {
+							uid = sv.Name,
+							area = areaName,
+							areaIdx = areaIdx,
+							pos = base + rel,
+							name = name,
+							mutates = mutates,
+							value = value,
+						}
+					else
+						skip.cheap = skip.cheap + 1
 					end
 				end
 			end
 		end
 	end
-	return out
+	return out, skip
 end
 
 local function pickTarget(list, target)
@@ -229,52 +293,140 @@ local function pickTarget(list, target)
 	return nil
 end
 
--- The front wall to punch when re-arming a deposit. Derived from progression, NOT from the
--- freshly-reset WallInfo (whose lowest live wall is always the first one and never
--- advances). The server's HitWall takes the id directly.
-local function frontWall()
-	local mapVal = mapStat and mapStat.Value or 1
-	local maxId = 0
-	if statistics then
-		local ok, s = pcall(function()
-			return HttpService:JSONDecode(statistics.Value)
-		end)
-		if ok and s and s.MaxWallId then
-			maxId = s.MaxWallId
-		end
+-- Your per-player wall state, replicated under Player.WallInfo as JSON. A wall that isn't
+-- listed is another map's, which the server's sweep skips too.
+local function wallHp(id)
+	local wi = player:FindFirstChild("WallInfo")
+	local sv = wi and wi:FindFirstChild("BlockWall" .. id)
+	if not sv then
+		return 0
 	end
-	local id = maxId + 1
-	if mapVal == 2 then
-		id = math.clamp(id, 13, 21)
-	else
-		id = math.clamp(id, 1, 12)
-	end
-	return "BlockWall" .. id
+	local ok, w = pcall(HttpService.JSONDecode, HttpService, sv.Value)
+	return ok and type(w) == "table" and tonumber(w.hp) or 0
 end
 
--- Fire HitWall (clears the ResetWallInfo deposit guard at its top, before wall validation),
--- gated on the replicated HitWallTime so the server doesn't reject it, then confirm the
--- guard actually dropped. Returns false only after CLEAR_RETRIES.
-local function clearGuard()
-	for _ = 1, CLEAR_RETRIES do
-		local waited = 0
-		while clientTime() - (player:GetAttribute("HitWallTime") or 0) < CLEAR_CD do
-			task.wait(0.05)
-			waited = waited + 0.05
-			if waited > CLEAR_CD + 0.5 then
-				break -- attribute never advanced; fire anyway and let the confirm decide
+-- One HitWall on the current map's first wall. The server clears the ResetWallInfo deposit
+-- guard, then spends your strength on the first standing wall and carries what's left into
+-- the next, with no position check. Gated on the replicated HitWallTime (server CD 0.5) so it
+-- isn't dropped; true once the server stamped a new HitWallTime.
+local function mapWalls()
+	local m = mapNow()
+	return MAP_FIRST[m] or 1, (MAP_FIRST[m + 1] or 31) - 1
+end
+
+-- Crystals. The server only spawns a wall's shards when the CLIENT reports broken mini-blocks
+-- (DropShard: wall, count, pos), and caps the payout by the wall's real damage in 20% steps --
+-- so over-reporting the count just releases everything your punches already earned, and a
+-- remote punch that the client never animated still pays. Each bank resets the walls, so
+-- every cycle's punches pay again. PickUpShard(uid) has no position check.
+local crystals = false -- set by the Crystals toggle
+local lastDmg -- damage one punch did, measured; nil until a punch left a wall standing
+
+local function dropShards(wall)
+	local char = player.Character
+	local pos = char and char:GetPivot().Position or Vector3.zero -- only where the shards draw
+	if grabMgr and grabMgr.DropShard then
+		grabMgr:DropShard(player, wall, SHARD_BLOCKS, pos)
+	elseif rawEvent then
+		rawEvent:FireServer({ { "\14", { "DropShard", wall, SHARD_BLOCKS, pos } } })
+	end
+end
+
+local function pickShard(uid)
+	if grabMgr and grabMgr.PickUpShard then
+		grabMgr:PickUpShard(player, uid)
+	elseif rawEvent then
+		rawEvent:FireServer({ { "\14", { "PickUpShard", uid } } })
+	end
+end
+
+-- Fired every PUNCH_SPAM until the server stamps a new HitWallTime, rather than timed off the
+-- last stamp: the server drops an early HitWall with a bare return (no toast, no penalty), so
+-- spamming lands each punch on the first server frame past the 0.5s cooldown -- where waiting
+-- out CLEAR_CD then a round trip ran ~0.7s a punch.
+local function punch()
+	local first, last = mapWalls()
+	local hpBefore = {}
+	for id = first, last do
+		hpBefore[id] = wallHp(id)
+	end
+	local before = player:GetAttribute("HitWallTime")
+	local t0, fired = os.clock(), -math.huge
+	repeat
+		if os.clock() - fired >= PUNCH_SPAM then
+			fired = os.clock()
+			hitWall("BlockWall" .. first)
+		end
+		task.wait()
+	until player:GetAttribute("HitWallTime") ~= before or (os.clock() - t0) > CLEAR_CD + CLEAR_TIMEOUT
+	if player:GetAttribute("HitWallTime") == before then
+		return false
+	end
+	task.wait() -- the WallInfo values land with (or just behind) the attribute
+	local dmg, standing = 0, false
+	for id = first, last do
+		local now = wallHp(id)
+		if now < hpBefore[id] then
+			dmg = dmg + (hpBefore[id] - now)
+			if crystals then
+				dropShards("BlockWall" .. id)
 			end
 		end
-		hitWall(frontWall())
-		local t0 = os.clock()
-		repeat
-			task.wait()
-		until player:GetAttribute("ResetWallInfo") == nil or (os.clock() - t0) > CLEAR_TIMEOUT
+		standing = standing or now > 0
+	end
+	if standing and dmg > 0 then
+		lastDmg = dmg -- a punch that broke everything left under-reports, so only trust these
+	end
+	return true
+end
+
+local function clearGuard()
+	for _ = 1, CLEAR_RETRIES do
 		if player:GetAttribute("ResetWallInfo") == nil then
 			return true
 		end
+		punch()
 	end
-	return false
+	return player:GetAttribute("ResetWallInfo") == nil
+end
+
+-- AreaN sits just past BlockWallN, so reaching it needs every wall from the map's first to N
+-- down -- otherwise the server's 1s sweep returns you to base and drops the carry.
+local function pathOpen(areaIdx)
+	for id = MAP_FIRST[mapNow()] or 1, areaIdx do
+		if wallHp(id) > 0 then
+			return false
+		end
+	end
+	return true
+end
+
+-- Punches still needed, from the measured damage; nil until a punch has been measured.
+local function punchesNeeded(areaIdx)
+	if not lastDmg then
+		return nil
+	end
+	local hp = 0
+	for id = MAP_FIRST[mapNow()] or 1, areaIdx do
+		hp = hp + wallHp(id)
+	end
+	return math.ceil(hp / lastDmg)
+end
+
+-- Returns (open, punchesNeeded). Refuses up front, without spending the punches, when the
+-- measured damage says it can't make it inside maxPunches.
+local function openPath(areaIdx, maxPunches)
+	for _ = 1, maxPunches do
+		if pathOpen(areaIdx) then
+			return true
+		end
+		local need = punchesNeeded(areaIdx)
+		if need and need > maxPunches then
+			return false, need
+		end
+		punch()
+	end
+	return pathOpen(areaIdx), punchesNeeded(areaIdx)
 end
 
 -- SafetyBase.Touched returns early while ResetWallInfo is set, so a leftover guard (a prior
@@ -286,20 +438,18 @@ local function ensureCleared()
 	return clearGuard()
 end
 
--- Deposit the one carried brainrot and re-arm for the next one. Returns (banked, cleared,
--- why): banked is the thing worth counting, and it's reported even when the re-arm clear
--- fails, so a real deposit is never lost from the total. Confirms by the world: carry empties
--- AND the inventory string changes. hopFallback is the R2 escape if firetouchinterest can't
+-- Deposit the one carried brainrot. Returns (banked, why). Confirms by the world: carry
+-- empties AND the inventory string changes. hopFallback is the R2 escape if firetouchinterest can't
 -- reach SafetyBase.Touched -- SafetyBase (z ~= -898) is behind every wall, so a hop there
 -- crosses nothing and can't trip the teleport-back; the pre-hop pivot is restored after.
-local function bankAndClear(cd, hopFallback)
+local function bank(cd, hopFallback)
 	if not (cd and safety and ownBrainrot) then
-		return false, false, "no_handles"
+		return false, "no_handles"
 	end
 	-- A pre-existing guard would swallow the touch silently; clear it first (finding: rerun
 	-- after clear_failed couldn't recover a carry).
 	if not ensureCleared() then
-		return false, false, "clear_failed"
+		return false, "clear_failed"
 	end
 
 	-- Reacquire per action: a respawn mid-cycle invalidates head. Returns (ok, reason) so a
@@ -348,22 +498,9 @@ local function bankAndClear(cd, hopFallback)
 			end)
 		end)
 	end
-	if not banked then
-		return false, false, why -- no_head -> transient retry; bank_failed -> handled by caller
-	end
-
-	-- The bank set ResetWallInfo=true server-side; wait to actually SEE it before clearing.
-	-- If it never shows within the window, don't fire a phantom HitWall -- ensureCleared() at
-	-- the next bank is the backstop for a late-arriving guard.
-	local t0 = os.clock()
-	repeat
-		task.wait()
-	until player:GetAttribute("ResetWallInfo") ~= nil or (os.clock() - t0) > CLEAR_TIMEOUT
-	if player:GetAttribute("ResetWallInfo") == nil then
-		return true, true, "ok"
-	end
-	local cleared = clearGuard()
-	return true, cleared, cleared and "ok" or "clear_failed"
+	-- no_head -> transient retry; bank_failed -> handled by caller. The guard the bank just set
+	-- is cleared by the next cycle's openPath punch, which it needs anyway (walls reset too).
+	return banked, why
 end
 
 -- gui ------------------------------------------------------------------------
@@ -390,8 +527,8 @@ local farmCard =
 -- state written by the controls
 local target = "Best available"
 local minPerSec = 0
-local crossMaps = false
 local hopFallback = false
+local maxPunches = PUNCH_MAX
 local farming = false
 local gen = 0
 local count = 0
@@ -419,9 +556,9 @@ local function isTransient(why)
 	return why == "no_head" or why == "no_handles"
 end
 
--- Target = Best available, or a single zone. Areas 1-12 map 1, 13-21 map 2.
+-- Target = Best available, or a single zone. Areas 1-12 map 1, 13-21 map 2, 22-30 map 3.
 local zoneValues = { "Best available" }
-for i = 1, 21 do
+for i = 1, 30 do
 	zoneValues[#zoneValues + 1] = "Area" .. i
 end
 
@@ -445,12 +582,42 @@ farmCard:Input({
 	end,
 })
 
+farmCard:Input({
+	Title = "Max punches",
+	Desc = "Per grab, ~0.5s each. An area needing more is skipped; raise it to farm deeper",
+	Value = tostring(PUNCH_MAX),
+	Placeholder = tostring(PUNCH_MAX),
+	Callback = function(v)
+		maxPunches = math.max(1, math.floor(tonumber(v) or PUNCH_MAX))
+	end,
+})
+
+-- Sweeps DropFolder/<you> on a beat, and makes every punch (the farm's included) release the
+-- shards it earned. Punches of your own by hand drop them too; this just picks them up.
+local shardGen = 0
 farmCard:Toggle({
-	Title = "Farm across both maps",
-	Desc = "Off = only your current map. On = grab from every zone (may not bank cross-map)",
+	Title = "Collect crystals",
+	Desc = "Grab the shards walls drop when punched -- from anywhere",
 	Value = false,
 	Callback = function(state)
-		crossMaps = state
+		shardGen = shardGen + 1
+		crystals = state
+		if not state then
+			return
+		end
+		local mine = shardGen
+		task.spawn(function()
+			while crystals and shardGen == mine do
+				pcall(function()
+					local df = workspace:FindFirstChild("DropFolder")
+					local mineF = df and df:FindFirstChild(player.Name)
+					for _, v in ipairs(mineF and mineF:GetChildren() or {}) do
+						pickShard(v.Name)
+					end
+				end)
+				task.wait(SHARD_EVERY)
+			end
+		end)
 	end,
 })
 
@@ -468,7 +635,7 @@ farmCard:Toggle({
 local farmToggle
 farmToggle = farmCard:Toggle({
 	Title = "Farm Brainrots",
-	Desc = "grab -> bank -> repeat",
+	Desc = "punch path, hop, grab, hop home, bank. Start at your base",
 	Value = false,
 	Callback = function(state)
 		farming = state
@@ -482,12 +649,23 @@ farmToggle = farmCard:Toggle({
 			return
 		end
 
+		local char = player.Character
+		if not char then
+			farmToggle:Set(false)
+			say("no character yet -- try again after you spawn")
+			return
+		end
+
 		gen = gen + 1
 		local mine = gen
+		-- ponytail: home is wherever you stood when you switched it on; add a "set home" button
+		-- if people start it from past a wall
+		local home = char:GetPivot()
+		local benched = {} -- area -> os.clock() it may be tried again
 		rawActive = usingRaw()
 		local validated = false -- first confirmed bank proves the deposit path works live
-		local rawProven = false -- first confirmed GRAB proves the raw \x18 id is still right
-		say(rawActive and "started (raw \\x18 fallback -- unverified until first grab)" or "started")
+		local rawProven = false -- first confirmed GRAB proves the raw \x0E id is still right
+		say(rawActive and "started (raw \\x0E fallback -- unverified until first grab)" or "started")
 
 		task.spawn(function()
 			local rawFails = 0
@@ -513,43 +691,71 @@ farmToggle = farmCard:Toggle({
 
 					-- preflight: a leftover carry makes every pickup fail at MaxCarryNum=1
 					if #cd:GetChildren() > 0 then
-						local banked, cleared, why = bankAndClear(cd, hopFallback)
+						local banked, why = bank(cd, hopFallback)
 						if banked then
 							bumpCount()
-						end
-						if not (banked and cleared) then
-							if isTransient(why) then
-								wait = 0.5
-								return
-							end
-							say(("stopped: couldn't re-arm a leftover carry (%s) -- %d banked"):format(why, count))
+						elseif isTransient(why) then
+							wait = 0.5
+							return
+						else
+							say(("stopped: couldn't bank a leftover carry (%s) -- %d banked"):format(why, count))
 							logf("preflight " .. why)
 							stop = true
 							return
 						end
 					end
 
-					local tgt = pickTarget(listBrainrots(target, minPerSec, crossMaps), target)
+					local list, skip = listBrainrots(target, minPerSec, benched)
+					local tgt = pickTarget(list, target)
 					if not tgt then
-						say(("idle -- no brainrot (%d banked)"):format(count))
-						logf("idle")
+						local why = ("%d ok (none in %s), %d other map, %d area unseen, %d benched, %d expiring, %d under min $/s"):format(
+							#list, tostring(target), skip.map, skip.pos, skip.bench, skip.dying, skip.cheap)
+						say(("idle -- %s (%d banked)"):format(why, count))
+						logf("idle: " .. why)
 						return
 					end
 
-					pickup(tgt.uid)
-					local t0 = os.clock()
+					local open, need = openPath(tgt.areaIdx, maxPunches)
+					if not open then
+						benched[tgt.area] = os.clock() + BENCH
+						local why = need and ("needs ~%d punches, max is %d"):format(need, maxPunches) or "punches aren't landing"
+						say(("%s: %s -- skipping it %ds"):format(tgt.area, why, BENCH))
+						logf("walls closed to " .. tgt.area .. " (" .. why .. ")")
+						return
+					end
+
+					-- Park on it and re-fire on a beat: the server range-checks against where it
+					-- last saw you, so the first press waits PRESS_GAP for the hop to replicate.
+					local spot = CFrame.new(tgt.pos + Vector3.new(0, HOP_UP, 0))
+					local t0, pressed = os.clock(), os.clock()
+					local got
 					repeat
+						local char = player.Character
+						if char then
+							char:PivotTo(spot)
+						end
+						if os.clock() - pressed >= PRESS_GAP then
+							pressed = os.clock()
+							pickup(tgt.uid)
+						end
 						task.wait()
-					until (carryData() and carryData():FindFirstChild(tgt.uid)) or (os.clock() - t0) > GRAB_TIMEOUT
+						local c = carryData()
+						got = c and c:FindFirstChild(tgt.uid)
+					until got or (os.clock() - t0) > GRAB_TIMEOUT
+					-- Home before banking, hit or miss: the bank resets every wall, and the 1s sweep
+					-- returns anyone left standing past one.
+					if player.Character then
+						player.Character:PivotTo(home)
+					end
 
 					local nowCd = carryData()
 					if not (nowCd and nowCd:FindFirstChild(tgt.uid)) then
-						-- a raw fallback that can't even grab = the \x18 id has almost certainly
+						-- a raw fallback that can't even grab = the \x0E id has almost certainly
 						-- moved; the grab (not the bank) is what proves it, so gate on rawProven.
 						if rawActive and not rawProven then
 							rawFails = rawFails + 1
 							if rawFails >= 3 then
-								say("stopped: raw \\x18 fallback isn't landing grabs -- the game's remote id likely changed.")
+								say("stopped: raw \\x0E fallback isn't landing grabs -- the game's remote id likely changed.")
 								WindUI:Notify({ Title = "Strength to Grow Arms", Content = "Raw fallback failed -- needs a fresh spy of the RemoteEvent id.", Image = "x" })
 								logf("raw grab_failed x" .. rawFails)
 								stop = true
@@ -562,7 +768,7 @@ farmToggle = farmCard:Toggle({
 					end
 					rawProven, rawFails = true, 0 -- the grab landed: the dispatch path is good
 
-					local banked, cleared, why = bankAndClear(nowCd, hopFallback)
+					local banked, why = bank(nowCd, hopFallback)
 					if banked then
 						validated = true
 						bumpCount()
@@ -572,10 +778,6 @@ farmToggle = farmCard:Toggle({
 						end
 						say(("banked %s (%d total)"):format(tostring(tgt.name), count))
 						logf("banked " .. tostring(tgt.name))
-						if not cleared then
-							say(("stopped: banked but the guard wouldn't re-arm (clear_failed) -- %d banked"):format(count))
-							stop = true
-						end
 					elseif isTransient(why) then
 						wait = 0.5
 					elseif why == "bank_failed" and not validated then
@@ -719,12 +921,85 @@ placeToggle = plotCard:Toggle({
 	end,
 })
 
+-- train ----------------------------------------------------------------------
+-- Server state, not a loop of calls: the two attributes ARE the training, so teardown has to
+-- clear them or a closed panel keeps you "running" (harmless, but not what off means).
+local trainCard =
+	Tab:Section({ Title = "Train", Desc = "Treadmill strength, from anywhere", Icon = "solar:dumbbell-large-bold", Box = true, BoxBorder = true, Opened = true })
+
+local training, trainGen = false, 0
+local trainRow
+
+-- Highest-Add treadmill CheckTreadmill says you may use (owned, or VIP for Treadmill_Vip).
+-- An unowned one would still "run" but at x1, so ownership is the filter, not the name.
+local function bestTreadmill()
+	local best, bestAdd
+	local ok, all = pcall(treadMgr.GetTreadmillInfo, treadMgr)
+	for name, info in pairs(ok and type(all) == "table" and all or {}) do
+		local okOwn, own = pcall(treadMgr.CheckTreadmill, treadMgr, player, name)
+		local add = type(info) == "table" and tonumber(info.Add) or 0
+		if okOwn and own and (not bestAdd or add > bestAdd) then
+			best, bestAdd = name, add
+		end
+	end
+	return best or "Treadmill_1", bestAdd or 1
+end
+
+local function stopTraining()
+	if treadMgr and player:GetAttribute("RunState") then
+		pcall(treadMgr.SetTreadmill, treadMgr, player, nil)
+		pcall(treadMgr.SetRunState, treadMgr, player, nil)
+	end
+end
+
+local trainToggle
+trainToggle = trainCard:Toggle({
+	Title = "Auto train",
+	Desc = "Runs your best treadmill without standing on it or holding anything",
+	Value = false,
+	Callback = function(state)
+		trainGen = trainGen + 1
+		training = state
+		if not state then
+			stopTraining()
+			return
+		end
+		if not (treadMgr and type(treadMgr.SetRunState) == "function") then
+			trainToggle:Set(false)
+			WindUI:Notify({ Title = "Strength to Grow Arms", Content = "The game's treadmill module changed -- see F9.", Image = "x" })
+			warn("[growarms] treadMgr.SetRunState missing -- auto train unavailable")
+			return
+		end
+		local mine = trainGen
+		task.spawn(function()
+			while training and trainGen == mine do
+				pcall(function()
+					local name, add = bestTreadmill()
+					if player:GetAttribute("Treadmill") ~= name or not player:GetAttribute("RunState") then
+						treadMgr:SetTreadmill(player, name)
+						treadMgr:SetRunState(player, true)
+						print(("[growarms] training on %s (x%s)"):format(name, tostring(add)))
+					end
+					if trainRow then
+						trainRow:SetDesc(("%s (x%s)"):format(name, tostring(add)))
+					end
+				end)
+				task.wait(TRAIN_CHECK)
+			end
+		end)
+	end,
+})
+trainRow = trainCard:Paragraph({ Title = "Treadmill", Desc = "off" })
+
 -- close ----------------------------------------------------------------------
 -- The red topbar button destroys the window after WindUI's own confirm; teardown hangs off
 -- OnDestroy, and the stop hook shares it. ponytail: rerun to come back.
 local function shutdown()
-	farming, collecting, placing = false, false, false
-	gen, collectGen, placeGen = gen + 1, collectGen + 1, placeGen + 1 -- orphan any running loop
+	if training then
+		stopTraining()
+	end
+	farming, collecting, placing, crystals, training = false, false, false, false, false
+	gen, collectGen, placeGen, shardGen, trainGen = gen + 1, collectGen + 1, placeGen + 1, shardGen + 1, trainGen + 1 -- orphan any running loop
 end
 
 Window:OnDestroy(function()
