@@ -3,11 +3,11 @@
      FISH   : casts, waits out the server's timer, collects. No charge bar, no flight,
               no camera takeover, no chase, no clicking. Your character stands still and
               stays yours -- unanchored, walkable, camera untouched.
-              "Minimum rarity" rerolls the cast until the fish is one you want. The fish
-              is decided when ThrowData answers, each call replaces the pending one, and
-              none of them restarts the server's timer -- so the script keeps rolling
-              through the wait it has to sit out anyway, and a filter costs nothing
-              unless the wait ends before it hits.
+              "Minimum rarity" rerolls the cast until the fish is one you want. Rolling is
+              cheap -- the fish is decided when ThrowData answers, and each call replaces
+              the pending one -- so a filter spends a few round trips up front to put the
+              12s wait on the fish you asked for instead of the first thing the server
+              picked. "Max rerolls" is that budget.
               "Fast casts" rerolls the slow ones instead: every bonus row on a roll is
               ~3.8s more the server makes you wait, and a reroll costs one round trip.
      TRAIN  : fires Train on the server's own cooldown. The server acts on the dumbbell
@@ -80,14 +80,9 @@ local STUCK_AFTER = 45 -- watchdog: no progress for this long prints where it st
 -- filter is free: roll until the fish is one you want, and only then pay the 12s. The cap
 -- exists because a filter nobody can satisfy would otherwise never cast at all; hitting
 -- it takes whatever is pending, since an earlier roll cannot be got back.
--- Rolls inside the wait are free (probed: a reroll doesn't restart the server's timer),
--- so they're paced rather than capped: FREE_ROLL_GAP apart, stopping FREE_ROLL_STOP
--- before the collect so the last reply is in. 0.1 is ~120 rolls on a 20s cast; lower it
--- for more tries, raise it if the server starts refusing ThrowData mid-cast.
-local FREE_ROLL_GAP = 0.1
-local FREE_ROLL_STOP = 0.3
--- Once the wait is up with no match, each further roll costs its round trip (~0.06s).
--- This caps those; the panel's "Max rerolls" writes it live.
+-- Every roll costs its round trip (~0.06s) and they all happen before the wait, so the
+-- cap is what a filter can spend: 25 is ~1.5s against a ~12s wait. The panel's
+-- "Max rerolls" writes it live.
 local REROLL_CAP = 25
 -- Extra pause between rolls on top of the round trip. 0 = back to back, which halves a
 -- filter's cost against the old 0.1. Raise it if rerolls start ending in "stopped
@@ -493,7 +488,6 @@ local function oneCast(alive)
 	end)
 
 	step("cast / ThrowData")
-	local t0 = os.clock() -- the server's timer starts on this roll, and no reroll restarts it
 	local ok, data = throwData(farm.power)
 	if not ok or type(data) ~= "table" then
 		pcall(function()
@@ -504,46 +498,26 @@ local function oneCast(alive)
 		return true
 	end
 
-	-- Rerolls. Each ThrowData replaces the pending fish, so this has to stop ON a match:
-	-- there is no going back to a roll you passed over. Probed: a reroll does NOT restart
-	-- the server's timer -- a fish rolled 6s into a 20.8s cast paid at +21.7 from the
-	-- first roll -- so every roll made inside the wait is free. Only the ones past it cost.
-	local rolls, stalled = 1, false
-	local function due()
-		return t0 + math.max(WAIT_MIN, expectedFor(data) * farm.factor + MARGIN)
-	end
-	local function reroll()
+	-- Rerolls, all of them before the wait starts. Each ThrowData replaces the pending
+	-- fish, so this has to stop ON a match: there is no going back to a roll you passed
+	-- over. (A reroll doesn't restart the server's timer -- probed -- so rolling through
+	-- the wait would be free; that was tried and rolled back, so the cap is the budget.)
+	local rolls = 1
+	local cap = filtering() and farm.cap or FAST_CAP
+	while alive() and rolls < cap and not keep(data) do
+		status(("rerolling %d/%d -- last %s (%.1fs)"):format(rolls, cap, tostring(data.FishDropName), expectedFor(data)))
+		if REROLL_GAP > 0 then
+			task.wait(REROLL_GAP)
+		end
 		local ok2, next_ = throwData(farm.power)
 		if not ok2 or type(next_) ~= "table" then
 			-- Refused or timed out. Whatever the last accepted roll was is still the
 			-- pending one, so keep it rather than rolling into a rate limit.
 			post("ThrowData stopped answering mid-reroll -- taking what's pending")
-			return false
+			break
 		end
 		data = next_
 		rolls += 1
-		return true
-	end
-	-- Free: inside the wait, stopping early enough that the last reply lands first.
-	while alive() and not stalled and not keep(data) do
-		if os.clock() + FREE_ROLL_GAP + FREE_ROLL_STOP >= due() then
-			break
-		end
-		status(
-			("rolling %d -- %.1fs left -- last %s"):format(rolls, due() - os.clock(), tostring(data.FishDropName))
-		)
-		task.wait(FREE_ROLL_GAP)
-		stalled = not reroll()
-	end
-	-- Paid: the wait is up and each roll now costs its round trip, so it's capped.
-	local cap, extraRolls = filtering() and farm.cap or FAST_CAP, 0
-	while alive() and not stalled and extraRolls < cap and not keep(data) do
-		status(("rerolling %d/%d past the wait -- last %s"):format(extraRolls, cap, tostring(data.FishDropName)))
-		if REROLL_GAP > 0 then
-			task.wait(REROLL_GAP)
-		end
-		stalled = not reroll()
-		extraRolls += 1
 	end
 	if filtering() and not matches(data) then
 		post(("no match in %d rolls -- taking %s"):format(rolls, tostring(data.FishDropName)))
@@ -562,9 +536,9 @@ local function oneCast(alive)
 	end
 
 	local base = expectedFor(data)
-	local wait = math.max(due(), os.clock()) - t0 -- from the first roll, which is the server's clock
+	local wait = math.max(WAIT_MIN, base * farm.factor + MARGIN)
 	step("cast / waiting " .. rolled)
-	if not sleepAlive(math.max(0, due() - os.clock()), alive) then
+	if not sleepAlive(wait, alive) then
 		-- Toggled off mid-wait. The roll stays pending server-side and the next cast's
 		-- collect picks it up, so there is nothing to rescue here -- just don't leave the
 		-- server thinking we are still mid-cast.
@@ -1492,7 +1466,7 @@ Sec:Dropdown({
 
 Sec:Input({
 	Title = "Max rerolls",
-	Desc = "Rolls during the wait are free. This caps the extra ones after it (~0.06s each) before it takes what's pending.",
+	Desc = "Worst case this many round trips (~0.06s each) per cast before it takes what's pending.",
 	Value = tostring(REROLL_CAP),
 	Placeholder = "25",
 	Callback = function(text)
