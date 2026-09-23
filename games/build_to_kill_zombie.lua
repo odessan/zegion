@@ -78,6 +78,14 @@ local ROLL_CONFIRM = 3 -- waiting for our RollSpin (a Legendary+ skip asks first
 local DISPLAY_SLACK = 3 -- on top of the spin duration, waiting for RollDisplay
 local BUY_CONFIRM = 3
 
+-- Car upgrade. The Packets server drops a client past ~10 batches a second, so edits are
+-- paced; each waits for the build mirror to show it before the next goes.
+local EDIT_GAP = 0.15
+local EDIT_CONFIRM = 3
+-- Heavier blocks/weapons are allowed to cost this much of the estimated run distance
+-- before the heaviest of them are given back. 1 = armour never costs distance.
+local UPGRADE_FLOOR = 0.97
+
 local NITRO_ON = 0.6 -- press when the tank is at least this full
 local NITRO_OFF = 0.05 -- let go here; at 0 the game locks nitro until you release anyway
 
@@ -361,7 +369,7 @@ do
 	assert(t == 1 and s == -1, "target behind-left is a full left U-turn")
 end
 
-local farm = { on = false, gen = 0, strikes = 0, blueprint = false }
+local farm = { on = false, gen = 0, strikes = 0, blueprint = false, upgrade = false, fillSlots = true }
 local drive = {
 	manual = false, -- steer whenever you're in your car, without the launch loop
 	hunt = true,
@@ -699,7 +707,7 @@ local function claim(fn, ...)
 	return ok
 end
 
-local shop -- forward: the farm waits on shop.idle between runs
+local shop -- forward: the farm opens a shop window between runs
 
 local function waitFor(cond, timeout)
 	local t0 = os.clock()
@@ -768,7 +776,7 @@ local function returnCar()
 	end, RETURN_TIMEOUT)
 end
 
-local bestBlueprint -- forward: build section
+local bestBlueprint, upgradeCar, garage -- forward: build and car sections
 
 local function setFarm(state)
 	farm.on = state
@@ -793,14 +801,22 @@ local function setFarm(state)
 				-- Between runs: let the shop spend what the last run earned, then launch.
 				if shop and (shop.roll or shop.buy) then
 					step("shop window")
-					local t0 = os.clock()
-					task.wait(0.5)
-					while alive() and not shop.idle and os.clock() - t0 < SHOP_WINDOW do
-						task.wait(0.25)
+					shop.window += 1
+					local w = shop.window
+					shop.windowOpen = true
+					waitFor(function()
+						return not alive() or shop.windowDone >= w or not (shop.roll or shop.buy)
+					end, SHOP_WINDOW)
+					shop.windowOpen = false
+					while busy and alive() do
+						task.wait() -- let a roll already in flight land before we launch
 					end
 				end
-				if farm.blueprint and bestBlueprint then
-					bestBlueprint(true)
+				if farm.blueprint and bestBlueprint and bestBlueprint(true) then
+					task.wait(1.5) -- let the new build replicate before anything reads it
+				end
+				if farm.upgrade and upgradeCar then
+					claim(upgradeCar, true)
 				end
 				if not alive() then
 					break
@@ -821,6 +837,12 @@ local function setFarm(state)
 					continue
 				end
 				farm.strikes = 0
+				local p, c = garage and garage.predicted, myCar()
+				if p and c then
+					garage.predicted = nil -- the stat model's report card, once per upgrade
+					log(("car predicted top %.1f / %.1fs fuel -- server says %.1f / %.1fs"):format(
+						p.TopSpeed, p.FuelTime, c:GetAttribute("TopSpeed") or -1, c:GetAttribute("FuelTime") or -1))
+				end
 			end
 			say("driving")
 			local dist, earned = runOnce(alive)
@@ -848,7 +870,13 @@ shop = {
 	shown = {}, -- station -> part on display (our plot only)
 	spun = {}, -- station -> os.clock() of our last RollSpin
 	bought = {}, -- station -> os.clock() of our last RollPurchased
-	idle = true,
+	-- The farm hands the character over explicitly: it bumps `window`, and the shop answers
+	-- with `windowDone = window` after a pass that STARTED inside the window found nothing
+	-- to do. A plain idle flag can't do this -- it reads "idle" all run long (no lobby, no
+	-- work) and the farm relaunched on that stale flag before the shop ever got a turn.
+	window = 0,
+	windowOpen = false,
+	windowDone = 0,
 	gen = 0,
 	method = nil, -- winning press method index, once one has bought something
 	held = {}, -- station -> part we already said we're holding, so it's said once
@@ -1065,9 +1093,25 @@ local function buyStation(station, part)
 end
 
 -- One pass over the stations; returns whether it did anything (idle feeds the farm).
+-- Returns did, ready. Not ready (car out, still seated, plot not streamed) never closes a
+-- farm window: that's the case the old idle flag mistook for "nothing to do".
 local function shopPass()
-	if myCar() or not myPlot() or not rootPart() then
-		return false
+	local plot, hrp, hum = myPlot(), rootPart(), humanoid()
+	if myCar() or not plot or not hrp or (hum and hum.SeatPart) then
+		return false, false
+	end
+	if farm.on and not shop.windowOpen then
+		return false, false -- mid-launch: the farm owns the character
+	end
+	-- A return can leave you down the track, where the plot's prompts aren't streamed in.
+	local spawn = plot:FindFirstChild("PlayerSpawn")
+	if spawn and (hrp.Position - spawn.Position).Magnitude > 150 then
+		pcall(function()
+			player:RequestStreamAroundAsync(spawn.Position, 5)
+		end)
+		hrp.CFrame = CFrame.new(spawn.Position + Vector3.new(0, 4, 0))
+		task.wait(SETTLE)
+		return false, false -- look again next beat, once the stations have streamed
 	end
 	local did = false
 	for _, station in ipairs(STATIONS) do
@@ -1097,28 +1141,31 @@ local function shopPass()
 			end)
 		end
 	end
-	return did
+	return did, true
 end
 
 local function startShop()
 	shop.gen += 1
 	local gen = shop.gen
 	if not (shop.roll or shop.buy) then
-		shop.idle = true
+		shop.windowDone = shop.window
 		return
 	end
 	fire("RollSync") -- re-sends RollDisplay for what's already on our stations
 	task.spawn(function()
 		while running and shop.gen == gen and (shop.roll or shop.buy) do
-			local ok, did = pcall(shopPass)
+			local w = shop.window
+			local ok, did, ready = pcall(shopPass)
 			if not ok then
 				warn("[btkz] shop: " .. tostring(did))
-				did = false
+				did, ready = false, true -- a throwing pass must not hold the farm for the full window
 			end
-			shop.idle = not did
+			if ready and not did then
+				shop.windowDone = math.max(shop.windowDone, w)
+			end
 			task.wait(did and 0.1 or 0.5)
 		end
-		shop.idle = true
+		shop.windowDone = shop.window
 	end)
 end
 
@@ -1158,7 +1205,7 @@ bestBlueprint = function(quiet)
 	end
 	local current = {}
 	local okM, mirror = pcall(BuildController.GetMirror)
-	for _, p in ipairs(okM and mirror or {}) do
+	for _, p in pairs(okM and mirror or {}) do -- a "x,y,z" -> {Id, R, T} map, not a list
 		current[p.Id] = (current[p.Id] or 0) + 1
 	end
 	local now = buildCost(current)
@@ -1175,6 +1222,365 @@ bestBlueprint = function(quiet)
 		say("no ownable blueprint beats your current car")
 	end
 	return false
+end
+
+-- car ------------------------------------------------------------------------
+-- Upgrade in place: keep the shape you built (it already drives -- a generated one could
+-- pass every rule and still flip), swap each part for the best owned one that fits the
+-- same slot, then fill free weapon slots. BuildUtils is the game's shared rulebook:
+-- CanPlace and ComputeAggregates are exactly what its build UI checks, so every edit is
+-- legal before it's sent and every "better" is the game's own stat math.
+local okB, BuildUtils = pcall(function()
+	return require(ReplicatedStorage.Shared.Utils.BuildUtils)
+end)
+if not okB or type(BuildUtils) ~= "table" then
+	BuildUtils = nil
+end
+
+garage = { reject = nil, rejectAt = 0, predicted = nil }
+on("PlaceRejected", function(reason)
+	garage.reject, garage.rejectAt = reason, os.clock()
+end)
+
+-- Blocks only swap within a shape: a slab where a wedge was changes the car's outline.
+local SHAPES = { "Block", "Slab", "Wedge", "Cylinder" }
+local DRIVE = { Engine = true, Fuel = true, Wheel = true, Turbo = true }
+
+local function slotOf(id)
+	local def = PartCatalog.Parts[id]
+	local c = def and def.Category
+	if not c or c == "Seat" or c == "PassengerSeat" or c == "Cosmetic" then
+		return nil -- one seat per car, and nothing to gain from a cosmetic
+	end
+	if c == "Block" then
+		for _, s in ipairs(SHAPES) do
+			if id:sub(-#s) == s then
+				return "Block:" .. s
+			end
+		end
+		return "Block:" .. id
+	end
+	if DRIVE[c] or c == "PushBar" then
+		return c
+	end
+	return BuildUtils.IsSupportPart(def) and "Weapon" or nil
+end
+
+local function power(def)
+	local s = def.Stats or {}
+	return s.DPS or s.Damage or 0
+end
+
+local function worth(id) -- non-drive slots: higher is better
+	local def = PartCatalog.Parts[id]
+	if def.Category == "Block" then
+		return def.HP - def.Mass * 0.01 -- HP first, lighter on a tie
+	end
+	return power(def)
+end
+
+-- Studs one tank buys: accelerate at Accel to TopSpeed, cruise until FuelTime runs out.
+-- Grip scales it -- a car whose wheels can't carry its mass loses the road.
+-- ponytail: the server's DragFactor/BodyLift aren't in the client math; the launch log
+-- below prints predicted vs real so a wrong model shows up on the first run.
+local function estDistance(agg)
+	if (agg.EnginePower or 0) <= 0 or (agg.TopSpeed or 0) <= 0 or (agg.FuelTime or 0) <= 0 then
+		return 0
+	end
+	local v, a, f = agg.TopSpeed, math.max(agg.Accel or 0, 1e-3), agg.FuelTime
+	local t0 = v / a
+	local d = f > t0 and v * (f - t0 / 2) or a * f * f / 2
+	return d * (0.5 + 0.5 * math.clamp(agg.SupportRatio or 0, 0, 1))
+end
+do
+	local base = { EnginePower = 10, TopSpeed = 30, Accel = 10, FuelTime = 20, SupportRatio = 1 }
+	local faster, dry, short = table.clone(base), table.clone(base), table.clone(base)
+	faster.TopSpeed, dry.EnginePower, short.FuelTime = 40, 0, 1
+	assert(estDistance(faster) > estDistance(base), "a faster car goes further")
+	assert(estDistance(dry) == 0, "no engine, no distance")
+	assert(math.abs(estDistance(short) - 5) < 1e-6, "a tank shorter than the run-up is a*f^2/2")
+end
+
+-- Pure: mutates `build`/`inv` copies into the target car and returns the edits to get there.
+local function planUpgrade(build, inv, dims, bonus, more, fill)
+	local avail = {}
+	for id, n in pairs(inv) do
+		if n > 0 then
+			avail[id] = n
+		end
+	end
+	local function score()
+		return estDistance(BuildUtils.ComputeAggregates(build))
+	end
+	local ops = {}
+	local function swap(key, to)
+		local from = build[key].Id
+		avail[to] -= 1
+		avail[from] = (avail[from] or 0) + 1
+		build[key].Id = to
+		local op = { kind = "swap", key = key, from = from, to = to }
+		table.insert(ops, op)
+		return op
+	end
+	local before = score()
+
+	-- 1. Drive parts, greedy on the estimate: a handful of cells, a full stat pass each.
+	local base = before
+	while true do
+		local best
+		for key, cell in pairs(build) do
+			local slot = slotOf(cell.Id)
+			if slot and DRIVE[slot] then
+				for id, n in pairs(avail) do
+					if n > 0 and id ~= cell.Id and slotOf(id) == slot then
+						local old = cell.Id
+						cell.Id = id
+						local s = score()
+						cell.Id = old
+						if s > base * 1.001 and (not best or s > best.s) then
+							best = { key = key, to = id, s = s }
+						end
+					end
+				end
+			end
+		end
+		if not best then
+			break
+		end
+		swap(best.key, best.to)
+		base = best.s
+	end
+
+	-- 2. Armour, push bars, weapons by rank -- then give back the swaps that added the most
+	-- mass until the estimate is inside UPGRADE_FLOOR of what step 1 reached.
+	local ranked = {}
+	for key, cell in pairs(build) do
+		local slot = slotOf(cell.Id)
+		if slot and not DRIVE[slot] then
+			local bestId, bestW = nil, worth(cell.Id)
+			for id, n in pairs(avail) do
+				if n > 0 and slotOf(id) == slot and worth(id) > bestW then
+					bestId, bestW = id, worth(id)
+				end
+			end
+			if bestId then
+				local massUp = PartCatalog.Parts[bestId].Mass - PartCatalog.Parts[cell.Id].Mass
+				table.insert(ranked, { op = swap(key, bestId), massUp = massUp })
+			end
+		end
+	end
+	table.sort(ranked, function(a, b)
+		return a.massUp > b.massUp
+	end)
+	for _, r in ipairs(ranked) do
+		if r.massUp <= 0 or score() >= base * UPGRADE_FLOOR then
+			break
+		end
+		local op = r.op
+		build[op.key].Id = op.from
+		avail[op.from] -= 1
+		avail[op.to] += 1
+		op.kind = "skip"
+	end
+
+	-- 3. Free weapon slots: best unused weapon on top of a block, facing the way the car's
+	-- weapons already face (or its seat, if it has none). Never over the seat's column.
+	if fill then
+		local R, T, seatKey
+		for key, cell in pairs(build) do
+			local def = PartCatalog.Parts[cell.Id]
+			if def and def.Category == "Seat" then
+				seatKey = key
+				R, T = R or cell.R or 0, T or cell.T or 0
+			end
+		end
+		for _, cell in pairs(build) do
+			if slotOf(cell.Id) == "Weapon" then
+				R, T = cell.R or 0, cell.T or 0
+				break
+			end
+		end
+		local sx, _, sz
+		if seatKey then
+			sx, _, sz = BuildUtils.ParseKey(seatKey)
+		end
+		local cells = {}
+		for key, cell in pairs(build) do
+			local slot = slotOf(cell.Id)
+			if slot and slot:sub(1, 6) == "Block:" then
+				local x, y, z = BuildUtils.ParseKey(key)
+				if not (x == sx and z == sz) then
+					table.insert(cells, { x, y + 1, z })
+				end
+			end
+		end
+		table.sort(cells, function(a, b)
+			return a[2] > b[2]
+		end)
+		local free = math.min(BuildUtils.GetSupportBudget(bonus), BuildUtils.MAX_SUPPORT_PARTS)
+			- BuildUtils.CountSupportParts(build)
+		while free > 0 do
+			local bestId, bestP = nil, 0
+			for id, n in pairs(avail) do
+				if n > 0 and slotOf(id) == "Weapon" and power(PartCatalog.Parts[id]) > bestP then
+					bestId, bestP = id, power(PartCatalog.Parts[id])
+				end
+			end
+			if not bestId then
+				break
+			end
+			local placed = false
+			for _, c in ipairs(cells) do
+				if BuildUtils.CanPlace(build, bestId, c[1], c[2], c[3], dims, bonus, false, more) then
+					local key = BuildUtils.Key(c[1], c[2], c[3])
+					build[key] = { Id = bestId, R = R or 0, T = T or 0 }
+					avail[bestId] -= 1
+					table.insert(ops, { kind = "place", key = key, to = bestId, R = R or 0, T = T or 0 })
+					placed = true
+					break
+				end
+			end
+			if not placed then
+				break
+			end
+			free -= 1
+		end
+	end
+	return ops, before, score()
+end
+
+local function mirrorCell(key)
+	local ok, m = pcall(BuildController.GetMirror)
+	return ok and m and m[key] or nil
+end
+
+local function waitCell(key, id)
+	return waitFor(function()
+		local c = mirrorCell(key)
+		if id == nil then
+			return c == nil
+		end
+		return c ~= nil and c.Id == id
+	end, EDIT_CONFIRM)
+end
+
+-- The server refuses edits unless you stand on your plot (BuildController's NotOnPlot).
+-- PlayerSpawn is where the game itself puts you; the Placement pad is the fallback.
+local function standOnPlot(plot, fallback)
+	local hrp, hum = rootPart(), humanoid()
+	if not hrp or (hum and hum.SeatPart) then
+		return false
+	end
+	local spot = (not fallback and plot:FindFirstChild("PlayerSpawn")) or plot:FindFirstChild("Placement")
+	if not (spot and spot:IsA("BasePart")) then
+		return false
+	end
+	hrp.CFrame = CFrame.new(spot.Position + Vector3.new(0, spot.Size.Y / 2 + 3, 0))
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	task.wait(SETTLE)
+	return true
+end
+
+local function runOp(op)
+	local x, y, z = BuildUtils.ParseKey(op.key)
+	if op.kind == "place" then
+		fire("PlacePart", op.to, x, y, z, op.R, op.T)
+		return waitCell(op.key, op.to)
+	end
+	local cell = mirrorCell(op.key)
+	if not (cell and cell.Id == op.from) then
+		return false -- the build changed under us; the next pass replans
+	end
+	local R, T = cell.R or 0, cell.T or 0
+	fire("RemovePart", x, y, z)
+	if not waitCell(op.key, nil) then
+		return false
+	end
+	task.wait(EDIT_GAP)
+	fire("PlacePart", op.to, x, y, z, R, T)
+	if waitCell(op.key, op.to) then
+		return true
+	end
+	fire("PlacePart", op.from, x, y, z, R, T) -- a hole is worse than no upgrade
+	waitCell(op.key, op.from)
+	return false
+end
+
+upgradeCar = function(quiet)
+	if not (BuildUtils and BuildController) then
+		say("car upgrade unavailable -- BuildUtils/BuildController didn't load")
+		return false
+	end
+	local plot = myPlot()
+	if not plot or myCar() or plot:GetAttribute("Deployed") == true then
+		if not quiet then
+			say("return the car first -- the build is locked while it's out")
+		end
+		return false
+	end
+	local okM, mirror = pcall(BuildController.GetMirror)
+	local okI, inv = pcall(BuildController.GetInventory)
+	if not (okM and okI and mirror and inv) then
+		return false
+	end
+	local build = {}
+	for key, cell in pairs(mirror) do
+		build[key] = { Id = cell.Id, R = cell.R, T = cell.T }
+	end
+	if not next(build) then
+		if not quiet then
+			say("nothing built on your plot yet")
+		end
+		return false
+	end
+	local dims = plot:GetAttribute("GridDims")
+	local ops, before, after = planUpgrade(
+		build,
+		inv,
+		typeof(dims) == "Vector3" and dims or nil,
+		BuildUtils.BonusSlotsOf(player),
+		player:GetAttribute("TotalMorePlacement") or 0,
+		farm.fillSlots
+	)
+	local todo = 0
+	for _, op in ipairs(ops) do
+		if op.kind ~= "skip" then
+			todo += 1
+		end
+	end
+	if todo == 0 then
+		if not quiet then
+			say("already the best car your parts make")
+		end
+		return false
+	end
+	if not standOnPlot(plot, false) then
+		return false
+	end
+	local done, moved = 0, false
+	for _, op in ipairs(ops) do
+		if not running or myCar() then
+			break
+		end
+		if op.kind ~= "skip" then
+			step("upgrade " .. op.to .. " @ " .. op.key)
+			local ok = runOp(op)
+			if not ok and not moved and garage.reject == "NotOnPlot" and os.clock() - garage.rejectAt < EDIT_CONFIRM + 1 then
+				moved = true -- PlayerSpawn wasn't "on the plot" by the server's measure
+				standOnPlot(plot, true)
+				ok = runOp(op)
+			end
+			if ok then
+				done += 1
+			elseif garage.reject and os.clock() - garage.rejectAt < EDIT_CONFIRM + 1 then
+				log(("edit %s -> %s refused: %s"):format(op.key, op.to, tostring(garage.reject)))
+			end
+			task.wait(EDIT_GAP)
+		end
+	end
+	garage.predicted = BuildUtils.ComputeAggregates(build)
+	say(("car: %d/%d edits -- est. %d -> %d studs a tank"):format(done, todo, before, after))
+	return done > 0
 end
 
 -- skills ---------------------------------------------------------------------
@@ -1658,6 +2064,41 @@ Buy:Button({
 })
 
 local shopLine = Buy:Paragraph({ Title = "Status", Desc = "idle" })
+
+local Car = ShopTab:Section({ Title = "Car", Icon = "solar:tuning-2-bold", Box = true, BoxBorder = true, Opened = true })
+
+Car:Toggle({
+	Title = "Upgrade car between runs",
+	Desc = "Keeps your shape, swaps each part for the best you own in the same slot",
+	Value = false,
+	Callback = function(state)
+		farm.upgrade = state
+	end,
+})
+
+Car:Toggle({
+	Title = "Fill free weapon slots",
+	Desc = "Puts your best unused weapons on top of the car, facing like its others",
+	Value = farm.fillSlots,
+	Callback = function(state)
+		farm.fillSlots = state
+	end,
+})
+
+Car:Button({
+	Title = "Upgrade car now",
+	Callback = function()
+		if myCar() then
+			say("return the car first -- the build is locked while it's out")
+			return
+		end
+		if busy then
+			say("busy with a roll or a launch -- try again in a second")
+			return
+		end
+		task.spawn(claim, upgradeCar, false)
+	end,
+})
 
 -- Progress tab ----
 local ProgTab = Window:Tab({ Title = "Progress", Icon = "solar:star-bold" })
