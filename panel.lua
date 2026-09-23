@@ -55,21 +55,22 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 -- windui ---------------------------------------------------------------------
--- Fetched, not vendored, and one launch is FOUR requests to raw.githubusercontent: the
--- library, then the lucide, solar and craft icon packs its own bootstrap pulls. Any one
+-- Fetched, not vendored. Left alone, one launch is SEVEN requests to raw.githubusercontent:
+-- the library, then six icon packs (lucide, solar, craft, geist, sfsymbols, gravity) its
+-- bootstrap re-downloads even though main.lua already bundles every one of them. Any one
 -- coming back empty ends the same way -- WindUI hands the nil straight to loadstring
 -- (dist/main.lua:24496) and Opiumware reports "missing argument #3 to 'loadstring'"
--- from a stack with no line of your script in it. Nothing is broken when that happens;
--- the host rate-limited, and the fix is to ask again.
+-- from a stack with no line of your script in it. So loadWindUI runs the chunk with
+-- `request` hidden, which makes WindUI take its bundled icons: one request per launch.
 --
--- ponytail: the retry wraps the whole load, not just the fetch -- three of the four
--- requests happen inside WindUI where there is nothing to guard.
+-- ponytail: the retry wraps the whole load, not just the fetch, in case a WindUI update
+-- adds a startup request the `request` trick doesn't cover.
 local WINDUI_URL = "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
 
 local function loadWindUI()
 	local env = getgenv and getgenv() or {}
 	if env.ZegionWindUI then
-		return env.ZegionWindUI -- second script this session: four requests already paid for
+		return env.ZegionWindUI -- second script this session: already paid for
 	end
 	if not game:IsLoaded() then
 		game.Loaded:Wait() -- HttpGet during the join is flaky; don't burn tries on it
@@ -78,7 +79,19 @@ local function loadWindUI()
 	local last
 	for attempt = 1, 5 do
 		local ok, lib = pcall(function()
-			return loadstring(game:HttpGet(WINDUI_URL))()
+			local src = game:HttpGet(WINDUI_URL)
+			if type(src) ~= "string" or #src < 1000 then
+				error("empty response from raw.githubusercontent (rate limit)")
+			end
+			local chunk = assert(loadstring(src))
+			-- WindUI ships all six icon packs inside main.lua and only downloads them again
+			-- when the executor global `request` exists (its IsExploit(), dist/main.lua:24471).
+			-- Hiding it for this one chunk makes a launch ONE request instead of seven. Nothing
+			-- else in WindUI reads `request`; the proxy env leaves the real global alone.
+			pcall(function()
+				setfenv(chunk, setmetatable({ request = false }, { __index = getfenv(chunk) }))
+			end)
+			return chunk()
 		end)
 		if ok and lib then
 			env.ZegionWindUI = lib
@@ -86,7 +99,7 @@ local function loadWindUI()
 		end
 		last = tostring(lib)
 		warn(("[zegion] WindUI load %d/5 failed: %s"):format(attempt, last))
-		task.wait(2) -- long enough for a rate limit to clear, short enough to not sit here
+		task.wait(2 * attempt) -- back off: a rate limit that outlasts 2s outlasts four more 2s tries too
 	end
 	return nil, last
 end
@@ -360,5 +373,5 @@ end
 
 -- ponytail: deliberately NOT cached in getgenv. This file is one small request, and a
 -- cached copy means editing it and re-pasting in the same session silently runs the old
--- one. WindUI is the expensive fetch (four requests) and that IS cached, above.
+-- one. WindUI is the expensive fetch and that IS cached, above.
 return panel

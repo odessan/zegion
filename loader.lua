@@ -76,6 +76,7 @@ local GAMES = {
 	["132239307080610"] = "deep_fishing.lua", -- Deep Fishing
 	["79268393072444"] = "sell_lemons.lua", -- Sell Lemons (World 1)
 	["75881787709393"] = "sell_lemons_w2.lua", -- Sell Lemons (World 2)
+	["105011592530400"] = "build_to_kill_zombie.lua", -- Build to Kill Zombie
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
