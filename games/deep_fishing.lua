@@ -1,11 +1,18 @@
 --[[ Deep Fishing -- protocol-replay fishing: perfect cast, best fish first, no cinematic (132239307080610)
 
-     FARM   : casts, picks the best fish out of the school the server just rolled, claims
-              them and resets -- one round trip per cast, no arc, no dive, no pull-up, no
-              camera. The cinematic never starts because we never touch the charge UI.
+     FARM   : every cast is a perfect cast (the server scores it off one number, so there is
+              no timing to play), and the client cinematic never runs -- no camera takeover,
+              no charge bar, no reveal. What it does NOT skip is the flight: the Sept-2026
+              update made FishCaught wait for the server's own "Landed", so the arc, the dive
+              and the return are the floor and nothing on the client can shorten them. The
+              one accelerator left is ReelBait, which ends the pull-up early, and it is what
+              the real client sends when you press the button.
      CATCH  : the server claims in the order WE list the indices and stops at your hook
               capacity, so the list goes out sorted by sell value. A floor dropdown drops
               the rarities you don't want taking a slot.
+
+     Read the protocol notes above cast() before changing the order of anything in it: the
+     update attached a ThrowSuspect report to every step done out of sequence.
      SELL   : one Sell per fish you chose to sell, by inventory id -- the server can only
               take the id you name, so a keeper cannot be sold by accident. Batched so a
               whole backpack costs a couple of round trips, not one per fish. OFF by default;
@@ -29,21 +36,31 @@
      Stop: getgenv().deepFishingStop() ]]
 
 -- config ---------------------------------------------------------------------
--- ThrowRod.lua:568 scores the cast off the power byte alone:
+-- ThrowRod.lua:818 scores the cast off the power byte alone:
 --   p >= 0.4 and p < 0.55 -> quality 2 ("Perfect"), 0.1..0.9 -> 1.5, else 1.
 -- Quality is the whole of distance, depth and therefore rarity, so there is exactly one
 -- right number to send and no timing to simulate. Dead centre of the perfect band.
 local POWER = 0.475
 
 local CAST_TIMEOUT = 4 -- seconds waiting for the server's "Started" before we give up on a cast
-local CYCLE_GAP = 0.05 -- between finishing one cast and starting the next
--- Warp flushes every queued Fire on PostSimulation, and iterates its per-event queues in
--- dictionary order -- so two DIFFERENT events queued in the same frame can arrive in either
--- order. FishCaught before CancelThrow and CancelThrow before the next ThrowRod both matter
--- (CancelThrow wipes the school; a ThrowRod that overtakes it is refused "already_active"),
--- so every step of the sequence gets its own frame. One frame each, not a sleep.
-local STEP = 0 -- extra seconds on top of the frame gap; 0 is right unless the server lags
 
+-- Cast pacing. The live server refuses a re-cast while the line is still returning and says
+-- so with an on-screen toast ("Your line is still coming back") -- so a refusal is not free
+-- the way a silent one would be, and the gap is walked DOWN from somewhere safe rather than
+-- up from zero: from below, finding a 3s floor costs a dozen stacked toasts, from above it
+-- costs one. Every success creeps it down, every refusal backs it off and it settles just
+-- above the real floor. A "Landed" reply beats the clock outright -- that IS the line being
+-- back, so the wait is cut short the moment one arrives.
+local GAP_START = 1 -- first gap of a run; the flight is the real pacing now, this is slack
+local GAP_MIN = 0.05
+local GAP_MAX = 12 -- give up creeping past this
+local GAP_DOWN = 0.9 -- multiplier after a cast the server accepted
+local GAP_UP = 1.6 -- multiplier after a refusal
+
+-- Margin on top of the server's own published durations before we call a phase missed.
+-- Generous on purpose: overrunning costs one idle second, giving up early costs the cast.
+local FLIGHT_SLACK = 6 -- on arc + bounces + dive, waiting for the catch window
+local LAND_SLACK = 8 -- on pull-up + return, waiting for "Landed"
 -- FishHooked("won") is rejected unless os.clock() - fight.started >= required / MaxClickRate
 -- (ThrowRod.lua:1152, CatchFight.MaxClickRate = 12). That wait is the floor for a Secret or
 -- Exotic and nothing else in the script can shorten it.
@@ -311,7 +328,6 @@ local catchFloor = "Everything" -- rarity below this doesn't get a hook slot
 local sellUpTo = "Uncommon" -- sell this rarity and everything below it
 local keepMutated = true
 local sellEvery = 20 -- casts between sell sweeps; 0 = only when the backpack is nearly full
-local keepStreak = true
 local sellSnap = true
 -- Both off by default: they're the two that spend something you can't get back -- one opens
 -- a chest you might have wanted to hold, the other empties the bag against a rarity rule you
@@ -339,43 +355,91 @@ do
 end
 
 -- One cast, whole protocol. Returns "ok", or a short reason.
+-- One listener for the whole run, not one per cast: "Landed" arrives long after cast()
+-- has returned, and it is the only thing the server sends that means "the line is back".
+-- A per-cast connection would be gone by then and we'd be pacing on a guess.
+local wire = { started = nil, refused = nil, openAt = 0, closeAt = 0, landedAt = 0 }
+local wireConn
+do
+	local chan = ev("ThrowRod")
+	if chan then
+		wireConn = chan:Connect(function(kind, payload)
+			if kind == "Started" and type(payload) == "table" then
+				wire.started = payload
+			elseif kind == "Refused" then
+				wire.refused = tostring(payload)
+			elseif kind == "Catch" then
+				-- "Catch" true opens the hook window (windowOpen), false shuts it. Every
+				-- FishHooked and every ReelBait has to land between the two.
+				if payload then
+					wire.openAt = os.clock()
+				else
+					wire.closeAt = os.clock()
+				end
+			elseif kind == "Landed" then
+				wire.landedAt = os.clock()
+			end
+		end)
+	end
+end
+
+-- The protocol, as the Sept-2026 update enforces it. Every one of these is a gate with a
+-- ThrowSuspect.Report attached to the failing side, so the order is not negotiable:
+--
+--   ThrowRod(power)           -> "Started" {throwId, school, sizes, mutations, specials, …}
+--   ... arc + bounces + dive ...
+--                             -> "Catch", true      windowOpen = true
+--     FishHooked(i)             every index you mean to claim, inside the window
+--     FishHooked(i,"fight")     ONLY for CatchFight.Required fish   (else Report 5)
+--     FishHooked(i,"won",n)     >= n/12 seconds after the "fight"   (else ignored)
+--     ReelBait()                ONLY while the window is open       (else Report 6)
+--   ... pull-up + surface + showcase + return ...
+--                             -> "Catch", false ... -> "Landed"     landedAt = now
+--   FishCaught(throwId, hooked)
+--     rejected + Report 3 if this cast was already claimed
+--     rejected + Report 2 if landedAt is unset  (claiming before the line is home)
+--     rejected + Report 1 if elapsed < minDuration - 0.5
+--     Report 4 for any index in the list the server never saw hooked
+--
+-- The old shortcut here -- claim on "Started", CancelThrow, re-cast -- now trips reports 2,
+-- 1 and 4 on every single cast. Don't reintroduce it.
+--
+-- CancelThrow is no longer free either: the server answers it by locking you out of a
+-- re-cast for however much of the flight was left, capped at 5s (that's the "Your line is
+-- still coming back" toast). So it is only for genuinely walking away from a cast.
+local function abandon(cancel)
+	if cancel then
+		cancel:Fire(true)
+	end
+end
+
 local function cast()
-	local throwRod, fishCaught, fishHooked, cancel =
-		ev("ThrowRod"), ev("FishCaught"), ev("FishHooked"), ev("CancelThrow")
-	if not (throwRod and fishCaught and cancel) then
+	local throwRod, fishCaught, fishHooked, cancel, reel =
+		ev("ThrowRod"), ev("FishCaught"), ev("FishHooked"), ev("CancelThrow"), ev("ReelBait")
+	if not (throwRod and fishCaught and fishHooked) then
 		return "missing an event"
 	end
 
 	step("cast/await")
-	local started, refused
-	local key = throwRod:Connect(function(kind, payload)
-		if kind == "Started" and type(payload) == "table" then
-			started = payload
-		elseif kind == "Refused" then
-			refused = tostring(payload)
-		end
-	end)
-
+	local firedAt = os.clock()
+	wire.started, wire.refused = nil, nil
+	wire.openAt, wire.closeAt, wire.landedAt = 0, 0, 0
 	throwRod:Fire(true, POWER)
 
 	local deadline = os.clock() + CAST_TIMEOUT
-	while not started and not refused and os.clock() < deadline do
+	while not wire.started and not wire.refused and os.clock() < deadline do
 		task.wait()
 	end
-	pcall(function()
-		throwRod:Disconnect(key)
-	end)
+	local started, refused = wire.started, wire.refused
 
 	if refused then
-		-- A stale cast of ours is the one refusal we can clear ourselves.
-		if refused == "already_active" then
-			cancel:Fire(true)
-			task.wait()
-		end
+		-- Nothing to clear: a refusal means no cast was started, so a CancelThrow here would
+		-- do nothing but risk a lock. "recast_locked" is the server saying wait, and the
+		-- pacing loop's backoff is the whole answer to it.
 		return "refused: " .. refused
 	end
 	if not started then
-		cancel:Fire(true)
+		abandon(cancel)
 		return "server never answered"
 	end
 
@@ -413,45 +477,64 @@ local function cast()
 
 	local cap = claimCap()
 	if cap <= 0 then
-		cancel:Fire(true)
+		abandon(cancel)
 		return "no room -- sell first"
 	end
 	while #picks > cap do
 		table.remove(picks)
 	end
-
-	-- Specials (scrolls, chests, the rush items) sit past the end of the school and cost no
-	-- hook slot on the way in -- FishCaught claims them through a different branch.
-	local indices = {}
-	for _, pick in ipairs(picks) do
-		table.insert(indices, pick.index)
-	end
-	for i in ipairs(specials) do
-		table.insert(indices, #school + i)
-	end
-	if #indices == 0 then
-		cancel:Fire(true)
+	if #picks == 0 and #specials == 0 then
+		abandon(cancel)
 		return "nothing worth keeping"
 	end
 
-	-- Fights: Secret and above (RarityConfig order >= 7) need a started fight and a won one,
-	-- and the server times the gap between them. Start every fight in one frame so they run
-	-- the clock down together instead of one after another.
-	step("cast/hook")
-	local longest = 0
-	if fishHooked then
-		for _, pick in ipairs(picks) do
-			if pick.fight then
-				fishHooked:Fire(true, pick.index, "fight", nil, true)
-				longest = math.max(longest, pick.fight)
-			elseif keepStreak then
-				-- Not needed for the claim; it is the only thing that feeds the streak counter.
-				fishHooked:Fire(true, pick.index)
-			end
-		end
+	-- Wait out the flight. There is no way around this any more: FishCaught is rejected
+	-- outright unless the server has already set landedAt, and hooking is rejected unless
+	-- the catch window is open -- both with a ThrowSuspect report attached. So the budget
+	-- is the server's own numbers out of the Started payload, not a guess.
+	step("cast/flight")
+	local bounceTime = 0
+	for _, hop2 in ipairs(started.bounces or {}) do
+		bounceTime = bounceTime + (tonumber(hop2.Duration) or 0)
+	end
+	local flight = (tonumber(started.arcDuration) or 3)
+		+ bounceTime
+		+ (tonumber(started.diveDuration) or 1)
+		+ (tonumber(started.holdDuration) or 0)
+	local openBy = firedAt + flight + FLIGHT_SLACK
+	while wire.openAt <= firedAt and os.clock() < openBy do
+		task.wait()
+	end
+	if wire.openAt <= firedAt then
+		abandon(cancel)
+		return "the catch window never opened"
 	end
 
-	if longest > 0 and fishHooked then
+	-- Hook, inside the window. FishCaught only claims indices the server saw hooked, so this
+	-- is no longer optional -- and a "fight" sent for a fish that doesn't need one is its own
+	-- report, so the two kinds are kept strictly apart.
+	step("cast/hook")
+	local hooked, longest = {}, 0
+	for _, pick in ipairs(picks) do
+		if pick.fight then
+			fishHooked:Fire(true, pick.index, "fight", nil, true)
+			longest = math.max(longest, pick.fight)
+		else
+			fishHooked:Fire(true, pick.index)
+		end
+		table.insert(hooked, pick.index)
+	end
+	-- Specials (scrolls, chests, junk) sit past the end of the school and cost no hook slot,
+	-- but they still have to be hooked inside the window like everything else.
+	for i in ipairs(specials) do
+		local idx = #school + i
+		fishHooked:Fire(true, idx)
+		table.insert(hooked, idx)
+	end
+
+	if longest > 0 then
+		-- FishHooked("won") is rejected unless required/MaxClickRate seconds have passed
+		-- since the "fight". Starting every fight in one frame runs their clocks together.
 		step("cast/fight")
 		task.wait(longest / CatchFight.MaxClickRate + FIGHT_PAD)
 		for _, pick in ipairs(picks) do
@@ -459,16 +542,26 @@ local function cast()
 				fishHooked:Fire(true, pick.index, "won", pick.fight)
 			end
 		end
+	elseif reel and wire.closeAt <= firedAt then
+		-- The one accelerator left, and only because it's what the real client sends when
+		-- you press the button: it breaks the server's pull-up wait early. Legal only while
+		-- the window is open, and never during a fight -- the reel would end the window
+		-- before the fight could be won.
+		reel:Fire(true)
+	end
+
+	-- landedAt is set in the same breath as this reply, and FishCaught reads landedAt.
+	step("cast/return")
+	local landBy = os.clock() + (tonumber(started.pullUpDuration) or 2) + (tonumber(started.returnDuration) or 3) + LAND_SLACK
+	while wire.landedAt <= firedAt and os.clock() < landBy do
+		task.wait()
+	end
+	if wire.landedAt <= firedAt then
+		return "the line never came back" -- no abandon: cancelling now would only add a lock
 	end
 
 	step("cast/claim")
-	task.wait(STEP)
-	fishCaught:Fire(true, throwId, indices, false)
-	task.wait(STEP)
-	-- Ends the server's cast sequence immediately: clears the active-throw guard and the
-	-- school, so the next ThrowRod is accepted this second instead of after the pull-up,
-	-- the showcase hold and the return arc.
-	cancel:Fire(true)
+	fishCaught:Fire(true, throwId, hooked, false)
 
 	stats.casts = stats.casts + 1
 	stats.caught = stats.caught + #picks
@@ -1131,6 +1224,8 @@ local function setFarm(on)
 	end
 	task.spawn(function()
 		local sinceSell = 0
+		local gap = GAP_START -- walked down by the loop; see the pacing note in config
+		local nextAt = 0
 		while farm.on and farm.gen == mine do
 			if not char() then
 				step("wait/character")
@@ -1160,19 +1255,35 @@ local function setFarm(on)
 
 					if inArea() then
 						topUpBait()
+
+						-- Hold off until the gap has run OR the server says the line is home.
+						-- A "Landed" that arrives after the reset beats the clock outright --
+						-- casting on the event is free, casting early costs a toast.
+						step("pace")
+						local firedAt = os.clock()
+						while farm.on and farm.gen == mine and os.clock() < nextAt and wire.landedAt < firedAt do
+							task.wait(0.05)
+						end
+						if not (farm.on and farm.gen == mine) then
+							return
+						end
+
 						local result, picks = cast()
 						local forceSell = false
 						if result == "ok" then
 							sinceSell = sinceSell + 1
+							gap = math.max(gap * GAP_DOWN, GAP_MIN)
+							nextAt = os.clock() + gap
 							local best = picks and picks[1]
 							-- receipts, not picks: the server's own count of what it took.
 							say(
-								("cast %d | %d fish%s | $%s earned")
+								("cast %d | %d fish%s | $%s | gap %.2fs")
 									:format(
 										stats.casts,
 										receipts,
-										best and (" | best " .. best.rarity .. " " .. best.name) or "",
-										tostring(math.floor(stats.earned))
+										best and (" | " .. best.rarity .. " " .. best.name) or "",
+										tostring(math.floor(stats.earned)),
+										gap
 									)
 							)
 						else
@@ -1181,6 +1292,10 @@ local function setFarm(on)
 							if result:find("no room") then
 								forceSell = true -- sweep rather than spin on a full bag
 							else
+								-- Every refusal is a toast on screen, so back off hard and let the
+								-- creep find the floor again from the safe side.
+								gap = math.min(gap * GAP_UP, GAP_MAX)
+								nextAt = os.clock() + gap
 								task.wait(IDLE)
 							end
 						end
@@ -1226,7 +1341,7 @@ local function setFarm(on)
 					end
 				end
 			end
-			task.wait(CYCLE_GAP)
+			task.wait() -- the real pacing is the adaptive gap above; this is just a yield
 		end
 		if farm.gen == mine then
 			step("idle")
@@ -1293,15 +1408,6 @@ Farm:Dropdown({
 		if table.find(catchValues, v) then
 			catchFloor = v
 		end
-	end,
-})
-
-Farm:Toggle({
-	Title = "Feed the streak",
-	Desc = "Also sends FishHooked per fish. Costs nothing, keeps the game's streak bonus alive",
-	Value = keepStreak,
-	Callback = function(on)
-		keepStreak = on
 	end,
 })
 
@@ -1734,6 +1840,12 @@ local function stopAll()
 	pcall(function()
 		if stockConn then
 			stockConn:Disconnect()
+		end
+	end)
+	pcall(function()
+		local chan = ev("ThrowRod")
+		if chan and wireConn then
+			chan:Disconnect(wireConn)
 		end
 	end)
 	pcall(function()
