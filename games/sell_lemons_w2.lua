@@ -2,14 +2,17 @@
 
      BUY      : every button is its own `Purchase` RemoteFunction, fired in the order the game's
                 own Buy Next walks -- Balance.PurchaseOrder, which World 2 ships with its own
-                oxygen names. A refusal you could afford hops onto the button and retries; after
-                a few of those every buy hops first.
+                oxygen names. A refusal you could still afford hops onto the button and retries;
+                three hop-cured buys in a row switch to hopping first, and every 10th buy tries
+                remote again to switch back. ("cannot afford" in F9 is the game's own
+                touch-to-buy firing when a hop lands you on a button -- harmless.)
      FOREVER  : World 2's "Forever Purchase" card hands out free buy-it-permanently slots -- no
                 Robux, just `Purchase(false, true)`. Each slot goes to your strongest earner not
                 already permanent (Balance.EarnerIncomes), so after an inversion the Oxygen Forge
                 is already standing.
-     UPGRADE  : one earner upgrade at a time, stacked by the UpgradeStack power (the game's own
-                GetNextUpgradeInfo), and only with cash above the next purchase's price.
+     UPGRADE  : the upgrade that pays for itself fastest -- income gained per Φ, off the game's
+                own income maths -- stacked by the UpgradeStack power, and only with cash
+                above the next purchase's price.
      WAKE     : an earner without its Manager pays once and sleeps. WakeIncomeStream does what
                 clicking its gauge does; the server answers a refusal with the seconds left, so
                 it sets the pace.
@@ -41,7 +44,9 @@ local BUY_GAP = 0.05 -- between purchases; the server refuses extras for free
 local BUY_IDLE = 0.5 -- ...and between passes while saving up
 local BUY_TIMEOUT = 1.5 -- waiting for Purchased / a level to move before calling it a miss
 local HOP_SETTLE = 0.2 -- after a hop onto a button, for the position to reach the server
-local HOP_CURES = 3 -- refusals a hop cured before every buy hops first
+local BUY_GRACE = 0.5 -- after the server answers a buy, for Purchased to replicate; raise on lag
+local HOP_CURES = 3 -- refusals IN A ROW a hop cured before every buy hops first...
+local HOP_PROBE = 10 -- ...and while hopping, every Nth buy tries remote again
 local PARK_AFTER = 3 -- consecutive refusals before an item is stepped over...
 local PARK_FOR = 60 -- ...for this many seconds, so one dud can't block the whole order
 
@@ -176,6 +181,7 @@ for name, path in pairs({
 	Ascension = "TycoonAscension",
 	Inversion = "TycoonInversion",
 	Offline = "TycoonOfflineIncome",
+	Income = "TycoonIncome",
 }) do
 	C[name] = shared("Modules", "Tycoon", "Component", path)
 end
@@ -233,6 +239,7 @@ local evolution = comp("Evolution")
 local ascension = comp("Ascension") -- still the "all purchases bought" gauge in World 2
 local inversion = comp("Inversion")
 local offline = comp("Offline")
+local income = comp("Income")
 
 local tyRemotes = tycoon.Remotes
 local warned = {}
@@ -344,12 +351,8 @@ end
 table.sort(EARNERS, function(a, b)
 	return Balance.EarnerIncomes[a] > Balance.EarnerIncomes[b]
 end)
-local EARNER_RANK = {}
-for i, name in ipairs(EARNERS) do
-	EARNER_RANK[name] = i
-end
 
-local buy = { ahead = false, forever = true, cures = 0, hopFirst = false, count = 0, idle = false }
+local buy = { ahead = false, forever = true, cures = 0, hopFirst = false, count = 0, idle = false, n = 0 }
 
 local function allPurchases()
 	return get(analyzer, "GetPurchases", {})
@@ -392,19 +395,31 @@ local function foreverTargets()
 	return set
 end
 
--- Fired and forgotten: the confirm is the button's Purchased attribute, never the return.
--- remoteBuy stays false (true spends a Buy Next use); perm is the forever slot.
+-- The confirm is the button's Purchased attribute, never the return value. remoteBuy stays
+-- false (true spends a Buy Next use); perm is the forever slot.
+-- true = bought; false = the server ANSWERED and BUY_GRACE later it still isn't; nil = no
+-- answer yet (lag). Reading a slow reply as a refusal is what used to flip hop mode on.
 local function fire(p, perm)
 	local rem = p.Instance:FindFirstChild("Purchase")
 	if not rem then
 		return nil
 	end
+	local answeredAt
 	task.spawn(function()
 		pcall(rem.InvokeServer, rem, false, perm)
+		answeredAt = os.clock()
 	end)
-	return waitFor(function()
-		return isBought(p)
-	end, BUY_TIMEOUT)
+	local deadline = os.clock() + CALL_TIMEOUT
+	repeat
+		if isBought(p) then
+			return true
+		end
+		if answeredAt and os.clock() - answeredAt > BUY_GRACE then
+			return false
+		end
+		task.wait()
+	until os.clock() > deadline
+	return isBought(p) or nil
 end
 
 local function hopOnto(p)
@@ -416,33 +431,47 @@ local function hopOnto(p)
 	return true
 end
 
--- true bought, false refused (count it), nil never fired (the other mover held the claim).
-local function buyOne(p, perm)
+-- true bought, false refused (count it), nil not a verdict (lag, a cash race, or the other
+-- mover held the claim) -- nil is never struck and never counts toward hop mode.
+local function buyOne(p, perm, price)
 	step("buy " .. p.Name)
-	if buy.hopFirst then
-		local got
-		if not claim(function()
-			hopOnto(p)
-			got = fire(p, perm)
-		end) then
+	buy.n = buy.n + 1
+	-- Hop mode isn't a life sentence: every HOP_PROBE-th buy tries from here first.
+	if not buy.hopFirst or buy.n % HOP_PROBE == 0 then
+		local got = fire(p, perm)
+		if got then
+			if buy.hopFirst then
+				log("remote buys land again -- back to buying from where you stand")
+			end
+			buy.hopFirst, buy.cures = false, 0
+			return true
+		end
+		-- Refused while we can no longer afford it: the upgrade loop or a payout race took
+		-- the cash between our check and the server's. Not distance -- the next pass retries.
+		if got == nil or not (price <= cash()) then
 			return nil
 		end
-		return got
 	end
-	local got = fire(p, perm)
-	if got == false then
-		claim(function()
-			if hopOnto(p) then
-				got = fire(p, perm)
-			end
-		end)
-		-- only a refusal the hop CURED says the server range-checks
-		if got then
-			buy.cures = buy.cures + 1
-			if buy.cures >= HOP_CURES and not buy.hopFirst then
-				buy.hopFirst = true
-				log("remote buys only land up close -- hopping to each button from here on")
-			end
+	local got, cured
+	if not claim(function()
+		if isBought(p) then
+			got = true -- the first call landed late; nothing to cure
+			return
+		end
+		if hopOnto(p) then
+			got = fire(p, perm)
+			cured = got == true
+		end
+	end) then
+		return nil
+	end
+	-- Only a refusal the hop CURED says the server range-checks, and only HOP_CURES of them
+	-- in a row -- one remote success resets the count.
+	if cured and not buy.hopFirst then
+		buy.cures = buy.cures + 1
+		if buy.cures >= HOP_CURES then
+			buy.hopFirst = true
+			log(("%d buys in a row only landed up close -- hopping to buttons, re-trying remote every %d"):format(HOP_CURES, HOP_PROBE))
 		end
 	end
 	return got
@@ -473,22 +502,52 @@ local function nextBuy()
 end
 
 -- upgrades -------------------------------------------------------------------
-local UP_MODES = { "Cheapest first", "Strongest earner first" }
-local upMode = UP_MODES[1]
+-- One rule: buy the upgrade that pays for itself fastest. An earner's income scales by the
+-- game's own TycoonIncome.getCountMultiplier(count), so k more levels add
+-- income * (M(c+k) / M(c) - 1) per second, and that over the price ranks them. "Cheapest
+-- first" poured cash into weak earners; "strongest first" ignored that its next level can
+-- cost 1000x a weak one's for 2x the gain. Ties to neither -- it's the payback, measured.
+-- ponytail: assumes the stream's Count moves 1 per level (the multiplier's own input); if
+-- the ratio can't be read, every earner falls back to cheapest-first together.
+local STACK = (Config.Powers.UpgradeStack or {}).Bonuses or {}
+
+local function stackSize()
+	local ok, lvl = pcall(powers.GetSelectedLevel, powers, "UpgradeStack")
+	return ok and STACK[lvl] or 1
+end
+
+-- income/s the next k levels add, or nil when unreadable
+local function upgradeGain(name, k)
+	local ok, gain = pcall(function()
+		local m, c = C.Income.getCountMultiplier, income:GetStreamCount(name)
+		local ratio = Huge.divide(m(c + k, name), m(c, name))
+		return Huge.multiply(income:GetAverageStreamIncome(name), Huge.subtract(ratio, Huge.one))
+	end)
+	return ok and gain or nil
+end
 
 -- One upgrade per call, so a toggle-off lands between them. reserve = cash to leave alone.
 local function upgradeOnce(reserve)
-	local best, bestInfo, bestKey
+	local budget = cash()
+	if reserve then
+		if not (reserve < budget) then
+			return false
+		end
+		budget = Huge.subtract(budget, reserve)
+	end
+	local stack = stackSize()
+	local best, bestCount, bestScore
 	for name, e in pairs(get(analyzer, "GetEarners", {})) do
 		if e:IsEnabled() and not isParked("up:" .. name) then
-			local ok, info = pcall(e.GetNextUpgradeInfo, e)
-			if ok and type(info) == "table" and not info.Max and info.Price then
-				local spend = reserve and Huge.add(info.Price, reserve) or info.Price
-				if spend <= cash() then
-					local key = upMode == UP_MODES[2] and (EARNER_RANK[name] or 99) or info.Price
-					if not bestKey or key < bestKey then
-						best, bestInfo, bestKey = e, info, key
-					end
+			-- Budget-capped stack (the game's own solver): a partial stack now beats saving for
+			-- a full one, and at the infinite stack it's what the reserve leaves spendable --
+			-- the old full-cash stack could never fit under a reserve, so upgrades froze.
+			local ok, price, count = pcall(e.GetUpgradePrice, e, nil, stack, budget)
+			if ok and price and (count or 0) > 0 and price <= budget and HZERO < price then
+				local gain = upgradeGain(name, count)
+				local score = Huge.divide(gain or Huge.one, price)
+				if not bestScore or bestScore < score then
+					best, bestCount, bestScore = e, count, score
 				end
 			end
 		end
@@ -499,13 +558,13 @@ local function upgradeOnce(reserve)
 	step("upgrade " .. best.Name)
 	local level = best:GetUpgradeLevel()
 	task.spawn(function()
-		pcall(best.UpgradeAsync, best, bestInfo.Count)
+		pcall(best.UpgradeAsync, best, bestCount)
 	end)
 	if waitFor(function()
 		return best:GetUpgradeLevel() > level
 	end, BUY_TIMEOUT) then
 		misses["up:" .. best.Name] = nil
-		return true, best.Name, bestInfo.Count
+		return true, best.Name, bestCount
 	end
 	strike("up:" .. best.Name)
 	return false
@@ -1063,7 +1122,7 @@ local buyLoop = looper("buy", function()
 	buy.idle = not p
 	if p then
 		local perm = foreverTargets()[p.Name] == true
-		local got = buyOne(p, perm)
+		local got = buyOne(p, perm, price)
 		if got then
 			misses[p.Name] = nil
 			stats.bought = stats.bought + 1
@@ -1318,20 +1377,10 @@ do
 	})
 	Build:Toggle({
 		Title = "Auto upgrade earners",
-		Desc = "Stack size comes from the Stack Upgrade power",
+		Desc = "Always the upgrade that pays for itself fastest (income gained per Φ), stacked by Stack Upgrade",
 		Value = false,
 		Callback = function(on)
 			upLoop.set(on)
-		end,
-	})
-	Build:Dropdown({
-		Title = "Upgrade order",
-		Values = UP_MODES,
-		Value = upMode,
-		Callback = function(v)
-			if table.find(UP_MODES, v) then
-				upMode = v
-			end
 		end,
 	})
 	Build:Toggle({
