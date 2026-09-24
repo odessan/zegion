@@ -10,9 +10,12 @@
                 Robux, just `Purchase(false, true)`. Each slot goes to your strongest earner not
                 already permanent (Balance.EarnerIncomes), so after an inversion the Oxygen Forge
                 is already standing.
-     UPGRADE  : one earner upgrade at a time -- cheapest first, or strongest earner first --
-                stacked by the UpgradeStack power, and only with cash above the next
-                purchase's price.
+     UPGRADE  : each pass plans a batch of stacks and fires every earner's share at once.
+                "Best income per Φ" (default) gives each stack to the earner it adds the most
+                income/s per Φ to, scored at its planned level, so the leader gets the most
+                and the rest get their turn as it gets pricier; a new earner jumps the queue.
+                "Cheapest first" / "Strongest earner first" plan the same way. Only cash above
+                the next purchase's price, while Purchases first is on.
      WAKE     : an earner without its Manager pays once and sleeps. WakeIncomeStream does what
                 clicking its gauge does; the server answers a refusal with the seconds left, so
                 it sets the pace.
@@ -50,7 +53,9 @@ local HOP_PROBE = 10 -- ...and while hopping, every Nth buy tries remote again
 local PARK_AFTER = 3 -- consecutive refusals before an item is stepped over...
 local PARK_FOR = 60 -- ...for this many seconds, so one dud can't block the whole order
 
-local UP_GAP = 0.1 -- between earner upgrades
+local UP_GAP = 0.1 -- between upgrade passes (each pass fires every earner's plan at once)
+local UP_MAX_CHUNKS = 30 -- stacks planned per pass; raise to spend a big bank in fewer passes
+local UP_CHUNK = 25 -- at the infinite stack, the planning grain: smaller spreads finer, costs more CPU
 local WAKE_GAP = 0.5 -- between wake sweeps; per-stream timing comes from the server
 local WAKE_RECHECK = 20 -- how often to re-ask a stream the server called automatic
 
@@ -181,6 +186,7 @@ for name, path in pairs({
 	Ascension = "TycoonAscension",
 	Inversion = "TycoonInversion",
 	Offline = "TycoonOfflineIncome",
+	Income = "TycoonIncome",
 }) do
 	C[name] = shared("Modules", "Tycoon", "Component", path)
 end
@@ -238,6 +244,7 @@ local evolution = comp("Evolution")
 local ascension = comp("Ascension") -- still the "all purchases bought" gauge in World 2
 local inversion = comp("Inversion")
 local offline = comp("Offline")
+local income = comp("Income")
 
 local tyRemotes = tycoon.Remotes
 local warned = {}
@@ -500,8 +507,23 @@ local function nextBuy()
 end
 
 -- upgrades -------------------------------------------------------------------
-local UP_MODES = { "Cheapest first", "Strongest earner first" }
+-- A planner, not a picker. Each pass splits the spendable cash into chunks (one stack each)
+-- and hands every chunk to whichever earner the mode scores highest AT ITS PLANNED LEVEL,
+-- then fires every earner's plan at once: each earner has its own Upgrade remote, and the
+-- game's own hold-to-upgrade button already keeps several in flight. One earner's chunks go
+-- in order (the server prices a level off the current one); different earners run in parallel.
+--
+-- "Best income per Φ" scores a chunk by the income/s it adds over its price. Income is
+-- value x TycoonIncome.getCountMultiplier(count) / interval, so k more levels add
+-- income * (M(c+k) - M(c)) / M(c). Scoring at the planned level is what spreads the cash:
+-- the leader's next chunk costs more and adds relatively less, so the others get their turn
+-- exactly when they become the better buy -- no quota -- and a fresh earner (level 0, tiny
+-- price, big income) jumps the queue by itself.
+-- ponytail: assumes a stream's Count is level + 1 (checked against three earners' shown
+-- incomes); a manual stream only counts as earning while Auto wake is on.
+local UP_MODES = { "Best income per Φ", "Cheapest first", "Strongest earner first" }
 local upMode = UP_MODES[1]
+local wakeLoop -- the wake looper, assigned below; a manual stream only earns while it runs
 
 -- Balance.EarnerIncomes order: 1 = the strongest earner
 local EARNER_RANK = {}
@@ -516,47 +538,121 @@ local function stackSize()
 	return ok and STACK[lvl] or 1
 end
 
--- One upgrade per call, so a toggle-off lands between them. reserve = cash to leave alone.
-local function upgradeOnce(reserve)
+-- Higher is better; nil = don't spend on this chunk. Each mode is compared only with itself.
+local function chunkScore(mode, r, price, count)
+	if mode == UP_MODES[2] then
+		return Huge.divide(Huge.one, price)
+	elseif mode == UP_MODES[3] then
+		return -(EARNER_RANK[r.name] or 99)
+	end
+	if r.idle or not (HZERO < r.inc) then
+		return nil -- earns nothing right now, so an upgrade adds nothing
+	end
+	local ok, s = pcall(function()
+		local M, c = C.Income.getCountMultiplier, r.c + r.planned
+		local added = Huge.divide(Huge.subtract(M(c + count, r.name), M(c, r.name)), M(r.c, r.name))
+		return Huge.divide(Huge.multiply(r.inc, added), price)
+	end)
+	return ok and s or nil
+end
+
+-- Returns one row per earner with its planned calls; reserve = cash to leave alone.
+local function planUpgrades(reserve, mode)
 	local budget = cash()
 	if reserve then
 		if not (reserve < budget) then
-			return false
+			return {}
 		end
 		budget = Huge.subtract(budget, reserve)
 	end
 	local stack = stackSize()
-	local best, bestCount, bestKey
+	local chunk = stack == math.huge and UP_CHUNK or stack
+	local rows = {}
 	for name, e in pairs(get(analyzer, "GetEarners", {})) do
 		if e:IsEnabled() and not isParked("up:" .. name) then
-			-- Budget-capped stack (the game's own solver): a partial stack now beats saving for
-			-- a full one, and at the infinite stack it's what the reserve leaves spendable --
-			-- a full-cash stack could never fit under a reserve, so upgrades froze.
-			local ok, price, count = pcall(e.GetUpgradePrice, e, nil, stack, budget)
-			if ok and price and (count or 0) > 0 and price <= budget then
-				local key = upMode == UP_MODES[2] and (EARNER_RANK[name] or 99) or price
-				if not bestKey or key < bestKey then
-					best, bestCount, bestKey = e, count, key
-				end
+			local ok, r = pcall(function()
+				return {
+					e = e,
+					name = name,
+					level = e:GetUpgradeLevel(),
+					c = income:GetStreamCount(name),
+					inc = income:GetAverageStreamIncome(name),
+					idle = not income:IsStreamAutomatic(name) and not (wakeLoop and wakeLoop.on),
+					planned = 0,
+					calls = {},
+				}
+			end)
+			if ok then
+				table.insert(rows, r)
 			end
 		end
 	end
-	if not best then
-		return false
+	for _ = 1, UP_MAX_CHUNKS do
+		local best, bestPrice, bestCount, bestScore
+		for _, r in ipairs(rows) do
+			-- The game's own solver, from the planned level, capped by what's left. Below MAX
+			-- only a FULL stack counts -- the game's button never sends a partial one, so the
+			-- server may not take it; at MAX it sends "whatever cash buys", so any size goes.
+			local ok, price, count = pcall(r.e.GetUpgradePrice, r.e, r.level + r.planned, chunk, budget)
+			local whole = stack == math.huge and (count or 0) > 0 or count == chunk
+			if ok and price and whole and price <= budget then
+				local s = chunkScore(mode, r, price, count)
+				if s ~= nil and (bestScore == nil or bestScore < s) then
+					best, bestPrice, bestCount, bestScore = r, price, count, s
+				end
+			end
+		end
+		if not best then
+			break
+		end
+		budget = Huge.subtract(budget, bestPrice)
+		best.planned = best.planned + bestCount
+		table.insert(best.calls, bestCount)
 	end
-	step("upgrade " .. best.Name)
-	local level = best:GetUpgradeLevel()
-	task.spawn(function()
-		pcall(best.UpgradeAsync, best, bestCount)
-	end)
-	if waitFor(function()
-		return best:GetUpgradeLevel() > level
-	end, BUY_TIMEOUT) then
-		misses["up:" .. best.Name] = nil
-		return true, best.Name, bestCount
+	-- the infinite stack takes an earner's whole plan in one call
+	if stack == math.huge then
+		for _, r in ipairs(rows) do
+			if r.planned > 0 then
+				r.calls = { r.planned }
+			end
+		end
 	end
-	strike("up:" .. best.Name)
-	return false
+	return rows
+end
+
+-- Fires every earner's plan in parallel; the confirm is each level moving. Returns
+-- { name = levels gained } for the ones that moved.
+local function runPlan(rows, alive)
+	local pending, gained, longest = 0, {}, 0
+	for _, r in ipairs(rows) do
+		if #r.calls > 0 then
+			pending, longest = pending + 1, math.max(longest, #r.calls)
+			task.spawn(function()
+				for _, n in ipairs(r.calls) do
+					if not alive() then
+						break
+					end
+					local before = r.e:GetUpgradeLevel()
+					local ok = pcall(r.e.UpgradeAsync, r.e, n)
+					if not (ok and waitFor(function()
+						return r.e:GetUpgradeLevel() > before
+					end, BUY_TIMEOUT)) then
+						strike("up:" .. r.name)
+						break
+					end
+					misses["up:" .. r.name] = nil
+					gained[r.name] = (gained[r.name] or 0) + (r.e:GetUpgradeLevel() - before)
+				end
+				pending = pending - 1
+			end)
+		end
+	end
+	-- a thread parked in a call that never returns is abandoned, not waited on forever
+	local deadline = os.clock() + CALL_TIMEOUT + longest * BUY_TIMEOUT
+	while pending > 0 and os.clock() < deadline do
+		task.wait()
+	end
+	return gained
 end
 
 -- wake -----------------------------------------------------------------------
@@ -1132,22 +1228,28 @@ end, function()
 	return buy.idle and BUY_IDLE or BUY_GAP
 end)
 
-local upLoop = looper("upgrade", function()
+local upLoop = looper("upgrade", function(alive)
 	local reserve
 	if upFirst and buyLoop.on then -- only while someone is spending the reserve
 		local _, price = nextBuy()
 		reserve = price
 	end
-	local ok, who, count = upgradeOnce(reserve)
-	if ok then
-		stats.upgraded = stats.upgraded + 1
-		say(("upgraded %s +%d"):format(who, count or 1))
+	step("upgrade plan")
+	local gained = runPlan(planUpgrades(reserve, upMode), alive)
+	local parts = {}
+	for name, n in pairs(gained) do
+		stats.upgraded = stats.upgraded + n
+		table.insert(parts, ("%s +%d"):format(name, n))
+	end
+	if #parts > 0 then
+		table.sort(parts)
+		say("upgraded " .. table.concat(parts, ", "))
 	end
 end, function()
 	return UP_GAP
 end)
 
-local wakeLoop = looper("wake", function()
+wakeLoop = looper("wake", function()
 	stats.woke = stats.woke + wakeSweep()
 end, function()
 	return WAKE_GAP
@@ -1366,7 +1468,7 @@ do
 	})
 	Build:Toggle({
 		Title = "Auto upgrade earners",
-		Desc = "Stack size comes from the Stack Upgrade power",
+		Desc = "Plans a batch each pass and upgrades every earner in it at once; stack size from Stack Upgrade",
 		Value = false,
 		Callback = function(on)
 			upLoop.set(on)
