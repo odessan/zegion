@@ -10,9 +10,9 @@
                 Robux, just `Purchase(false, true)`. Each slot goes to your strongest earner not
                 already permanent (Balance.EarnerIncomes), so after an inversion the Oxygen Forge
                 is already standing.
-     UPGRADE  : the upgrade that pays for itself fastest -- income gained per Φ, off the game's
-                own income maths -- stacked by the UpgradeStack power, and only with cash
-                above the next purchase's price.
+     UPGRADE  : one earner upgrade at a time -- cheapest first, or strongest earner first --
+                stacked by the UpgradeStack power, and only with cash above the next
+                purchase's price.
      WAKE     : an earner without its Manager pays once and sleeps. WakeIncomeStream does what
                 clicking its gauge does; the server answers a refusal with the seconds left, so
                 it sets the pace.
@@ -181,7 +181,6 @@ for name, path in pairs({
 	Ascension = "TycoonAscension",
 	Inversion = "TycoonInversion",
 	Offline = "TycoonOfflineIncome",
-	Income = "TycoonIncome",
 }) do
 	C[name] = shared("Modules", "Tycoon", "Component", path)
 end
@@ -239,7 +238,6 @@ local evolution = comp("Evolution")
 local ascension = comp("Ascension") -- still the "all purchases bought" gauge in World 2
 local inversion = comp("Inversion")
 local offline = comp("Offline")
-local income = comp("Income")
 
 local tyRemotes = tycoon.Remotes
 local warned = {}
@@ -502,28 +500,20 @@ local function nextBuy()
 end
 
 -- upgrades -------------------------------------------------------------------
--- One rule: buy the upgrade that pays for itself fastest. An earner's income scales by the
--- game's own TycoonIncome.getCountMultiplier(count), so k more levels add
--- income * (M(c+k) / M(c) - 1) per second, and that over the price ranks them. "Cheapest
--- first" poured cash into weak earners; "strongest first" ignored that its next level can
--- cost 1000x a weak one's for 2x the gain. Ties to neither -- it's the payback, measured.
--- ponytail: assumes the stream's Count moves 1 per level (the multiplier's own input); if
--- the ratio can't be read, every earner falls back to cheapest-first together.
+local UP_MODES = { "Cheapest first", "Strongest earner first" }
+local upMode = UP_MODES[1]
+
+-- Balance.EarnerIncomes order: 1 = the strongest earner
+local EARNER_RANK = {}
+for i, name in ipairs(EARNERS) do
+	EARNER_RANK[name] = i
+end
+
 local STACK = (Config.Powers.UpgradeStack or {}).Bonuses or {}
 
 local function stackSize()
 	local ok, lvl = pcall(powers.GetSelectedLevel, powers, "UpgradeStack")
 	return ok and STACK[lvl] or 1
-end
-
--- income/s the next k levels add, or nil when unreadable
-local function upgradeGain(name, k)
-	local ok, gain = pcall(function()
-		local m, c = C.Income.getCountMultiplier, income:GetStreamCount(name)
-		local ratio = Huge.divide(m(c + k, name), m(c, name))
-		return Huge.multiply(income:GetAverageStreamIncome(name), Huge.subtract(ratio, Huge.one))
-	end)
-	return ok and gain or nil
 end
 
 -- One upgrade per call, so a toggle-off lands between them. reserve = cash to leave alone.
@@ -536,18 +526,17 @@ local function upgradeOnce(reserve)
 		budget = Huge.subtract(budget, reserve)
 	end
 	local stack = stackSize()
-	local best, bestCount, bestScore
+	local best, bestCount, bestKey
 	for name, e in pairs(get(analyzer, "GetEarners", {})) do
 		if e:IsEnabled() and not isParked("up:" .. name) then
 			-- Budget-capped stack (the game's own solver): a partial stack now beats saving for
 			-- a full one, and at the infinite stack it's what the reserve leaves spendable --
-			-- the old full-cash stack could never fit under a reserve, so upgrades froze.
+			-- a full-cash stack could never fit under a reserve, so upgrades froze.
 			local ok, price, count = pcall(e.GetUpgradePrice, e, nil, stack, budget)
-			if ok and price and (count or 0) > 0 and price <= budget and HZERO < price then
-				local gain = upgradeGain(name, count)
-				local score = Huge.divide(gain or Huge.one, price)
-				if not bestScore or bestScore < score then
-					best, bestCount, bestScore = e, count, score
+			if ok and price and (count or 0) > 0 and price <= budget then
+				local key = upMode == UP_MODES[2] and (EARNER_RANK[name] or 99) or price
+				if not bestKey or key < bestKey then
+					best, bestCount, bestKey = e, count, key
 				end
 			end
 		end
@@ -1377,10 +1366,20 @@ do
 	})
 	Build:Toggle({
 		Title = "Auto upgrade earners",
-		Desc = "Always the upgrade that pays for itself fastest (income gained per Φ), stacked by Stack Upgrade",
+		Desc = "Stack size comes from the Stack Upgrade power",
 		Value = false,
 		Callback = function(on)
 			upLoop.set(on)
+		end,
+	})
+	Build:Dropdown({
+		Title = "Upgrade order",
+		Values = UP_MODES,
+		Value = upMode,
+		Callback = function(v)
+			if table.find(UP_MODES, v) then
+				upMode = v
+			end
 		end,
 	})
 	Build:Toggle({
