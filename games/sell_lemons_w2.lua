@@ -16,9 +16,9 @@
                 and the rest get their turn as it gets pricier; a new earner jumps the queue.
                 "Cheapest first" / "Strongest earner first" plan the same way. Only cash above
                 the next purchase's price, while Purchases first is on.
-     WAKE     : an earner without its Manager pays once and sleeps. WakeIncomeStream does what
-                clicking its gauge does; the server answers a refusal with the seconds left, so
-                it sets the pace.
+     WAKE     : an earner without its Manager pays once and sleeps. The moment the game's own
+                check would draw CLICK on it, WakeIncomeStream does what clicking does --
+                every ready earner at once.
      POWERS   : cost RESEARCHERS. A level is bought only while it costs at most half of them.
      RESETS   : Invert > Evolve > Rebirth, one pass. Invert is World 2's ascension: once every
                 purchase is bought, PrepareInversion deals five cards and ConfirmInversion keeps
@@ -56,8 +56,9 @@ local PARK_FOR = 60 -- ...for this many seconds, so one dud can't block the whol
 local UP_GAP = 0.1 -- between upgrade passes (each pass fires every earner's plan at once)
 local UP_MAX_CHUNKS = 30 -- stacks planned per pass; raise to spend a big bank in fewer passes
 local UP_CHUNK = 25 -- at the infinite stack, the planning grain: smaller spreads finer, costs more CPU
-local WAKE_GAP = 0.5 -- between wake sweeps; per-stream timing comes from the server
-local WAKE_RECHECK = 20 -- how often to re-ask a stream the server called automatic
+local WAKE_GAP = 0.1 -- between wake sweeps; a sweep only calls streams that read CLICK
+local WAKE_SETTLE = 0.3 -- after a paid wake, for the stream's new timer to replicate
+local WAKE_HOLD = 1 -- after a refused wake, before asking that stream again
 
 local POWER_GAP = 1 -- between power-level purchases
 local POWER_SPEND = 0.5 -- a level may cost at most this share of your researchers; 1 = all
@@ -334,12 +335,10 @@ local function strike(key)
 	end
 end
 
-local wakeNext, wakeAuto = {}, {}
--- A reset (ours or by hand) makes everything learned about the old tycoon wrong -- most of
--- all "this stream is automatic", which the reset just took away with its Manager.
+local wakeHold = {}
+-- A reset (ours or by hand) makes everything learned about the old tycoon wrong.
 local function forgetTycoon()
-	table.clear(wakeNext)
-	table.clear(wakeAuto)
+	table.clear(wakeHold)
 	table.clear(misses)
 	table.clear(parked)
 end
@@ -656,37 +655,48 @@ local function runPlan(rows, alive)
 end
 
 -- wake -----------------------------------------------------------------------
--- The reply is (paid, secondsLeft): paid -> ready again next interval; secondsLeft -> come
--- back then; neither -> the stream is automatic (Manager bought), stop asking for a while.
+-- "Ready" is the game's own test, the one its Manage tile draws CLICK on: a manual stream
+-- whose GetStreamEstimatedNextEarnTime is nil (never woken, or its interval has run out).
+-- Read locally every sweep, so nothing we remember can go stale -- the old version trusted
+-- the server's "seconds left" reply and could sit on a stream that read CLICK. Every ready
+-- stream is woken at once, each on its own thread.
 local wakeRemote = tyRF("WakeIncomeStream")
-local wakeBusy = false -- the wake loop and a saving buy loop both sweep; never at once
+local wakeInflight = {}
 
+local function streamReady(name)
+	local ok, auto, left = pcall(function()
+		return income:IsStreamAutomatic(name), (income:GetStreamEstimatedNextEarnTime(name))
+	end)
+	if not ok then
+		-- can't tell manual from automatic: never click blind, an automatic stream needs none
+		if not warned.stream then
+			warned.stream = true
+			warn("[oxygen] can't read income streams -- auto wake is doing nothing: " .. tostring(auto))
+		end
+		return false
+	end
+	return auto == false and left == nil -- automatic (Manager bought): never clicked
+end
+
+-- Returns how many wakes it sent.
 local function wakeSweep()
-	if not wakeRemote or wakeBusy then
+	if not wakeRemote then
 		return 0
 	end
-	wakeBusy = true
-	local ok, n = pcall(function()
-		local woke, now = 0, os.clock()
-		for name, e in pairs(get(analyzer, "GetEarners", {})) do
-			if e:IsEnabled() and (wakeNext[name] or 0) <= now and (wakeAuto[name] or 0) <= now then
-				step("wake " .. name)
+	local sent, now = 0, os.clock()
+	for name, e in pairs(get(analyzer, "GetEarners", {})) do
+		if e:IsEnabled() and (wakeHold[name] or 0) <= now and not wakeInflight[name] and streamReady(name) then
+			wakeInflight[name], sent = true, sent + 1
+			task.spawn(function()
 				local r = callTimed(wakeRemote, 4, name)
-				if r then
-					if r[1] then
-						woke, wakeNext[name] = woke + 1, 0
-					elseif type(r[2]) == "number" then
-						wakeNext[name] = now + math.max(r[2], 0.05)
-					else
-						wakeAuto[name] = now + WAKE_RECHECK
-					end
-				end
-			end
+				wakeInflight[name] = nil
+				-- a paid wake needs a moment for the stream's new SyncTime to replicate; a
+				-- refused one means our clock and the server's disagree -- back off either way
+				wakeHold[name] = os.clock() + (r and r[1] and WAKE_SETTLE or WAKE_HOLD)
+			end)
 		end
-		return woke
-	end)
-	wakeBusy = false -- after the pcall, so a throw can't leave it stuck on
-	return ok and n or 0
+	end
+	return sent
 end
 
 -- powers ---------------------------------------------------------------------
