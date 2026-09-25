@@ -1346,7 +1346,58 @@ end)
 -- The nudge stops the idle kick (VirtualUser, plus VirtualInputManager for clients that
 -- ignore it); the rejoin covers what a nudge can't -- every disconnect ends in an
 -- ErrorPrompt. CoreGui connections teardown can't reach, so every handler checks afk.on.
-local afk = { on = false, gen = 0, conns = {} }
+--
+-- But not every ErrorPrompt is a disconnect: a failed teleport draws one too, and rejoining
+-- on THAT fails the same way and draws another -- a loop. So a rejoin needs the connection to
+-- actually be gone (no ClientReplicator) and no teleport failure in the last few seconds.
+--
+-- And World 2 refuses any teleport the client starts ("Cannot teleport without a valid
+-- teleport token") -- only the game's server may send you there. So a rejoin goes to World 1,
+-- the root place anyone may join, and queue_on_teleport has the game's own PlaceService.Teleport
+-- send you on to World 2 once your profile has loaded. It's a public World 2 server; nothing
+-- on the client can pick which one.
+local PlaceSvc = shared("Modules", "Shared", "PlaceService")
+local ROOT_PLACE = PlaceSvc and PlaceSvc.Destinations and PlaceSvc.Destinations.Main and PlaceSvc.Destinations.Main.PlaceId
+	or 79268393072444 -- World 1, from the dump's PlaceService
+local HOP_BACK = [[
+if not game:IsLoaded() then game.Loaded:Wait() end
+local core = game:GetService("ReplicatedStorage"):WaitForChild("Core", 60)
+local rr = core and core:WaitForChild("RemoteRequest", 60)
+rr = rr and rr:WaitForChild("PlaceService.Teleport", 60)
+task.wait(15) -- the server says no until the profile has loaded
+for _ = 1, 5 do
+	local ok, yes = pcall(rr.InvokeServer, rr, "World2")
+	if ok and yes then break end
+	task.wait(10)
+end
+]]
+local afk = { on = false, gen = 0, conns = {}, tpFail = -math.huge, rejoining = false }
+
+function afk.offline()
+	local ok, gone = pcall(function()
+		local nc = game:FindService("NetworkClient")
+		return not (nc and nc:FindFirstChildWhichIsA("ClientReplicator"))
+	end)
+	return not ok or gone -- can't tell: the teleport-failure window still guards the loop
+end
+
+function afk.rejoin()
+	if afk.rejoining then
+		return
+	end
+	afk.rejoining = true
+	warn("[oxygen] disconnected -- rejoining via World 1 in " .. REJOIN_DELAY .. "s")
+	task.wait(REJOIN_DELAY)
+	if game.PlaceId ~= ROOT_PLACE and type(queue_on_teleport) == "function" then
+		pcall(queue_on_teleport, HOP_BACK)
+	end
+	pcall(function()
+		game:GetService("TeleportService"):Teleport(ROOT_PLACE, player)
+	end)
+	task.delay(30, function()
+		afk.rejoining = false -- a teleport that went nowhere may try again
+	end)
+end
 function afk.nudge()
 	pcall(function()
 		local vu = game:GetService("VirtualUser")
@@ -1374,6 +1425,11 @@ function afk.set(on)
 		return afk.on and afk.gen == mine
 	end
 	table.insert(afk.conns, player.Idled:Connect(afk.nudge))
+	table.insert(afk.conns, game:GetService("TeleportService").TeleportInitFailed:Connect(function(who)
+		if who == player then
+			afk.tpFail = os.clock()
+		end
+	end))
 	task.spawn(function()
 		local overlay
 		pcall(function()
@@ -1381,12 +1437,12 @@ function afk.set(on)
 		end)
 		if overlay and alive() then
 			table.insert(afk.conns, overlay.ChildAdded:Connect(function(child)
-				if child.Name == "ErrorPrompt" and alive() then
-					warn("[oxygen] disconnected -- rejoining in " .. REJOIN_DELAY .. "s")
-					task.wait(REJOIN_DELAY)
-					pcall(function()
-						game:GetService("TeleportService"):Teleport(game.PlaceId, player)
-					end)
+				if child.Name ~= "ErrorPrompt" or not alive() then
+					return
+				end
+				task.wait(0.5) -- let a TeleportInitFailed land first
+				if alive() and os.clock() - afk.tpFail > 5 and afk.offline() then
+					afk.rejoin()
 				end
 			end))
 		end
