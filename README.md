@@ -77,6 +77,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Steal a Fish Egg                    | `99183404085821`  | `steal_a_fish_egg.lua`           |
 | Steal a Seed                        | `122216176958450` | `steal_a_seed.lua`               |
 | Sniper Arena                        | `119259569670784` | `sniper_arena.lua`               |
+| Split Sea for Animals               | `88047783411976`  | `split_sea_for_animals.lua`      |
 | Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`             |
 | Anime Dice                          | `113290951185459` | `anime_dice.lua`                 |
 | +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`        |

@@ -77,6 +77,7 @@ local GAMES = {
 	["79268393072444"] = "sell_lemons.lua", -- Sell Lemons (World 1)
 	["75881787709393"] = "sell_lemons_w2.lua", -- Sell Lemons (World 2)
 	["105011592530400"] = "build_to_kill_zombie.lua", -- Build to Kill Zombie
+	["88047783411976"] = "split_sea_for_animals.lua", -- Split Sea for Animals
 	["132767904294856"] = "blue_lock_farm.lua", -- Blue Lock Farm
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
