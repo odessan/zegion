@@ -11,6 +11,8 @@
                 BossComponent reports a catch by calling Finished({}) itself -- so a boss item
                 claimed by id is never chased. Big/huge eggs a tier up; taken when it scores best.
                 Which bosses you can reach is your Power (reach >= the boss's wave part).
+     RARITY   : optional multi-select -- only items wearing a ticked rarity label are taken (still
+                most valuable first), and auto sell never sells an egg of a ticked rarity.
      BEST     : an egg is worth what it hatches into, not its rarity label: sum over its animals
                 of chance x cash/s, x mutation x size -- BrainrotUtils' own maths -- plus the
                 index: completing an egg's collection in one mutation adds 10% to your cash
@@ -595,11 +597,57 @@ local function openWave()
 	return w
 end
 
+-- rarity ---------------------------------------------------------------------
+-- The label the game prints: EggsConfig.rarity on an egg, BrainrotsConfig.rarity on an animal
+-- (BrainrotUtils fills in the ones the config leaves blank when it loads). A filter only --
+-- inside the ticked set the pick is still by value, since the label alone misprices eggs.
+local function rarityOf(e)
+	if e.eggType then
+		local egg = C.eggs and C.eggs.EGGS[e.eggType]
+		return egg and egg.rarity
+	end
+	local c = e.brainrotType and C.rots and C.rots.CONFIG[e.brainrotType]
+	return c and c.rarity
+end
+
+-- Dropdown order: by the lowest egg tier wearing each label; animal-only labels last.
+local RARITIES = {}
+do
+	local low = {}
+	for _, egg in pairs(C.eggs and C.eggs.EGGS or {}) do
+		if egg.rarity then
+			low[egg.rarity] = math.min(low[egg.rarity] or math.huge, egg.tier or math.huge)
+		end
+	end
+	for _, c in pairs(C.rots and C.rots.CONFIG or {}) do
+		if c.rarity and not low[c.rarity] then
+			low[c.rarity] = math.huge
+		end
+	end
+	for r in pairs(low) do
+		table.insert(RARITIES, r)
+	end
+	table.sort(RARITIES, function(a, b)
+		if low[a] ~= low[b] then
+			return low[a] < low[b]
+		end
+		return a < b
+	end)
+end
+
+local wantRarity = {} -- ticked labels; empty means every rarity. Cleared and refilled, never replaced
+local function filtering()
+	return next(wantRarity) ~= nil
+end
+local function rarityOk(e)
+	return not filtering() or wantRarity[rarityOf(e) or ""] == true
+end
+
 local function rankWave(d, wave)
 	local picks = {}
 	for _, s in pairs(wave.spawns or {}) do
 		local e = type(s) == "table" and s.entity
-		if e and e.id and (split.takeBoss or not s.isBossItem) then
+		if e and e.id and (split.takeBoss or not s.isBossItem) and rarityOk(e) then
 			table.insert(picks, { id = e.id, e = e, v = worth(d, e), boss = s.isBossItem and s.bossId })
 		end
 	end
@@ -649,7 +697,7 @@ local function splitOnce(d)
 		log("probe: Finished answered " .. tostring(r and r[1]))
 	end
 	if #ids == 0 then
-		split.last = "empty wave"
+		split.last = filtering() and "nothing of your ticked rarities in that wave" or "empty wave"
 		return
 	end
 	local landed = waitFor(function()
@@ -849,6 +897,7 @@ end
 
 -- Irreversible, so narrow: eggs outside your EGG_KEEP best, and animals worse than the weakest
 -- on a full plot (EquipBest has had its chance first). No fullness gate -- junk goes when seen.
+-- An egg of a rarity you're farming is never junk, whatever it scores.
 local function sellJunk(d)
 	local budget = SELL_BATCH
 	local list = inventoryEggs(d)
@@ -856,8 +905,10 @@ local function sellJunk(d)
 		if budget <= 0 then
 			return
 		end
-		budget = budget - 1
-		sellOne("egg", R.sellEgg, list[i].key, list[i].key, describe(list[i].e))
+		if not (filtering() and rarityOk(list[i].e)) then
+			budget = budget - 1
+			sellOne("egg", R.sellEgg, list[i].key, list[i].key, describe(list[i].e))
+		end
 	end
 	local placed, slots, weakest = plotStats(d)
 	if placed < slots then
@@ -1266,6 +1317,23 @@ if not Window then
 	return -- panel.lua already said why
 end
 
+-- WindUI hands a Multi dropdown a list, a map or the row tables depending on the build;
+-- normalise into a set we own.
+local function ticked(v)
+	local set = {}
+	for k, val in pairs(type(v) == "table" and v or {}) do
+		if type(k) == "number" then
+			local name = type(val) == "table" and (val.Title or val.Value) or val
+			if type(name) == "string" then
+				set[name] = true
+			end
+		elseif val == true then
+			set[k] = true
+		end
+	end
+	return set
+end
+
 local function toggle(sec, title, desc, key)
 	sec:Toggle({
 		Title = title,
@@ -1289,6 +1357,22 @@ do
 		Value = split.takeBoss,
 		Callback = function(on)
 			split.takeBoss = on
+		end,
+	})
+	Sea:Dropdown({
+		Title = "Only take these rarities",
+		Desc = "Empty = everything. Among the ticked ones the most valuable still goes first; auto sell spares them",
+		Values = RARITIES,
+		Multi = true,
+		AllowNone = true,
+		Value = {},
+		Callback = function(v)
+			table.clear(wantRarity)
+			for name in pairs(ticked(v)) do
+				if table.find(RARITIES, name) then
+					wantRarity[name] = true
+				end
+			end
 		end,
 	})
 	Sea:Toggle({
@@ -1383,8 +1467,15 @@ end)
 
 local builders = {
 	Sea = function(d)
-		return ("splits %d   claimed %d (boss %d)   refused %d   gap %.1fs   start %s\nlast: %s"):format(
-			split.waves, split.claimed, split.boss, split.refused, split.gap, split.startAt or "unprobed", split.last)
+		local only = {}
+		for _, r in ipairs(RARITIES) do
+			if wantRarity[r] then
+				table.insert(only, r)
+			end
+		end
+		return ("splits %d   claimed %d (boss %d)   refused %d   gap %.1fs   start %s\ntaking: %s\nlast: %s"):format(
+			split.waves, split.claimed, split.boss, split.refused, split.gap, split.startAt or "unprobed",
+			#only > 0 and table.concat(only, ", ") or "every rarity", split.last)
 	end,
 	Bosses = function(d)
 		local r, out = reach(d), {}
