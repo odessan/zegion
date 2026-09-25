@@ -302,6 +302,19 @@ local function panel(opts)
 		return nil
 	end
 
+	-- WindUI keeps its one window in WindUI.Window and never clears it: Window:Destroy() closes
+	-- the UI and leaves the field set. With the library cached for the session (loadWindUI),
+	-- every later CreateWindow is refused -- "You cannot create more than one window" -- and
+	-- returns nil, which is every re-paste and every script after a closed one. By now the old
+	-- panel's own Stop has run, so destroy whatever is left of it and clear the slot.
+	local old = WindUI.Window
+	if old then
+		pcall(function()
+			old:Destroy()
+		end)
+		WindUI.Window = nil
+	end
+
 	local Window = WindUI:CreateWindow({
 		Title = BRAND,
 		Author = opts.game, -- a second label under the title, stacked by WindUI's own layout
@@ -312,6 +325,10 @@ local function panel(opts)
 		Topbar = { Height = TOPBAR_H, ButtonsType = "Mac" },
 		OpenButton = { Title = BRAND, Enabled = true, Draggable = true },
 	})
+	if not Window then
+		warn("[zegion] WindUI refused to open a window -- rejoin to reset it. Nothing started.")
+		return nil
+	end
 	-- WindUI's own toggle is the hide-outright one, so it gets the secondary key. The
 	-- primary key goes to the shade, below.
 	Window:SetToggleKey(opts.hideKey or HIDE_KEY)
