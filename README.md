@@ -79,6 +79,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Sniper Arena                        | `119259569670784` | `sniper_arena.lua`               |
 | Split Sea for Animals               | `88047783411976`  | `split_sea_for_animals.lua`      |
 | Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`             |
+| Loot to Forge                       | `118805555015549` | `loot_to_forge.lua`              |
 | Anime Dice                          | `113290951185459` | `anime_dice.lua`                 |
 | +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`        |
 | Ride a Pet                          | `124216119978534` | `ride_a_pet.lua`                 |
