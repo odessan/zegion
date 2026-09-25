@@ -9,7 +9,8 @@
                 off, the belt stops on the first match and waits for you to buy it. The AutoConveyor
                 gamepass is all client-side and fires these same two remotes; you don't need it.
      LOCKERS  : open every ready locker (OpenBoxOnDropper -- the player lands on that same
-                slot), level every slotted player to your cap, fire the game's own Equip Best,
+                slot), level every slotted player to your cap, swap a bag player that's better at the
+                cap onto your weakest slot (else fire the game's own Equip Best),
                 then place: an empty slot gets your richest locker; otherwise a locker replaces
                 your weakest player only if the swap pays back within 10 min (input) -- the
                 slot's income lost while it opens plus levelling the pull, over the extra income.
@@ -886,9 +887,66 @@ local function settled()
 	return table.concat(who, ";")
 end
 
+-- The one swap Equip Best can never make: a bag player better only at the cap (a fresh L1
+-- pull that got benched) loses on $/ball now, so the game's ranking never puts it back --
+-- and in the bag it can't level. Pick up the weakest slot and place it there by hand.
+local function swapIn()
+	local w, wv = weakest()
+	if not w or emptySlot() or not InventoryService.HasInventorySpace(player, 1) then
+		return false -- an empty slot is Equip Best's job
+	end
+	local guid, u, uv
+	for g, x in pairs(data().PlayerUnits or {}) do
+		if not x.Equipped then
+			local v = potential(x.PlayerUnitName, x.Variant, x.Level, x.Grade)
+			if v > wv and (not uv or v > uv) then
+				guid, u, uv = g, x, v
+			end
+		end
+	end
+	if not guid then
+		return false
+	end
+	local label = ("%s %s L%d"):format(tostring(u.Variant), u.PlayerUnitName, u.Level or 1)
+	step("swap in " .. label)
+	if not act("remove", w.Position, function()
+		R.RemovePlayerUnitFromDropper:FireServer(w)
+	end, function()
+		return w:GetAttribute("Type") ~= "PlayerUnit"
+	end) then
+		return false
+	end
+	local function fire()
+		R.PlacePlayerUnitOnDropper:FireServer(w, guid)
+	end
+	local function landed()
+		return w:GetAttribute("Type") == "PlayerUnit" and w:GetAttribute("PlayerUnitName") == u.PlayerUnitName
+	end
+	-- The game's Place reads the held tool, like lockers; hold it in case the server checks.
+	local tool = findTool(function(t)
+		return t:GetAttribute("InventoryKey") == guid
+	end)
+	local ok
+	if tool then
+		holding(tool, function()
+			ok = act("place", w.Position, fire, landed)
+		end)
+	else
+		ok = act("place", w.Position, fire, landed)
+	end
+	if ok then
+		log(("swapped %s onto slot %s -- better at level %d than what was there"):format(label, w.Name, target()))
+	end
+	return ok == true
+end
+
 local function equipBest()
 	if os.clock() - lastEquip < EQUIP_GAP then
 		return false
+	end
+	if swapIn() then
+		lastEquip = os.clock()
+		return true
 	end
 	local yes, why = equipAgrees()
 	if not yes then
@@ -1623,7 +1681,7 @@ do
 	})
 	Lock:Toggle({
 		Title = "Auto Equip Best",
-		Desc = "The game's own EquipBestPlayerUnits -- when a bag player beats your weakest slot now AND at your cap, and once each time every slotted player reaches the cap",
+		Desc = "A bag player better at your cap swaps onto your weakest slot (even at L1); otherwise the game's own EquipBestPlayerUnits, once each time every slotted player reaches the cap",
 		Value = false,
 		Callback = function(on)
 			roster.equip = on
