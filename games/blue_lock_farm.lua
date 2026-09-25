@@ -862,13 +862,42 @@ local function equipAgrees()
 	return false
 end
 
+-- Once every slotted player is at the cap, "best now" and "best at the cap" are the same
+-- ranking for the whole plot, so the game's own Equip Best can't bench a pull that's still
+-- levelling -- let it arrange the plot its way, once per line-up. The signature is the
+-- players, not their slots, so the game's own shuffle doesn't read as a new line-up.
+local settledSig
+local function settled()
+	local maxL = math.min(roster.cap, Constants.MaxPlayerUnitLevel or 50)
+	local who = {}
+	for _, p in ipairs(slots()) do
+		if p:GetAttribute("Type") == "PlayerUnit" then
+			local lvl = p:GetAttribute("PlayerUnitLevel") or 1
+			if roster.level and lvl < maxL then
+				return nil -- still levelling: the gate alone decides
+			end
+			table.insert(who, ("%s/%s/%d"):format(tostring(p:GetAttribute("PlayerUnitName")), tostring(p:GetAttribute("PlayerUnitVariant")), lvl))
+		end
+	end
+	if #who == 0 then
+		return nil
+	end
+	table.sort(who)
+	return table.concat(who, ";")
+end
+
 local function equipBest()
 	if os.clock() - lastEquip < EQUIP_GAP then
 		return false
 	end
 	local yes, why = equipAgrees()
 	if not yes then
-		return false
+		local sig = settled()
+		if not sig or sig == settledSig then
+			return false
+		end
+		settledSig = sig
+		yes, why = true, ("every slotted player is at level %d -- letting the game arrange the plot"):format(target())
 	end
 	step("equip best")
 	log("Equip Best -- " .. why)
@@ -1314,7 +1343,15 @@ end)
 -- in a fresh RESERVED server -- and this script doesn't follow you there. The nudge is a
 -- real input event, which is what resets that timer. The rejoin covers a disconnect; a
 -- failed teleport draws an ErrorPrompt too, so it needs the connection actually gone.
-local afk = { on = false, gen = 0, conns = {}, tpFail = -math.huge, rejoining = false }
+--
+-- The nudge is a keypress on a key nothing binds, and only after a minute without your own
+-- input. It used to be a right-click (VirtualUser ClickButton2 + VirtualInputManager button 1),
+-- and a right-button down/up is camera-drag in Roblox: landing in the middle of your own mouse
+-- input it could leave the camera stuck to the mouse until Esc. A key can't touch the camera.
+-- ponytail: VirtualInputManager only -- a client that ignores it gets no nudge; add
+-- VirtualUser:SetKeyDown back if an idle kick ever shows up with this on.
+local NUDGE_KEY = Enum.KeyCode.F15
+local afk = { on = false, gen = 0, conns = {}, tpFail = -math.huge, rejoining = false, lastInput = os.clock() }
 function afk.offline()
 	local ok, gone = pcall(function()
 		local nc = game:FindService("NetworkClient")
@@ -1323,15 +1360,13 @@ function afk.offline()
 	return not ok or gone
 end
 function afk.nudge()
-	pcall(function()
-		local vu = game:GetService("VirtualUser")
-		vu:CaptureController()
-		vu:ClickButton2(Vector2.new())
-	end)
+	if os.clock() - afk.lastInput < AFK_BEAT then
+		return -- you're at the keyboard; your own input already feeds both idle timers
+	end
 	pcall(function()
 		local vim = game:GetService("VirtualInputManager")
-		vim:SendMouseButtonEvent(0, 0, 1, true, game, 0)
-		vim:SendMouseButtonEvent(0, 0, 1, false, game, 0)
+		vim:SendKeyEvent(true, NUDGE_KEY, false, game)
+		vim:SendKeyEvent(false, NUDGE_KEY, false, game)
 	end)
 end
 function afk.set(on)
@@ -1349,6 +1384,11 @@ function afk.set(on)
 		return afk.on and afk.gen == mine_
 	end
 	table.insert(afk.conns, player.Idled:Connect(afk.nudge))
+	table.insert(afk.conns, game:GetService("UserInputService").InputBegan:Connect(function(input)
+		if input.KeyCode ~= NUDGE_KEY then -- our own nudge isn't you being here
+			afk.lastInput = os.clock()
+		end
+	end))
 	table.insert(afk.conns, game:GetService("TeleportService").TeleportInitFailed:Connect(function(who)
 		if who == player then
 			afk.tpFail = os.clock()
@@ -1583,7 +1623,7 @@ do
 	})
 	Lock:Toggle({
 		Title = "Auto Equip Best",
-		Desc = "The game's own EquipBestPlayerUnits -- only when a bag player beats your weakest slot now AND at your level cap (F9 says when it holds)",
+		Desc = "The game's own EquipBestPlayerUnits -- when a bag player beats your weakest slot now AND at your cap, and once each time every slotted player reaches the cap",
 		Value = false,
 		Callback = function(on)
 			roster.equip = on
