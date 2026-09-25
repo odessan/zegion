@@ -4,16 +4,16 @@
                 belt rolls non-stop and PurchaseConveyorRoll is fired only for a locker your
                 filter wants: a minimum tier (the locker) and/or a minimum variant (the
                 mutation) -- each "this and above", in the game's own order -- or, optionally,
-                anything expected to beat your weakest slot. A match you can't afford yet is
-                held on the belt while income will cover it inside a minute. With Buy matches
+                any locker whose average pull beats your weakest slot by 25% and costs at most
+                30 min of income. A wanted locker you can't afford yet is held on the belt
+                while income will cover it inside those 30 min (both inputs). With Buy matches
                 off, the belt stops on the first match and waits for you to buy it. The AutoConveyor
                 gamepass is all client-side and fires these same two remotes; you don't need it.
      LOCKERS  : open every ready locker (OpenBoxOnDropper -- the player lands on that same
                 slot), level every slotted player to your cap, swap a bag player that's better at the
                 cap onto your weakest slot (else fire the game's own Equip Best),
-                then place: an empty slot gets your richest locker; otherwise a locker replaces
-                your weakest player only if the swap pays back within 10 min (input) -- the
-                slot's income lost while it opens plus levelling the pull, over the extra income.
+                then place: an empty slot gets your richest locker; otherwise the richest locker
+                whose average pull beats your weakest player by 25% (input) replaces it.
                 A placed locker can't be taken back out (the only other action on it is the
                 Robux skip), so it is never the thing replaced.
      LEVELS   : RequestPlayerUnitLevelUp takes the SLOT, not the player -- only players on the
@@ -49,7 +49,9 @@ local HOP_PROBE = 10 -- ...and while hopping, every Nth call tries remote again
 
 local ROLL_SLACK = 0.05 -- on top of the game's own roll cooldown
 local ROLL_TIMEOUT = 2 -- waiting for RollId to move after a roll
-local HOLD_FOR = 60 -- hold a wanted but unaffordable locker if income covers it this fast
+-- minutes of income: a "beats my weakest" buy may cost at most this much, and a wanted but
+-- unaffordable locker is held on the belt only if income covers it this fast
+local MAX_WAIT = 30
 local SMART_STOCK = 3 -- "beats my weakest slot" buys stop at this many unplaced lockers
 
 local ROSTER_GAP = 0.3 -- between locker passes that did something
@@ -58,9 +60,9 @@ local LEVEL_GAP = 0.12 -- between level-ups; the dump shows 0.1-0.2s landing fin
 local LEVEL_BATCH = 25 -- level-ups per pass before re-planning
 local EQUIP_GAP = 3.5 -- the game's own Equip Best button refuses faster than 3s
 local EQUIP_SETTLE = 1 -- after Equip Best, for the slots to replicate
--- minutes: a locker replaces your weakest player only if the swap pays for itself this fast --
--- the slot's income lost while the locker opens, plus levelling the pull to your cap
-local REPLACE_PAYBACK = 10
+-- percent: a locker replaces your weakest player (and gets bought for it) only if its
+-- average pull beats that player by this much at your cap
+local MARGIN = 25
 local SELL_BATCH = 10 -- tools sold per pass
 
 local CRATE_GAP = 3 -- between pile checks; a pure attribute read
@@ -348,35 +350,15 @@ local function emptySlot()
 	end
 end
 
--- Seconds until swapping player `w` for this locker has paid for itself: the income the slot
--- loses while the locker opens, plus levelling the pull to your cap, over the extra income
--- it earns after. math.huge when it never does.
-local function replacePayback(box, variant, w)
-	local b = Boxes[box]
-	if not (b and w) then
-		return math.huge
-	end
-	local drop = Constants.DROP_COOLDOWN or 4
-	local okM, mult = pcall(CurrencyService.GetCurrencyMultiplier, player, "Cash")
-	mult = okM and mult or 1
-	local gain = (boxEV(box, variant) - slotPotential(w)) / drop * mult
-	if gain <= 0 then
-		return math.huge
-	end
-	local okT, open = pcall(function()
-		return BoxService.GetBoxTimeToOpen(box, variant) - BoxService.GetBoxTimerReduction(player, box, variant)
-	end)
-	local now = value(w:GetAttribute("PlayerUnitName"), w:GetAttribute("PlayerUnitVariant"), w:GetAttribute("PlayerUnitLevel"), w:GetAttribute("PlayerUnitGrade"))
-	local cost = now / drop * mult * (okT and open or 0)
-	if roster.level then
-		for unit, u in pairs(b.PlayerUnits) do
-			for l = 2, target() do
-				local ok, c = pcall(UnitService.GetLevelUpgradeCost, player, unit, variant, l)
-				cost = cost + (u.Chance or 0) / 100 * (ok and c or 0)
-			end
-		end
-	end
-	return cost / gain
+-- A locker is worth your weakest slot when its average pull beats that player by MARGIN%,
+-- both at your cap. Every player scales by the same 1.18^level, so the level drops out.
+-- One rule for the roll and the placer, so nothing gets bought that then never goes down.
+local function beats(box, variant, w)
+	return w ~= nil and Boxes[box] ~= nil and boxEV(box, variant) >= slotPotential(w) * (1 + MARGIN / 100)
+end
+-- Price brake and hold limit: MAX_WAIT minutes of income.
+local function withinWait(amount)
+	return amount <= incomePerSec() * MAX_WAIT * 60
 end
 
 -- Tiers in the game's own Index order, variants rarest last; both shown by display name.
@@ -579,7 +561,7 @@ local stats = { rolls = 0, bought = 0, opened = 0, levels = 0, placed = 0, repla
 local reserve = 0 -- every spender keeps this much cash
 
 -- roll -----------------------------------------------------------------------
--- saving: the price of a pull Buy matches is holding until income covers it (HOLD_FOR at
+-- saving: the price of a pull Buy matches is holding until income covers it (MAX_WAIT at
 -- most). Levels and upgrades leave it alone on top of your reserve, or they'd spend every
 -- dollar the hold is waiting for. A Buy-off stop never saves: it has no end.
 -- minTier / minVariant: game keys, nil = Any.
@@ -618,14 +600,18 @@ local function wanted(box, variant)
 	-- Only lockers the placer would actually use count toward the stock; a hunted keeper
 	-- that sits in the bag mustn't switch the income rule off.
 	local empty, w = emptySlot() ~= nil, weakest()
-	local limit = REPLACE_PAYBACK * 60
 	local stock = 0
 	for _, l in ipairs(lockers()) do
-		if empty or replacePayback(l.box, l.variant, w) <= limit then
+		if empty or beats(l.box, l.variant, w) then
 			stock = stock + l.amount
 		end
 	end
-	return stock < SMART_STOCK and (empty or replacePayback(box, variant, w) <= limit)
+	-- The price brake is for replacements only: a hunted locker is one you asked for, and an
+	-- empty slot earns nothing (an empty plot's income is 0, which would brake every buy).
+	if stock >= SMART_STOCK then
+		return false
+	end
+	return empty or (beats(box, variant, w) and withinWait(BoxService.GetBoxPrice(box, variant)))
 end
 
 -- "bought", "skip", "match" (Buy off: stop here for you), "poor" (can't afford), "full",
@@ -695,7 +681,7 @@ local rollLoop = looper("roll", function()
 				say(("%s %s on the belt -- buy it to keep rolling"):format(variant, box))
 				return
 			end
-		elseif short and short <= incomePerSec() * HOLD_FOR then
+		elseif short and withinWait(short) then
 			roll.saving = price
 			say(("holding %s %s on the belt -- %s short"):format(variant, box, money(short)))
 			return
@@ -968,8 +954,7 @@ local function equipBest()
 end
 
 -- An empty slot loses nothing, so it takes the richest locker. A replacement takes the
--- locker that pays the swap back fastest -- often not the richest, when that one is a rare
--- variant opening for ten minutes.
+-- richest locker that beats your weakest player by MARGIN%.
 local function placeLocker()
 	local bag = lockers()
 	if #bag == 0 then
@@ -984,11 +969,9 @@ local function placeLocker()
 		end
 	else
 		local w = weakest()
-		local best = REPLACE_PAYBACK * 60
 		for _, l in ipairs(bag) do
-			local secs = replacePayback(l.box, l.variant, w)
-			if secs <= best then
-				pick, best = l, secs
+			if beats(l.box, l.variant, w) and (not pick or l.ev > pick.ev) then
+				pick = l
 			end
 		end
 		if not (pick and InventoryService.HasInventorySpace(player, 1)) then
@@ -1618,12 +1601,36 @@ do
 	})
 	Roll:Toggle({
 		Title = "Also buy anything better than my weakest slot",
-		Desc = ("Even if it doesn't match the filters above: fills an empty slot, or replaces within the payback limit; stops at %d waiting"):format(
+		Desc = ("Even if it doesn't match the filters above: fills an empty slot, or beats your weakest by the margin; stops at %d waiting"):format(
 			SMART_STOCK
 		),
 		Value = roll.smart,
 		Callback = function(on)
 			roll.smart = on
+		end,
+	})
+	Roll:Input({
+		Title = "Better by at least (%)",
+		Desc = "Average pull vs your weakest player, both at your cap -- used for buying AND placing",
+		Value = tostring(MARGIN),
+		Placeholder = "25",
+		Callback = function(v)
+			local n = num(v, 0)
+			if n then
+				MARGIN = n
+			end
+		end,
+	})
+	Roll:Input({
+		Title = "Max wait / price (minutes of income)",
+		Desc = "Hold an unaffordable wanted locker this long at most; a \"better\" buy may cost this much at most",
+		Value = tostring(MAX_WAIT),
+		Placeholder = "30",
+		Callback = function(v)
+			local n = num(v, 0)
+			if n then
+				MAX_WAIT = n
+			end
 		end,
 	})
 
@@ -1639,23 +1646,11 @@ do
 	})
 	Lock:Toggle({
 		Title = "Auto place lockers",
-		Desc = "Empty slot gets your richest locker; otherwise the fastest-paying one replaces your weakest player",
+		Desc = "Empty slot gets your richest locker; otherwise the richest one beating your weakest player by the margin (Roll) replaces it",
 		Value = false,
 		Callback = function(on)
 			roster.place = on
 			rosterSync()
-		end,
-	})
-	Lock:Input({
-		Title = "Replace payback (minutes)",
-		Desc = "Income lost while it opens + levelling it to the cap, earned back by the extra income",
-		Value = tostring(REPLACE_PAYBACK),
-		Placeholder = "10",
-		Callback = function(v)
-			local n = num(v, 0.1)
-			if n then
-				REPLACE_PAYBACK = n
-			end
 		end,
 	})
 	Lock:Toggle({
