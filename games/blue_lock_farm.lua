@@ -26,10 +26,19 @@
                 exactly what it cost.
      CRATES   : the pile at your conveyor's end is picked up (PickupCrateBox) and sold at your
                 plot's sell NPC (SellCrate) -- two remotes, no walking once the server allows it.
+                Polish on: every crate goes into your polisher instead (DepositCrate), which
+                pays it back +30% as a shiny crate at its own speed; shiny crates are collected
+                (CollectPolisherCrate) and sold with Polish off too, so off drains the queue.
+     GRADES   : RerollPlayerUnitGrade REPLACES a slotted player's grade (an A can roll F), so
+                one player is rolled until it reaches your stop grade, then the next -- best
+                $/ball first, or only the ones you pick. Cash (10 drops of that player a roll)
+                or Grade tokens. Known from the game's GradingGui only, never seen on the wire:
+                3 unconfirmed rolls in a row switch it off rather than spend blind.
      SPAWNS   : variant tokens (server-wide race, rarest first), grade tokens and potions,
                 woken by the node's own Occupied attribute rather than a scan.
      UPGRADES : every cash upgrade the game ships, bought by payback: price / (income x the
-                share it adds). Luck, open time and conveyor tier get a weighted share (config).
+                share it adds). Luck, open time and conveyor tier get a weighted share (config);
+                polisher speed counts only while Polish is on and there's a queue.
 
      Nothing in the dump says which remotes the server range-checks, so every action that
      might be is tried from where you stand first, confirmed on the world moving, and hopped
@@ -68,6 +77,10 @@ local SELL_BATCH = 10 -- tools sold per pass
 
 local CRATE_GAP = 3 -- between pile checks; a pure attribute read
 local CRATE_MIN = 20 -- balls in the pile before it's worth two remotes
+
+local GRADE_SLACK = 0.1 -- on top of the game's own reroll cooldown
+local GRADE_STRIKES = 3 -- unconfirmed rolls in a row before grading switches itself off
+local UNITS_GAP = 2 -- between checks for a changed line-up (the grading Units list)
 
 local SPAWN_CONFIRM = 0.8 -- tokens are a race: shorter remote-first window
 local SPAWN_IDLE = 5 -- safety-net sweep when no Occupied signal fired
@@ -165,6 +178,8 @@ local Boxes = shared("Shared", "Core", "Storage", "Game", "BoxesLibrary")
 local Variants = shared("Shared", "Core", "Storage", "Game", "VariantsLibrary")
 local Upgrades = shared("Shared", "Core", "Storage", "Game", "UpgradesLibrary")
 local Collectables = shared("Shared", "Core", "Storage", "Game", "CollectableObjectsLibrary")
+local GradeService = shared("Shared", "Services", "GradeService") -- optional: grading refuses without it
+local Grades = shared("Shared", "Core", "Storage", "Game", "GradesLibrary")
 local Constants = shared("Shared", "Constants")
 local HitboxUtils = shared("Shared", "Utility", "HitboxUtils")
 local NumberUtils = shared("Shared", "Utility", "NumberUtils")
@@ -558,7 +573,7 @@ local function looper(name, body, gapFn)
 	return L
 end
 
-local stats = { rolls = 0, bought = 0, opened = 0, levels = 0, placed = 0, replaced = 0, soldL = 0, soldU = 0, crates = 0, spawns = 0, lost = 0, upgrades = 0 }
+local stats = { rolls = 0, bought = 0, opened = 0, levels = 0, placed = 0, replaced = 0, soldL = 0, soldU = 0, crates = 0, polished = 0, grades = 0, spawns = 0, lost = 0, upgrades = 0 }
 local reserve = 0 -- every spender keeps this much cash
 
 -- roll -----------------------------------------------------------------------
@@ -1114,59 +1129,287 @@ local function rosterSync()
 end
 
 -- crates ---------------------------------------------------------------------
-local crate = { min = CRATE_MIN }
+-- Polish on: a crate goes into the polisher instead of the NPC. DepositCrate carries no guid,
+-- so the server reads the HELD crate; the polisher turns PendingCash into PolishedCash at
+-- Upgrades.CratePolisher's rate +30%, and Collect hands it back as one Shiny crate. Shiny
+-- crates are never deposited (the game's own prompt refuses them), and collecting runs with
+-- Polish off too, so switching it off drains the queue instead of stranding it there.
+local crate = { min = CRATE_MIN, polish = false }
+
+local function crateCount()
+	local n = 0
+	for _ in pairs(crates()) do
+		n = n + 1
+	end
+	return n
+end
+local function polisher()
+	if ((data().Upgrades or {}).CratePolisherUnlock or 0) < 1 then
+		return nil
+	end
+	return tagged("PolisherCollectPart")
+end
+local function polishRate(n)
+	local u = Upgrades.CratePolisher
+	local ok, r = pcall(u and u.GetCashPerSec, n or (data().Upgrades or {}).CratePolisher or 0)
+	return ok and tonumber(r) or 0
+end
 
 local crateLoop = looper("crates", function(alive)
 	local pile = tagged("ConveyorCollectPart")
 	if pile and (pile:GetAttribute("PendingBallCount") or 0) >= crate.min then
 		if InventoryService.HasInventorySpace(player, 1) then
-			local before = 0
-			for _ in pairs(crates()) do
-				before = before + 1
-			end
+			local before = crateCount()
 			step("pick up crate")
 			act("pickup", posOf(pile), function()
 				R.PickupCrateBox:FireServer(pile)
 			end, function()
-				local n = 0
-				for _ in pairs(crates()) do
-					n = n + 1
-				end
-				return n > before
+				return crateCount() > before
 			end)
 		else
 			say("inventory full -- can't pick up the crate pile")
 		end
 	end
+	-- Before the sell pass, so the shiny crate goes out on this same lap.
+	local pol = polisher()
+	if pol and (pol:GetAttribute("PolishedBallCount") or 0) > 0 then
+		if InventoryService.HasInventorySpace(player, 1) then
+			local before = crateCount()
+			step("collect polished crate")
+			act("polish collect", posOf(pol), function()
+				R.CollectPolisherCrate:FireServer(pol)
+			end, function()
+				return crateCount() > before
+			end)
+		else
+			say("inventory full -- can't collect the polished crate")
+		end
+	end
 	local npc = posOf(tagged("SellNPC"))
-	for guid in pairs(crates()) do
+	for guid, c in pairs(crates()) do
 		if not alive() then
 			break
-		end
-		step("sell crate")
-		local function fire()
-			R.SellCrate:FireServer(guid)
-		end
-		local function gone()
-			return crates()[guid] == nil
 		end
 		local tool = findTool(function(t)
 			return t:GetAttribute("InventoryKey") == guid
 		end)
-		local ok
-		if tool then -- the game's own sell reads the held crate; the guid rides along regardless
-			holding(tool, function()
-				ok = act("crate sell", npc, fire, gone)
-			end)
-		else
-			ok = act("crate sell", npc, fire, gone)
+		local function gone()
+			return crates()[guid] == nil
 		end
-		if ok then
-			stats.crates = stats.crates + 1
+		local ok
+		if crate.polish and pol and not c.Shiny then
+			-- ponytail: no tool, no deposit -- it waits for the Tool to replicate next lap
+			if tool then
+				step("deposit crate")
+				holding(tool, function()
+					ok = act("deposit", posOf(pol), function()
+						R.DepositCrate:FireServer(pol)
+					end, gone)
+				end)
+				if ok then
+					stats.polished = stats.polished + 1
+				end
+			end
+		else
+			step("sell crate")
+			local function fire()
+				R.SellCrate:FireServer(guid)
+			end
+			if tool then -- the game's own sell reads the held crate; the guid rides along regardless
+				holding(tool, function()
+					ok = act("crate sell", npc, fire, gone)
+				end)
+			else
+				ok = act("crate sell", npc, fire, gone)
+			end
+			if ok then
+				stats.crates = stats.crates + 1
+			end
 		end
 	end
 end, function()
 	return CRATE_GAP
+end)
+
+-- grades ---------------------------------------------------------------------
+-- RerollPlayerUnitGrade(guid, useTokens, currentGrade) is what the game's GradingGui fires;
+-- it never crossed the wire in the dump, so both the guid arg and whether the server wants
+-- you at the Grades shop are unproven. act() answers the second; GRADE_STRIKES answers the
+-- first by switching off rather than spending on rolls that don't land.
+local GRADES, gradeRank, gradeKey = {}, {}, {}
+do
+	local list = {}
+	for key, g in pairs(Grades or {}) do
+		if type(g) == "table" and g.Multiplier then
+			table.insert(list, { key = key, m = g.Multiplier })
+		end
+	end
+	table.sort(list, function(a, b)
+		return a.m < b.m
+	end)
+	for i, e in ipairs(list) do
+		GRADES[i], gradeRank[e.key], gradeKey[e.key] = e.key, i, e.key
+	end
+	-- self-check: the game's own order, F lowest; a rename just leaves the pick unranked
+	assert(not (gradeRank.F and gradeRank.S and gradeRank.UR) or (gradeRank.F < gradeRank.S and gradeRank.S < gradeRank.UR), "grade order")
+end
+local PAY = { "Cash only", "Tokens only", "Tokens, then cash" }
+local WHICH = { "Best first (all slots)", "Picked only" }
+local grade = { stop = gradeRank.S and "S" or GRADES[#GRADES], pay = PAY[1], picked = false, want = {}, misses = 0, kill = false }
+
+local function slotted()
+	local out = {}
+	for guid, u in pairs(data().PlayerUnits or {}) do
+		if u.Equipped then
+			table.insert(out, { guid = guid, u = u })
+		end
+	end
+	table.sort(out, function(a, b)
+		return a.guid < b.guid
+	end)
+	return out
+end
+
+-- The Units list: no grade or level in a label -- both move while you watch, and a rebuild
+-- of the dropdown drops its ticks. Twins get #2 in guid order, so a label stays put.
+local function unitLabels()
+	local labels, key, seen = {}, {}, {}
+	for _, e in ipairs(slotted()) do
+		local base = ("%s (%s)"):format(tostring(e.u.PlayerUnitName), tostring(e.u.Variant or "Normal"))
+		seen[base] = (seen[base] or 0) + 1
+		local label = seen[base] > 1 and ("%s #%d"):format(base, seen[base]) or base
+		table.insert(labels, label)
+		key[label] = e.guid
+	end
+	return labels, key
+end
+
+-- Below the stop grade, best first. Ranked WITHOUT the grade, or the unit being rolled would
+-- change places with the next one every time it rolled up or down.
+local function gradeTargets()
+	local stop = gradeRank[grade.stop] or math.huge
+	local out = {}
+	for _, e in ipairs(slotted()) do
+		if (gradeRank[e.u.Grade] or 0) < stop and (not grade.picked or grade.want[e.guid]) then
+			e.v = potential(e.u.PlayerUnitName, e.u.Variant, e.u.Level, nil)
+			table.insert(out, e)
+		end
+	end
+	table.sort(out, function(a, b)
+		return a.v > b.v
+	end)
+	return out
+end
+
+local function gradeTokens()
+	return ((data().Tokens or {})[GradeService and GradeService.GRADE_TOKEN_NAME or "Grade"]) or 0
+end
+-- true = tokens, false = cash, nil + why = can't pay this roll
+local function payWith(u)
+	if grade.pay ~= "Cash only" and gradeTokens() >= 1 then
+		return true
+	end
+	if grade.pay == "Tokens only" then
+		return nil, "out of Grade tokens"
+	end
+	local ok, cost = pcall(GradeService.GetGradeRerollCost, u.PlayerUnitName, u.Variant)
+	if not (ok and cost) then
+		return nil, "can't price a roll"
+	end
+	if cash() - cost < reserve + roll.saving then
+		return nil, "a roll costs " .. money(cost) .. " -- keeping the reserve"
+	end
+	return false
+end
+
+-- Every roll moves the grade or a pity counter (all of them tick, the rolled one resets), so
+-- this changes even when F rolls F.
+local function gradeSig(guid)
+	local u = (data().PlayerUnits or {})[guid]
+	if not u then
+		return "gone"
+	end
+	local s = { tostring(u.Grade), tostring(gradeTokens()) }
+	for _, g in ipairs(GradeService.PityGrades or {}) do
+		table.insert(s, tostring((u.GradePity or {})[g]))
+	end
+	return table.concat(s, "/")
+end
+local function pityText(u)
+	local out = {}
+	for _, g in ipairs(GradeService.PityGrades or {}) do
+		table.insert(out, ("%s %d/%d"):format(g, (u.GradePity or {})[g] or 0, GradeService.GetPityThreshold(g) or 0))
+	end
+	return table.concat(out, "  ")
+end
+
+-- Where the game opens its grading menu. The tag first; a streamed-out Model still has its
+-- pivot, so the path is the fallback (and origin means not replicated at all).
+local function gradeShop()
+	local p = posOf(CollectionService:GetTagged("GradingHitbox")[1])
+	if not p then
+		local m = workspace:FindFirstChild("Map")
+		m = m and m:FindFirstChild("Shops")
+		p = posOf(m and m:FindFirstChild("Grades"))
+	end
+	return p and p.Magnitude > 1 and p or nil
+end
+
+local gradeLoop
+local rolledOn = { guid = nil, n = 0 }
+-- ponytail: a range-checked roll hops there and back EVERY roll (act's shape); park at the
+-- shop for a streak if the round trips ever cost more than the 0.75s cooldown they hide in.
+gradeLoop = looper("grades", function()
+	if not (GradeService and R.RerollPlayerUnitGrade) then
+		say("grades: this build has no GradeService / RerollPlayerUnitGrade")
+		gradeLoop.set(false)
+		grade.kill = true
+		return
+	end
+	local e = gradeTargets()[1]
+	if not e then
+		say(grade.picked and "grades: no picked player on a slot below " .. grade.stop or "grades: every slotted player is " .. grade.stop .. " or better")
+		return
+	end
+	local guid, u = e.guid, e.u
+	local useTok, why = payWith(u)
+	if useTok == nil then
+		say("grades: " .. why)
+		return
+	end
+	if rolledOn.guid ~= guid then
+		rolledOn.guid, rolledOn.n = guid, 0
+	end
+	local before = gradeSig(guid)
+	step("grade " .. tostring(u.PlayerUnitName))
+	local ok = act("grade", gradeShop(), function()
+		R.RerollPlayerUnitGrade:FireServer(guid, useTok, u.Grade)
+	end, function()
+		return gradeSig(guid) ~= before
+	end)
+	if ok then
+		grade.misses = 0
+		rolledOn.n = rolledOn.n + 1
+		stats.grades = stats.grades + 1
+		local now = (data().PlayerUnits or {})[guid] or u
+		if (gradeRank[now.Grade] or 0) >= (gradeRank[grade.stop] or math.huge) then
+			log(("graded %s %s to %s in %d rolls"):format(tostring(u.Variant), tostring(u.PlayerUnitName), tostring(now.Grade), rolledOn.n))
+		end
+		say(("grading %s: %s -> %s, %d rolls (%s)   %s"):format(tostring(u.PlayerUnitName), tostring(now.Grade), grade.stop, rolledOn.n, useTok and "token" or "cash", pityText(now)))
+	elseif ok == false then
+		grade.misses = grade.misses + 1
+		if grade.misses >= GRADE_STRIKES then
+			warn(("[bluelock] RerollPlayerUnitGrade: %d unconfirmed in a row -- arg or range wrong; grading switched off"):format(grade.misses))
+			say("grades: switched off -- rolls weren't landing (F9)")
+			gradeLoop.set(false)
+			grade.kill = true -- the toggle is flipped on Heartbeat; this thread can't touch the panel
+		end
+	end
+end, function()
+	local ok, cd = pcall(function()
+		return GradeService.GetRerollCooldown(player) -- potion, gamepass and weather included
+	end)
+	return (ok and tonumber(cd) or 0.75) + GRADE_SLACK
 end)
 
 -- spawns ---------------------------------------------------------------------
@@ -1329,14 +1572,23 @@ local GAIN = {
 		local now = rollEV(n + 1)
 		return now > 0 and ROLL_WEIGHT * (rollEV(n + 2) / now - 1) or 0
 	end,
+	-- Speed pays nothing by itself: it turns queued cash into its +30% sooner. So it's worth
+	-- the boost on the extra rate, and only while Polish is on and there's a queue to chew.
+	CratePolisher = function(n)
+		local inc = incomePerSec()
+		if not (crate.polish and inc > 0 and ((data().Polisher or {}).PendingCash or 0) > 0) then
+			return 0
+		end
+		return (Upgrades.CratePolisher.PolishCashBoost or 0.3) * (polishRate(n + 1) - polishRate(n)) / inc
+	end,
 }
 
--- Every cash upgrade the game lists, found in its own library: the Upgrades menu's rows
--- plus the conveyor tier (a button on your plot). The polisher pair needs 11 expansions and
--- a flow this script doesn't run.
+-- Every cash upgrade the game lists, found in its own library: the Upgrades menu's rows plus
+-- two buttons on your plot, the conveyor tier and the polisher's speed. The polisher unlock
+-- is skipped: 150T behind 11 expansions, once, and a choice worth making by hand.
 local UPG_NAMES, upgKey, upgWant = {}, {}, {}
 for name, u in pairs(Upgrades) do
-	if type(u) == "table" and type(u.GetPrice) == "function" and (not u.HiddenOnGui or name == "ConveyorLuck") then
+	if type(u) == "table" and type(u.GetPrice) == "function" and (not u.HiddenOnGui or name == "ConveyorLuck" or name == "CratePolisher") then
 		local shown = u.DisplayName or name
 		table.insert(UPG_NAMES, shown)
 		upgKey[shown] = name
@@ -1556,6 +1808,24 @@ local function num(v, lo)
 	return n and n >= (lo or 0) and n or nil
 end
 
+local function ids(list)
+	local m = {}
+	for _, v in ipairs(list) do
+		m[v] = v
+	end
+	return m
+end
+-- The grading Units list, kept in step with your slots from Heartbeat (see syncUnits).
+local unitsDrop, unitKey, unitSig, unitsAt = nil, {}, nil, 0
+local gradeToggle
+local function unitsSig(labels, key)
+	local s = {}
+	for _, l in ipairs(labels) do
+		table.insert(s, l .. "=" .. key[l]) -- the guid too: same labels, different players
+	end
+	return table.concat(s, "\0")
+end
+
 do
 	local Main = Window:Tab({ Title = "Farm", Icon = "solar:home-2-bold" })
 
@@ -1746,10 +2016,18 @@ do
 	local Map = Main:Section({ Title = "Crates & spawns", Icon = "solar:map-point-bold", Box = true, BoxBorder = true, Opened = false })
 	Map:Toggle({
 		Title = "Auto crates",
-		Desc = "Picks up your conveyor's pile and sells it at your sell NPC",
+		Desc = "Picks up your conveyor's pile and sells it at your sell NPC; always collects and sells polished crates",
 		Value = false,
 		Callback = function(on)
 			crateLoop.set(on)
+		end,
+	})
+	Map:Toggle({
+		Title = "Polish crates",
+		Desc = "Every crate goes into your polisher (+30%, at its speed) instead of the NPC. Off drains what's queued",
+		Value = crate.polish,
+		Callback = function(on)
+			crate.polish = on
 		end,
 	})
 	Map:Input({
@@ -1780,6 +2058,70 @@ do
 		Value = SPAWN_KINDS,
 		Callback = function(v)
 			refill(spawn.want, v)
+		end,
+	})
+
+	local Gr = Window:Tab({ Title = "Grades", Icon = "solar:star-bold" })
+	local GrSec = Gr:Section({ Title = "Grade reroll", Icon = "solar:star-shine-bold", Box = true, BoxBorder = true, Opened = true })
+	gradeToggle = GrSec:Toggle({
+		Title = "Auto grade",
+		Desc = "Rolls one slotted player until it reaches the stop grade, then the next. A roll REPLACES the grade -- an A can come back F",
+		Value = false,
+		Callback = function(on)
+			grade.misses, grade.kill = 0, false
+			gradeLoop.set(on)
+		end,
+	})
+	GrSec:Dropdown({
+		Title = "Stop at grade",
+		Desc = "This grade or better is left alone",
+		Values = GRADES,
+		Value = grade.stop,
+		Callback = function(v)
+			local k = pick(v, gradeKey)
+			if k then
+				grade.stop = k
+			end
+		end,
+	})
+	GrSec:Dropdown({
+		Title = "Pay with",
+		Desc = "Cash is 10 drops of that player a roll, and always leaves your reserve (Upgrades tab)",
+		Values = PAY,
+		Value = grade.pay,
+		Callback = function(v)
+			grade.pay = pick(v, ids(PAY)) or grade.pay
+		end,
+	})
+	GrSec:Dropdown({
+		Title = "Roll which",
+		Values = WHICH,
+		Value = WHICH[1],
+		Callback = function(v)
+			local k = pick(v, ids(WHICH))
+			if k then
+				grade.picked = k == WHICH[2]
+			end
+		end,
+	})
+	local labels
+	labels, unitKey = unitLabels()
+	unitSig = unitsSig(labels, unitKey)
+	unitsDrop = GrSec:Dropdown({
+		Title = "Units (Picked only)",
+		Desc = "Players on your slots. One that leaves its slot is unpicked -- re-pick it when it's back",
+		Values = labels,
+		Multi = true,
+		AllowNone = true,
+		Value = {},
+		Callback = function(v)
+			-- Only labels on the current list: a Refresh re-fires this with the old ticks.
+			table.clear(grade.want)
+			for name in pairs(ticked(v)) do
+				if unitKey[name] then
+					grade.want[unitKey[name]] = true
+				end
+			end
 		end,
 	})
 
@@ -1880,7 +2222,49 @@ for _, title in ipairs({ "Plot", "Session" }) do
 	dashRow[title] = statsSec:Paragraph({ Title = title, Desc = "reading..." })
 end
 
+-- The Units list follows your slots. Rebuilt only when the line-up changes (WindUI keeps
+-- every rebuilt row's connections until Destroy), and a pick that left its slot is dropped
+-- from the ticks AND the set, so the panel never shows less than the script will roll.
+local function syncUnits()
+	local labels, key = unitLabels()
+	local sig = unitsSig(labels, key)
+	if sig == unitSig then
+		return
+	end
+	unitSig, unitKey = sig, key
+	local byGuid, keep = {}, {}
+	for label, guid in pairs(key) do
+		byGuid[guid] = label
+	end
+	for guid in pairs(grade.want) do
+		if byGuid[guid] then
+			table.insert(keep, byGuid[guid])
+		else
+			grade.want[guid] = nil
+			local u = (data().PlayerUnits or {})[guid]
+			log(("%s left its slot -- unpicked for grading"):format(u and tostring(u.PlayerUnitName) or "a picked player"))
+		end
+	end
+	local want = table.clone(grade.want)
+	pcall(function()
+		unitsDrop:Refresh(labels)
+		unitsDrop:Select(keep) -- writes the ticks, fires nothing
+	end)
+	table.clear(grade.want) -- the Refresh re-fire may have run already; put ours back
+	for guid in pairs(want) do
+		grade.want[guid] = true
+	end
+end
+
 local drain = RunService.Heartbeat:Connect(function()
+	if grade.kill then
+		grade.kill = false
+		pcall(gradeToggle.Set, gradeToggle, false)
+	end
+	if unitsDrop and os.clock() - unitsAt > UNITS_GAP then
+		unitsAt = os.clock()
+		pcall(syncUnits)
+	end
 	for title, text in pairs(dashText) do
 		dashText[title] = nil
 		pcall(dashRow[title].SetDesc, dashRow[title], text)
@@ -1902,11 +2286,18 @@ local builders = {
 			lockers = lockers + (t == "Box" and 1 or 0)
 		end
 		local w, wv = weakest()
-		return table.concat({
+		local lines = {
 			("cash %s   income %s/s"):format(money(cash()), money(incomePerSec())),
 			("slots %d: %d players, %d opening   lockers in bag %d"):format(#s, units, lockers, lockersWaiting()),
 			("weakest slot %s at %s/ball (cap %d)"):format(w and w.Name or "-", money(wv or 0), target()),
-		}, "\n")
+		}
+		if polisher() then
+			local p, rate = data().Polisher or {}, polishRate()
+			local queued = p.PendingCash or 0
+			table.insert(lines, ("polisher: pending %s (~%ds at %s/s)   polished %s"):format(money(queued), rate > 0 and math.floor(queued / rate) or 0, money(rate), money(p.PolishedCash or 0)))
+		end
+		table.insert(lines, ("grade tokens %d"):format(gradeTokens()))
+		return table.concat(lines, "\n")
 	end,
 	Session = function()
 		local on, hops = {}, {}
@@ -1922,7 +2313,15 @@ local builders = {
 		end
 		return table.concat({
 			("rolls %d   bought %d   opened %d   placed %d (%d replaced)"):format(stats.rolls, stats.bought, stats.opened, stats.placed, stats.replaced),
-			("levels %d   sold %d lockers, %d players   crates %d   upgrades %d"):format(stats.levels, stats.soldL, stats.soldU, stats.crates, stats.upgrades),
+			("levels %d   sold %d lockers, %d players   crates %d sold, %d polished   upgrades %d"):format(
+				stats.levels,
+				stats.soldL,
+				stats.soldU,
+				stats.crates,
+				stats.polished,
+				stats.upgrades
+			),
+			("grade rolls %d"):format(stats.grades),
 			("spawns %d (lost %d races)   hop first: %s"):format(stats.spawns, stats.lost, #hops > 0 and table.concat(hops, ", ") or "none"),
 			("running: %s   at: %s"):format(#on > 0 and table.concat(on, ", ") or "nothing", mark),
 		}, "\n")
