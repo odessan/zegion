@@ -80,6 +80,7 @@ local GAMES = {
 	["88047783411976"] = "split_sea_for_animals.lua", -- Split Sea for Animals
 	["132767904294856"] = "blue_lock_farm.lua", -- Blue Lock Farm
 	["118805555015549"] = "loot_to_forge.lua", -- Loot to Forge
+	["78490532994307"] = "build_an_ant_empire.lua", -- Build an Ant Empire
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
