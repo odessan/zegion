@@ -1,13 +1,14 @@
 --[[ Blue Lock Farm -- roll lockers, open them into players, keep the plot at its best (132767904294856)
 
      ROLL     : RequestConveyorRoll is free and paced only by the game's own cooldown, so the
-                belt rolls non-stop and PurchaseConveyorRoll is fired only for a locker your
+                belt rolls non-stop and the locker's Purchase prompt is pressed only for one your
                 filter wants: a minimum tier (the locker) and/or a minimum variant (the
                 mutation) -- each "this and above", in the game's own order -- or, optionally,
                 any locker whose average pull beats your weakest slot by 25% and costs at most
                 30 min of income. A wanted locker you can't afford yet is held on the belt
                 while income will cover it inside those 30 min (both inputs). With Buy matches
-                off, the belt stops on the first match and waits for you to buy it. The AutoConveyor
+                off, the belt stops on the first match (or 25%-better locker) and waits for
+                you to buy it. The AutoConveyor
                 gamepass is all client-side and fires these same two remotes; you don't need it.
      LOCKERS  : open every ready locker (OpenBoxOnDropper -- the player lands on that same
                 slot), level every slotted player to your cap, swap a bag player that's better at the
@@ -619,7 +620,10 @@ end
 local function judge(part)
 	local box, variant = part:GetAttribute("BoxName"), part:GetAttribute("Variant") or "Normal"
 	if not roll.buy then
-		return box and matches(box, variant) and "match" or "skip", box, variant
+		-- You're buying by hand, so stop on the margin alone: no stock cap, no price brake (you
+		-- judge the price), and no empty-slot rule, or an empty slot would stop every roll.
+		local stop = box and (matches(box, variant) or (roll.smart and beats(box, variant, weakest())))
+		return stop and "match" or "skip", box, variant
 	end
 	if not (box and wanted(box, variant)) then
 		return "skip"
@@ -633,7 +637,13 @@ local function judge(part)
 	end
 	local before = boxCount(box, variant)
 	step("buy " .. box .. " " .. variant)
+	-- The bare remote is ignored (probed: cash and lockers untouched, from anywhere); the
+	-- server wants the locker's own Purchase prompt pressed, which the game pairs with it.
 	local ok = act("buy", posOf(part), function()
+		local prompt = part:FindFirstChildWhichIsA("ProximityPrompt", true)
+		if prompt and fireproximityprompt then
+			fireproximityprompt(prompt)
+		end
 		R.PurchaseConveyorRoll:FireServer()
 	end, function()
 		return boxCount(box, variant) > before
