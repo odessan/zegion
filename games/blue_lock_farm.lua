@@ -32,8 +32,8 @@
      GRADES   : RerollPlayerUnitGrade REPLACES a slotted player's grade (an A can roll F), so
                 one player is rolled until it reaches your stop grade, then the next -- best
                 $/ball first, or only the ones you pick. Cash (10 drops of that player a roll)
-                or Grade tokens. Known from the game's GradingGui only, never seen on the wire:
-                3 unconfirmed rolls in a row switch it off rather than spend blind.
+                or Grade tokens. Probed: works from anywhere, one roll per round trip (faster
+                fires are dropped by the server); 3 unconfirmed in a row switch it off.
      SPAWNS   : variant tokens (server-wide race, rarest first), grade tokens and potions,
                 woken by the node's own Occupied attribute rather than a scan.
      UPGRADES : every cash upgrade the game ships, bought by payback: price / (income x the
@@ -78,7 +78,8 @@ local SELL_BATCH = 10 -- tools sold per pass
 local CRATE_GAP = 3 -- between pile checks; a pure attribute read
 local CRATE_MIN = 20 -- balls in the pile before it's worth two remotes
 
-local GRADE_SLACK = 0.1 -- on top of the game's own reroll cooldown
+local GRADE_SLACK = 0.05 -- on top of the game's own reroll cooldown, counted from the fire
+local GRADE_IDLE = 1 -- between checks when there's nothing to roll or nothing to pay with
 local GRADE_STRIKES = 3 -- unconfirmed rolls in a row before grading switches itself off
 local UNITS_GAP = 2 -- between checks for a changed line-up (the grading Units list)
 
@@ -1355,11 +1356,16 @@ local function gradeShop()
 	return p and p.Magnitude > 1 and p or nil
 end
 
+-- Probed (2026-09-26): not range-checked, args right, and the pace is one roll per ROUND
+-- TRIP -- fired faster than the reply (0.72s there), the rolls carry a stale third arg and
+-- the server drops them: 0.5s gaps landed 3 of 6, 0.1s landed 1. That stale check is also
+-- what keeps a roll in flight from rerolling an S that just landed, so no pipelining: fire,
+-- wait for the reply, and the cooldown counts from the FIRE, not from the reply.
 local gradeLoop
 local rolledOn = { guid = nil, n = 0 }
--- ponytail: a range-checked roll hops there and back EVERY roll (act's shape); park at the
--- shop for a streak if the round trips ever cost more than the 0.75s cooldown they hide in.
+local firedAt -- nil = the last pass didn't roll; idle on IDLE_GAP instead
 gradeLoop = looper("grades", function()
+	firedAt = nil
 	if not (GradeService and R.RerollPlayerUnitGrade) then
 		say("grades: this build has no GradeService / RerollPlayerUnitGrade")
 		gradeLoop.set(false)
@@ -1383,6 +1389,7 @@ gradeLoop = looper("grades", function()
 	local before = gradeSig(guid)
 	step("grade " .. tostring(u.PlayerUnitName))
 	local ok = act("grade", gradeShop(), function()
+		firedAt = os.clock()
 		R.RerollPlayerUnitGrade:FireServer(guid, useTok, u.Grade)
 	end, function()
 		return gradeSig(guid) ~= before
@@ -1409,7 +1416,10 @@ end, function()
 	local ok, cd = pcall(function()
 		return GradeService.GetRerollCooldown(player) -- potion, gamepass and weather included
 	end)
-	return (ok and tonumber(cd) or 0.75) + GRADE_SLACK
+	if not firedAt then
+		return GRADE_IDLE
+	end
+	return math.max(0, firedAt + (ok and tonumber(cd) or 0.75) + GRADE_SLACK - os.clock())
 end)
 
 -- spawns ---------------------------------------------------------------------
