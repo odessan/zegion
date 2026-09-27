@@ -51,7 +51,9 @@
 
 -- config ---------------------------------------------------------------------
 local CALL_TIMEOUT = 8 -- an InvokeServer that hasn't returned by now is abandoned
-local CONFIRM = 1.2 -- remote-first confirm window before hopping; raise on lag
+local CONFIRM = 1.2 -- remote-first confirm window before hopping, plus PING_MULT x live ping
+local PING_MULT = 3 -- a 220ms ping waits 1.2 + 0.66s; raise if F9 keeps saying "arrived late"
+local HOP_LOG_GAP = 15 -- per action: how often F9 explains a teleport
 local HOP_LIFT = 3 -- studs above a target to land
 local HOP_SETTLE = 0.25 -- after a hop, for the position to reach the server
 local HOP_CURES = 2 -- misses a hop cured, in a row, before an action hops first...
@@ -80,6 +82,7 @@ local CRATE_MIN = 20 -- balls in the pile before it's worth two remotes
 
 local GRADE_SLACK = 0.05 -- on top of the game's own reroll cooldown, counted from the fire
 local GRADE_IDLE = 1 -- between checks when there's nothing to roll or nothing to pay with
+local GRADE_CONFIRM = 3 -- a roll's reply; the probe saw 0.72s, raise if lag trips the strikes
 local GRADE_STRIKES = 3 -- unconfirmed rolls in a row before grading switches itself off
 local UNITS_GAP = 2 -- between checks for a changed line-up (the grading Units list)
 
@@ -472,18 +475,33 @@ end
 -- One shape for every remote that might be range-checked: fire from where you are, confirm
 -- on the world moving, on a miss hop next to `where`, fire again, go home. Returns true
 -- (landed), false (refused either way), nil (someone else is moving you -- try later).
+--
+-- The remote-first window grows with live ping: a fixed 1.2s read every lag spike as "must
+-- be range-checked" and teleported for an answer that was merely late.
+local pingStat
+pcall(function()
+	pingStat = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]
+end)
+local function pingMs()
+	local ok, ms = pcall(function()
+		return pingStat:GetValue()
+	end)
+	return ok and tonumber(ms) or 0
+end
+
 local route = {}
 local function act(key, where, fire, confirm, timeout)
 	local r = route[key]
 	if not r then
-		r = { hopFirst = false, cured = 0, n = 0 }
+		r = { hopFirst = false, cured = 0, n = 0, logged = -math.huge }
 		route[key] = r
 	end
 	r.n = r.n + 1
 	local remoteFirst = not r.hopFirst or r.n % HOP_PROBE == 0
+	local window = (timeout or CONFIRM) + pingMs() / 1000 * PING_MULT
 	if remoteFirst then
 		pcall(fire)
-		if waitFor(confirm, timeout or CONFIRM) then
+		if waitFor(confirm, window) then
 			if r.hopFirst then
 				r.hopFirst = false
 				log(key .. " works from anywhere again")
@@ -495,7 +513,7 @@ local function act(key, where, fire, confirm, timeout)
 	if not (move.tp and where) then
 		return false
 	end
-	local ok = false
+	local ok, lateRemote = false, false
 	local ran = claim(function()
 		local rt = root()
 		local back = rt and rt.CFrame
@@ -504,21 +522,41 @@ local function act(key, where, fire, confirm, timeout)
 		end
 		task.wait(HOP_SETTLE)
 		local okC, early = pcall(confirm)
-		if not (okC and early) then -- a late answer to the remote try must not be paid twice
+		if okC and early then -- a late answer to the remote try must not be paid twice
+			lateRemote = remoteFirst
+		else
 			pcall(fire)
 		end
-		ok = waitFor(confirm, timeout or CONFIRM)
+		ok = waitFor(confirm, window)
 		goHome(back)
 	end)
 	if not ran then
 		return nil
 	end
-	if ok and remoteFirst then
+	-- A late answer to the remote try is lag, not range: the hop proved nothing, so it must
+	-- not count toward hopping first (under a laggy connection it flapped every few rolls).
+	if ok and remoteFirst and not lateRemote then
 		r.cured = r.cured + 1
 		if r.cured >= HOP_CURES and not r.hopFirst then
 			r.hopFirst = true
 			log(key .. " is range-checked -- hopping first from now on")
 		end
+	end
+	-- Every teleport says why, once per HOP_LOG_GAP per action.
+	if os.clock() - r.logged > HOP_LOG_GAP then
+		r.logged = os.clock()
+		local why = remoteFirst and ("no answer in %.1fs from where you stood (ping %dms)"):format(window, pingMs()) or "hopping first"
+		local verdict
+		if lateRemote then
+			verdict = "that answer arrived during the teleport: lag, not range -- teleport wasted"
+		elseif ok and remoteFirst then
+			verdict = ("landed only after it: looks range-checked (%d/%d before hopping first)"):format(r.cured, HOP_CURES)
+		elseif ok then
+			verdict = "landed"
+		else
+			verdict = "refused there too: not a range problem"
+		end
+		log(("%s teleported -- %s; %s"):format(key, why, verdict))
 	end
 	return ok
 end
@@ -631,6 +669,73 @@ local function wanted(box, variant)
 	return empty or (beats(box, variant, w) and withinWait(BoxService.GetBoxPrice(box, variant)))
 end
 
+-- Every rule the belt judges a locker by, evaluated and worded: the Belt row redraws it live
+-- while the belt is stopped, and F9 gets it once per stop.
+local function tierName(key)
+	return key and Boxes[key] and Boxes[key].DisplayName or tostring(key)
+end
+local function variantName(key)
+	return key and Variants[key] and Variants[key].DisplayName or tostring(key)
+end
+local function explain(box, variant)
+	local lines = {}
+	local okP, price = pcall(BoxService.GetBoxPrice, box, variant)
+	price = okP and price or 0
+	local short = price + reserve - cash()
+	local inc = incomePerSec()
+	table.insert(
+		lines,
+		("%s %s -- price %s, cash %s%s"):format(
+			variantName(variant),
+			tierName(box),
+			money(price),
+			money(cash()),
+			short > 0 and (", %s short (~%sm of income)"):format(money(short), inc > 0 and tostring(math.ceil(short / inc / 60)) or "?") or ", affordable"
+		)
+	)
+	local mt, mv = roll.minTier, roll.minVariant
+	if mt or mv then
+		local parts = {}
+		if mt then
+			table.insert(parts, ("tier %s %s min %s"):format(tierName(box), (tierRank[box] or 0) >= tierRank[mt] and ">=" or "<", tierName(mt)))
+		end
+		if mv then
+			table.insert(parts, ("variant %s %s min %s"):format(variantName(variant), (variantRank[variant] or 0) >= variantRank[mv] and ">=" or "<", variantName(mv)))
+		end
+		table.insert(lines, ("filter (%s): %s -> %s"):format(roll.either and "OR" or "AND", table.concat(parts, ", "), matches(box, variant) and "MATCH" or "no match"))
+	else
+		table.insert(lines, "filter: Any + Any -> matches nothing")
+	end
+	if not roll.smart then
+		table.insert(lines, "better than weakest: off")
+	else
+		local w = weakest()
+		if not w then
+			table.insert(lines, "better than weakest: no player on a slot to compare with")
+		else
+			local ev, wv = boxEV(box, variant), slotPotential(w)
+			local gain = wv > 0 and (ev / wv - 1) * 100 or math.huge
+			table.insert(
+				lines,
+				("better than weakest: avg pull %s/ball vs slot %s (%s %s L%d grade %s) %s/ball, both at L%d = %+.0f%% (need +%s%%) -> %s"):format(
+					money(ev),
+					w.Name,
+					variantName(w:GetAttribute("PlayerUnitVariant")),
+					tostring(w:GetAttribute("PlayerUnitName")),
+					w:GetAttribute("PlayerUnitLevel") or 1,
+					tostring(w:GetAttribute("PlayerUnitGrade") or "-"),
+					money(wv),
+					target(),
+					gain,
+					tostring(MARGIN),
+					beats(box, variant, w) and "BEATS" or "no"
+				)
+			)
+		end
+	end
+	return table.concat(lines, "\n")
+end
+
 -- "bought", "skip", "match" (Buy off: stop here for you), "poor" (can't afford), "full",
 -- or false (the server said no)
 local function judge(part)
@@ -684,7 +789,7 @@ local rollLoop = looper("roll", function()
 	end
 	local id = part:GetAttribute("RollId")
 	if id ~= roll.seenId then
-		roll.seenId, roll.judged, roll.heldCount = id, false, nil
+		roll.seenId, roll.judged, roll.heldCount, roll.stoppedOn = id, false, nil, nil
 	end
 	if not roll.judged then
 		roll.saving = 0
@@ -698,7 +803,8 @@ local rollLoop = looper("roll", function()
 			local have = boxCount(box, variant)
 			if not roll.heldCount then
 				roll.heldCount = have
-				log(("%s %s on the belt -- stopped rolling until you buy it"):format(variant, box))
+				roll.stoppedOn = { box = box, variant = variant }
+				log(("belt STOPPED until you buy it:\n%s"):format(explain(box, variant)))
 			end
 			-- Follow the count DOWN: Auto place / Auto sell can take one of these out of the
 			-- bag while you wait, and then your buy only brings it back level -- never above.
@@ -714,7 +820,10 @@ local rollLoop = looper("roll", function()
 		elseif verdict == "full" then
 			say("locker inventory full -- rolling on, buying nothing")
 		end
-		roll.judged = true
+		if roll.stoppedOn then
+			roll.lastStop = ("%s %s (released -- rolling again)"):format(variantName(roll.stoppedOn.variant), tierName(roll.stoppedOn.box))
+		end
+		roll.judged, roll.stoppedOn = true, nil
 	end
 	local cd = BoxService.GetConveyorRollCooldown(player) + ROLL_SLACK
 	local untilT = part:GetAttribute("RollCooldownUntil")
@@ -1344,23 +1453,13 @@ local function pityText(u)
 	return table.concat(out, "  ")
 end
 
--- Where the game opens its grading menu. The tag first; a streamed-out Model still has its
--- pivot, so the path is the fallback (and origin means not replicated at all).
-local function gradeShop()
-	local p = posOf(CollectionService:GetTagged("GradingHitbox")[1])
-	if not p then
-		local m = workspace:FindFirstChild("Map")
-		m = m and m:FindFirstChild("Shops")
-		p = posOf(m and m:FindFirstChild("Grades"))
-	end
-	return p and p.Magnitude > 1 and p or nil
-end
-
 -- Probed (2026-09-26): not range-checked, args right, and the pace is one roll per ROUND
 -- TRIP -- fired faster than the reply (0.72s there), the rolls carry a stale third arg and
 -- the server drops them: 0.5s gaps landed 3 of 6, 0.1s landed 1. That stale check is also
 -- what keeps a roll in flight from rerolling an S that just landed, so no pipelining: fire,
--- wait for the reply, and the cooldown counts from the FIRE, not from the reply.
+-- wait for the reply, and the cooldown counts from the FIRE, not from the reply. No act():
+-- nothing to hop for, and its hop-on-a-slow-reply teleported you to the shop every roll
+-- under lag while holding the claim the token pickups need.
 local gradeLoop
 local rolledOn = { guid = nil, n = 0 }
 local firedAt -- nil = the last pass didn't roll; idle on IDLE_GAP instead
@@ -1388,12 +1487,13 @@ gradeLoop = looper("grades", function()
 	end
 	local before = gradeSig(guid)
 	step("grade " .. tostring(u.PlayerUnitName))
-	local ok = act("grade", gradeShop(), function()
-		firedAt = os.clock()
+	firedAt = os.clock()
+	pcall(function()
 		R.RerollPlayerUnitGrade:FireServer(guid, useTok, u.Grade)
-	end, function()
-		return gradeSig(guid) ~= before
 	end)
+	local ok = waitFor(function()
+		return gradeSig(guid) ~= before
+	end, GRADE_CONFIRM)
 	if ok then
 		grade.misses = 0
 		rolledOn.n = rolledOn.n + 1
@@ -1828,6 +1928,7 @@ end
 -- The grading Units list, kept in step with your slots from Heartbeat (see syncUnits).
 local unitsDrop, unitKey, unitSig, unitsAt = nil, {}, nil, 0
 local gradeToggle
+local beltPara -- Roll section's "why is the belt stopped" row, drained like the dashboard
 local function unitsSig(labels, key)
 	local s = {}
 	for _, l in ipairs(labels) do
@@ -1845,10 +1946,11 @@ do
 		Desc = "Free rolls on the game's own cooldown; nothing is bought unless Buy matches is on",
 		Value = false,
 		Callback = function(on)
-			roll.saving, roll.seenId = 0, nil -- no hold outlives the belt loop
+			roll.saving, roll.seenId, roll.stoppedOn = 0, nil, nil -- no hold outlives the belt loop
 			rollLoop.set(on)
 		end,
 	})
+	beltPara = Roll:Paragraph({ Title = "Belt", Desc = "off" })
 	Roll:Toggle({
 		Title = "Buy matches",
 		Desc = "On: buys matches (one you'll afford within a minute is held). Off: rolling STOPS on a match until you buy it",
@@ -2231,6 +2333,7 @@ local dashRow, dashText = {}, {}
 for _, title in ipairs({ "Plot", "Session" }) do
 	dashRow[title] = statsSec:Paragraph({ Title = title, Desc = "reading..." })
 end
+dashRow.Belt = beltPara
 
 -- The Units list follows your slots. Rebuilt only when the line-up changes (WindUI keeps
 -- every rebuilt row's connections until Destroy), and a pick that left its slot is dropped
@@ -2287,6 +2390,13 @@ local drain = RunService.Heartbeat:Connect(function()
 end)
 
 local builders = {
+	-- Live while stopped, so the "short" figure counts down as your cash comes in.
+	Belt = function()
+		if rollLoop.on and roll.stoppedOn then
+			return "STOPPED -- buy it to keep rolling\n" .. explain(roll.stoppedOn.box, roll.stoppedOn.variant)
+		end
+		return (rollLoop.on and "rolling" or "off") .. (roll.lastStop and ("   last stop: " .. roll.lastStop) or "")
+	end,
 	Plot = function()
 		local s = slots()
 		local units, lockers = 0, 0
