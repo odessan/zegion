@@ -29,6 +29,8 @@
                 Polish on: every crate goes into your polisher instead (DepositCrate), which
                 pays it back +30% as a shiny crate at its own speed; shiny crates are collected
                 (CollectPolisherCrate) and sold with Polish off too, so off drains the queue.
+                A crate the polisher refuses is sold instead, F9 says why, and deposits pause
+                for a minute.
      GRADES   : RerollPlayerUnitGrade REPLACES a slotted player's grade (an A can roll F), so
                 one player is rolled until it reaches your stop grade, then the next -- best
                 $/ball first, or only the ones you pick. Cash (10 drops of that player a roll)
@@ -79,6 +81,7 @@ local SELL_BATCH = 10 -- tools sold per pass
 
 local CRATE_GAP = 3 -- between pile checks; a pure attribute read
 local CRATE_MIN = 20 -- balls in the pile before it's worth two remotes
+local DEPOSIT_PARK = 60 -- after the polisher refuses a crate, sell straight for this long
 
 local GRADE_SLACK = 0.05 -- on top of the game's own reroll cooldown, counted from the fire
 local GRADE_IDLE = 1 -- between checks when there's nothing to roll or nothing to pay with
@@ -1244,7 +1247,36 @@ end
 -- Upgrades.CratePolisher's rate +30%, and Collect hands it back as one Shiny crate. Shiny
 -- crates are never deposited (the game's own prompt refuses them), and collecting runs with
 -- Polish off too, so switching it off drains the queue instead of stranding it there.
-local crate = { min = CRATE_MIN, polish = false }
+local crate = { min = CRATE_MIN, polish = false, parkUntil = 0 }
+
+-- The server words its refusals only in a toast; keep the last one so a refused deposit can
+-- say what the game said instead of guessing.
+local toast = { text = "none", at = -math.huge }
+local toastConns = {}
+for _, name in ipairs({ "TextNotificationRemote", "BigTextNotificationRemote" }) do
+	local r = R[name]
+	if r then
+		table.insert(toastConns, r.OnClientEvent:Connect(function(text)
+			toast.text, toast.at = tostring(text), os.clock()
+		end))
+	end
+end
+
+local function depositWhy(tool, c)
+	local char = player.Character
+	local held = char and char:FindFirstChildOfClass("Tool")
+	local p = data().Polisher or {}
+	return ("deposit refused -- holding %s (%s, InventoryType=%s, Shiny=%s), %d balls, pending %s; game said: %s. Selling it, deposits paused %ds"):format(
+		held and held.Name or "nothing",
+		held == tool and "this crate" or "NOT this crate",
+		tostring(tool:GetAttribute("InventoryType")),
+		tostring(tool:GetAttribute("Shiny")),
+		c.BallCount or 0,
+		money(p.PendingCash or 0),
+		os.clock() - toast.at < 10 and toast.text or "nothing",
+		DEPOSIT_PARK
+	)
+end
 
 local function crateCount()
 	local n = 0
@@ -1307,20 +1339,26 @@ local crateLoop = looper("crates", function(alive)
 			return crates()[guid] == nil
 		end
 		local ok
-		if crate.polish and pol and not c.Shiny then
-			-- ponytail: no tool, no deposit -- it waits for the Tool to replicate next lap
-			if tool then
-				step("deposit crate")
-				holding(tool, function()
-					ok = act("deposit", posOf(pol), function()
-						R.DepositCrate:FireServer(pol)
-					end, gone)
-				end)
-				if ok then
-					stats.polished = stats.polished + 1
+		local deposit = crate.polish and pol and not c.Shiny and os.clock() >= crate.parkUntil
+		-- ponytail: no tool, no deposit -- it waits for the Tool to replicate next lap
+		if deposit and tool then
+			step("deposit crate")
+			holding(tool, function()
+				ok = act("deposit", posOf(pol), function()
+					R.DepositCrate:FireServer(pol)
+				end, gone)
+				if ok == false then -- read while the crate is still in hand
+					log(depositWhy(tool, c))
 				end
+			end)
+			if ok then
+				stats.polished = stats.polished + 1
+			elseif ok == false then
+				crate.parkUntil = os.clock() + DEPOSIT_PARK
 			end
-		else
+		end
+		-- A refused crate is sold on this lap rather than retried (and teleported for) forever.
+		if not deposit or ok == false then
 			step("sell crate")
 			local function fire()
 				R.SellCrate:FireServer(guid)
@@ -2478,6 +2516,9 @@ local function stopAll()
 	dogGen = dogGen + 1
 	dashGen = dashGen + 1
 	afk.set(false) -- a stopped script must not rejoin you
+	for _, c in ipairs(toastConns) do
+		c:Disconnect()
+	end
 	pcall(drain.Disconnect, drain)
 end
 
