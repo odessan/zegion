@@ -36,6 +36,16 @@
                 $/ball first, or only the ones you pick. Cash (10 drops of that player a roll)
                 or Grade tokens. Probed: works from anywhere, one roll per round trip (faster
                 fires are dropped by the server); 3 unconfirmed in a row switch it off.
+     TOWER    : Infinity Tower is fought by the server (a floor per ~1.5s) from the team you
+                send with StartInfinityTowerBattle -- one run at a time, rewards rolled per
+                floor when the last unit dies. Keeps a run going on the highest ENABLED tower
+                your team clears floor 1 of. The only "rotation" is the order of the four
+                (slot 1 fights first); per tower, Auto equip best simulates your 5 strongest in
+                all 120 orders with the game's own battle module, or you set the 4 slots.
+                Towers appear as they unlock (floor 250 of the one before). Picks are saved.
+     trait.labels   : RerollPlayerUnitTrait, 1 Trait token a roll (tower floors drop them), grading's
+                pace. Rolls until a unit lands any target trait, then the next -- slotted best
+                first, the tower team, or picks. Out of tokens waits. Unprobed on the wire.
      SPAWNS   : variant tokens (server-wide race, rarest first), grade tokens and potions,
                 woken by the node's own Occupied attribute rather than a scan.
      UPGRADES : every cash upgrade the game ships, bought by payback: price / (income x the
@@ -88,6 +98,15 @@ local GRADE_IDLE = 1 -- between checks when there's nothing to roll or nothing t
 local GRADE_CONFIRM = 3 -- a roll's reply; the probe saw 0.72s, raise if lag trips the strikes
 local GRADE_STRIKES = 3 -- unconfirmed rolls in a row before grading switches itself off
 local UNITS_GAP = 2 -- between checks for a changed line-up (the grading Units list)
+local TOWER_GAP = 3 -- between run checks; a live run ticks every 0.75-1.5s on its own
+local TOWER_IDLE = 6 -- no battle tick for this long = maybe no run; one GetState to be sure
+local TOWER_POOL = 5 -- strongest (damage x health) units tried in every order: 5 = 120 sims
+local SIM_TICKS = 20000 -- sim cap per team; a run this long is one the tower can't end
+local TOWER_STRIKES = 3 -- refused starts in a row before a tower is skipped for TOWER_PARK
+local TOWER_PARK = 120
+local ALL_UNITS_GAP = 15 -- between rebuilds of the every-player lists (4 slot rows a tower);
+-- raise it if the Tower tab stutters while auto-sell churns players
+local SAVE_FILE = "BlueLockFarm_settings.json" -- tower and trait picks survive a re-paste
 
 local SPAWN_CONFIRM = 0.8 -- tokens are a race: shorter remote-first window
 local SPAWN_IDLE = 5 -- safety-net sweep when no Occupied signal fired
@@ -187,6 +206,12 @@ local Upgrades = shared("Shared", "Core", "Storage", "Game", "UpgradesLibrary")
 local Collectables = shared("Shared", "Core", "Storage", "Game", "CollectableObjectsLibrary")
 local GradeService = shared("Shared", "Services", "GradeService") -- optional: grading refuses without it
 local Grades = shared("Shared", "Core", "Storage", "Game", "GradesLibrary")
+-- optional: the tower and traits refuse to start without them
+local TowerService = shared("Shared", "Services", "InfinityTowerService")
+local TowerBattle = shared("Shared", "Services", "InfinityTowerBattleService")
+local Floors = shared("Shared", "Core", "Storage", "Game", "InfinityTowerFloorsLibrary")
+local TraitService = shared("Shared", "Services", "TraitService")
+local Traits = shared("Shared", "Core", "Storage", "Game", "TraitsLibrary")
 local Constants = shared("Shared", "Constants")
 local HitboxUtils = shared("Shared", "Utility", "HitboxUtils")
 local NumberUtils = shared("Shared", "Utility", "NumberUtils")
@@ -215,6 +240,26 @@ end
 local function money(n)
 	local ok, s = pcall(NumberUtils.AbbreviateNumber, n)
 	return "$" .. (ok and s or tostring(math.floor(n)))
+end
+
+-- Per-tower and trait picks, one JSON file in the executor's workspace. Optional: no file
+-- API means the picks last the session.
+local HttpService = game:GetService("HttpService")
+local saved = {}
+pcall(function()
+	if isfile and isfile(SAVE_FILE) then
+		saved = HttpService:JSONDecode(readfile(SAVE_FILE))
+	end
+end)
+if type(saved) ~= "table" then
+	saved = {}
+end
+local function save()
+	if writefile then
+		pcall(function()
+			writefile(SAVE_FILE, HttpService:JSONEncode(saved))
+		end)
+	end
 end
 
 -- Your plot's parts by tag + the game's own getInstPlot, never by path.
@@ -276,12 +321,13 @@ end
 -- auto-upgrade will take it to, so a fresh level-1 pull isn't judged against a levelled one.
 local roster = { open = false, place = false, level = false, equip = false, sellLockers = false, sellUnits = false, cap = 10 }
 
-local function value(name, variant, level, grade)
+local function value(name, variant, level, grade, trait)
 	local ok, v = pcall(UnitService.GetPlayerUnitCashPerDrop, nil, {
 		PlayerUnitName = name,
 		PlayerUnitVariant = variant or "Normal",
 		PlayerUnitLevel = level or 1,
 		PlayerUnitGrade = grade,
+		PlayerUnitTrait = trait, -- Fortune / Midas multiply cash
 	})
 	return ok and v or 0
 end
@@ -615,7 +661,7 @@ local function looper(name, body, gapFn)
 	return L
 end
 
-local stats = { rolls = 0, bought = 0, opened = 0, levels = 0, placed = 0, replaced = 0, soldL = 0, soldU = 0, crates = 0, polished = 0, grades = 0, spawns = 0, lost = 0, upgrades = 0 }
+local stats = { rolls = 0, bought = 0, opened = 0, levels = 0, placed = 0, replaced = 0, soldL = 0, soldU = 0, crates = 0, polished = 0, grades = 0, traits = 0, towerRuns = 0, towerEnds = 0, spawns = 0, lost = 0, upgrades = 0 }
 local reserve = 0 -- every spender keeps this much cash
 
 -- roll -----------------------------------------------------------------------
@@ -884,9 +930,16 @@ local function levelUp(alive)
 		local name = p:GetAttribute("PlayerUnitName")
 		local lvl = p:GetAttribute("PlayerUnitLevel") or 1
 		if p:GetAttribute("Type") == "PlayerUnit" and name and lvl < maxL then
-			local variant, grade = p:GetAttribute("PlayerUnitVariant"), p:GetAttribute("PlayerUnitGrade")
-			local cost = UnitService.GetLevelUpgradeCost(player, name, variant, lvl + 1)
-			local gain = value(name, variant, lvl + 1, grade) - value(name, variant, lvl, grade)
+			local variant, grade, trait = p:GetAttribute("PlayerUnitVariant"), p:GetAttribute("PlayerUnitGrade"), p:GetAttribute("PlayerUnitTrait")
+			-- (player, unit, target level) -- DropperPlayerUnitHandler's own call shape
+			local ok, cost = pcall(UnitService.GetLevelUpgradeCost, player, {
+				PlayerUnitName = name,
+				PlayerUnitVariant = variant,
+				PlayerUnitGrade = grade,
+				PlayerUnitTrait = trait,
+			}, lvl + 1)
+			cost = ok and tonumber(cost) or nil
+			local gain = value(name, variant, lvl + 1, grade, trait) - value(name, variant, lvl, grade, trait)
 			if cost and gain > 0 then
 				table.insert(cands, { p = p, lvl = lvl, cost = cost, ratio = cost / gain })
 			end
@@ -1252,11 +1305,11 @@ local crate = { min = CRATE_MIN, polish = false, parkUntil = 0 }
 -- The server words its refusals only in a toast; keep the last one so a refused deposit can
 -- say what the game said instead of guessing.
 local toast = { text = "none", at = -math.huge }
-local toastConns = {}
+local listeners = {}
 for _, name in ipairs({ "TextNotificationRemote", "BigTextNotificationRemote" }) do
 	local r = R[name]
 	if r then
-		table.insert(toastConns, r.OnClientEvent:Connect(function(text)
+		table.insert(listeners, r.OnClientEvent:Connect(function(text)
 			toast.text, toast.at = tostring(text), os.clock()
 		end))
 	end
@@ -1420,9 +1473,9 @@ end
 
 -- The Units list: no grade or level in a label -- both move while you watch, and a rebuild
 -- of the dropdown drops its ticks. Twins get #2 in guid order, so a label stays put.
-local function unitLabels()
+local function unitLabels(list)
 	local labels, key, seen = {}, {}, {}
-	for _, e in ipairs(slotted()) do
+	for _, e in ipairs(list or slotted()) do
 		local base = ("%s (%s)"):format(tostring(e.u.PlayerUnitName), tostring(e.u.Variant or "Normal"))
 		seen[base] = (seen[base] or 0) + 1
 		local label = seen[base] > 1 and ("%s #%d"):format(base, seen[base]) or base
@@ -1430,6 +1483,23 @@ local function unitLabels()
 		key[label] = e.guid
 	end
 	return labels, key
+end
+
+-- Every player you own, slotted or not (the tower and traits take either), by name so the
+-- list doesn't reshuffle as levels move.
+local function allUnits()
+	local out = {}
+	for guid, u in pairs(data().PlayerUnits or {}) do
+		table.insert(out, { guid = guid, u = u })
+	end
+	table.sort(out, function(a, b)
+		local na, nb = tostring(a.u.PlayerUnitName), tostring(b.u.PlayerUnitName)
+		if na ~= nb then
+			return na < nb
+		end
+		return a.guid < b.guid
+	end)
+	return out
 end
 
 -- Below the stop grade, best first. Ranked WITHOUT the grade, or the unit being rolled would
@@ -1460,7 +1530,13 @@ local function payWith(u)
 	if grade.pay == "Tokens only" then
 		return nil, "out of Grade tokens"
 	end
-	local ok, cost = pcall(GradeService.GetGradeRerollCost, u.PlayerUnitName, u.Variant)
+	-- moved to PlayerUnitService; GradingGuiClient's own call shape
+	local ok, cost = pcall(UnitService.GetGradeRerollCost, player, {
+		PlayerUnitName = u.PlayerUnitName,
+		PlayerUnitVariant = u.Variant,
+		PlayerUnitLevel = u.Level,
+		PlayerUnitTrait = u.Trait,
+	})
 	if not (ok and cost) then
 		return nil, "can't price a roll"
 	end
@@ -1526,6 +1602,7 @@ gradeLoop = looper("grades", function()
 	local before = gradeSig(guid)
 	step("grade " .. tostring(u.PlayerUnitName))
 	firedAt = os.clock()
+	grade.tok = useTok -- a token roll's cooldown is x0.75 (TOKEN_COOLDOWN_MULT)
 	pcall(function()
 		R.RerollPlayerUnitGrade:FireServer(guid, useTok, u.Grade)
 	end)
@@ -1552,12 +1629,480 @@ gradeLoop = looper("grades", function()
 	end
 end, function()
 	local ok, cd = pcall(function()
-		return GradeService.GetRerollCooldown(player) -- potion, gamepass and weather included
+		return GradeService.GetRerollCooldown(player, grade.tok) -- token, potion, gamepass, weather
 	end)
 	if not firedAt then
 		return GRADE_IDLE
 	end
 	return math.max(0, firedAt + (ok and tonumber(cd) or 0.75) + GRADE_SLACK - os.clock())
+end)
+
+-- tower ----------------------------------------------------------------------
+-- Infinity Tower is a server battle. StartInfinityTowerBattle(tower, {guid x4}) and the
+-- server ticks it every 0.75s (a floor clear ~1.46s) wherever you stand, until the last unit
+-- dies; then it rolls one reward per floor and says so on InfinityTowerBattleEnded. One run
+-- at a time, and the next tower opens at floor 250 of the one before. The game has no
+-- rotation beyond the ORDER of the four: slot 1 fights until it dies, then slot 2, the
+-- enemy keeping its damage. So the per-tower "rotation" is that order, and "equip best" is
+-- nothing to equip -- the team rides along in the start call. The battle maths is a shared
+-- module, so the best order is SIMULATED with the game's own AdvanceTick, not guessed.
+-- State and helpers live in this one table: the main chunk is at Luau's 200-local limit.
+local tower = { lastTick = -math.huge, floor = 0, name = nil, team = {}, plans = {}, strikes = {}, parkUntil = {}, last = nil, kill = false }
+tower.list = {} -- game keys, lowest first
+for key, f in pairs(Floors or {}) do
+	if type(f) == "table" and f.LayoutOrder then
+		table.insert(tower.list, key)
+	end
+end
+table.sort(tower.list, function(a, b)
+	return Floors[a].LayoutOrder < Floors[b].LayoutOrder
+end)
+tower.slotsN = Constants.InfinityTowerUnitSlots or 4
+saved.tower = type(saved.tower) == "table" and saved.tower or {}
+function tower.cfg(key)
+	local c = saved.tower[key]
+	if type(c) ~= "table" then
+		c = { enabled = true, auto = true }
+		saved.tower[key] = c
+	end
+	c.slots = type(c.slots) == "table" and c.slots or {}
+	for i = 1, tower.slotsN do
+		c.slots[i] = type(c.slots[i]) == "string" and c.slots[i] or "" -- "" not nil: JSON arrays can't hold holes
+	end
+	return c
+end
+function tower.title(key)
+	return Floors[key] and Floors[key].DisplayName or tostring(key)
+end
+function tower.open(key)
+	if not TowerService then
+		return false, "no InfinityTowerService"
+	end
+	local ok, why = pcall(TowerService.GetPlayBlockReason, player, key)
+	return ok and why == nil, ok and why or "can't read the unlock"
+end
+function tower.best(key)
+	if not TowerService then
+		return 0
+	end
+	local ok, n = pcall(TowerService.GetHighestFloor, player, key)
+	return ok and n or 0
+end
+tower.texts = {} -- key -> Plan row text, drained on Heartbeat
+function tower.who(guid)
+	local u = (data().PlayerUnits or {})[guid]
+	return u and tostring(u.PlayerUnitName) or "?"
+end
+
+-- What the server builds for each unit: the $/drop basis with the trait's Damage / Health
+-- multiplier, health x8 (InfinityTowerBattleService).
+function tower.fighter(guid)
+	local ok, d, h = pcall(function()
+		return TowerBattle.GetDamageFromCashPerDrop(UnitService.GetDamageBasis(player, guid)), TowerBattle.GetHealthFromCashPerDrop(UnitService.GetHealthBasis(player, guid))
+	end)
+	return ok and d and h and { Guid = guid, Damage = d, MaxHealth = h } or nil
+end
+
+-- Floor the team dies on, and the seconds it takes, on the server's own tick rules.
+function tower.sim(key, team)
+	local st = TowerBattle.GetInitialState(key, team)
+	local secs = 0
+	while not st.Dead and st.Ticks < SIM_TICKS do
+		local _, ev = TowerBattle.AdvanceTick(st, key, team, player)
+		secs = secs + TowerBattle.GetNextTickDelay(player, ev)
+	end
+	return st.Floor, secs
+end
+
+-- The TOWER_POOL strongest in every order; highest floor wins, then the quicker run.
+-- ponytail: exhaustive over a pool of 5 (120 sims); a bigger pool is factorial -- swap in a
+-- greedy order if TOWER_POOL ever needs to grow past 6.
+function tower.bestTeam(key)
+	local pool = {}
+	for guid in pairs(data().PlayerUnits or {}) do
+		local f = tower.fighter(guid)
+		if f then
+			f.power = f.Damage * f.MaxHealth -- the game's own Equip Best key
+			table.insert(pool, f)
+		end
+	end
+	table.sort(pool, function(a, b)
+		return a.power > b.power
+	end)
+	for i = #pool, TOWER_POOL + 1, -1 do
+		pool[i] = nil
+	end
+	local size = math.min(tower.slotsN, #pool)
+	local best, bestFloor, bestSecs = {}, 0, 0
+	local used, team, n = {}, {}, 0
+	local function walk(depth)
+		if depth > size then
+			n = n + 1
+			if n % 4 == 0 then
+				task.wait() -- a sim is up to ~1000 ticks; 120 in one frame is a visible hitch
+			end
+			local ok, fl, secs = pcall(tower.sim, key, team)
+			if ok and (fl > bestFloor or (fl == bestFloor and secs < bestSecs)) then
+				best, bestFloor, bestSecs = table.clone(team), fl, secs
+			end
+			return
+		end
+		for i, f in ipairs(pool) do
+			if not used[i] then
+				used[i], team[depth] = true, f
+				walk(depth + 1)
+				used[i], team[depth] = false, nil
+			end
+		end
+	end
+	walk(1)
+	return best, bestFloor, bestSecs
+end
+
+-- Auto off: the four slots you picked, in order; a sold one is skipped, a twin pick once.
+function tower.pickedTeam(key)
+	local team, seen = {}, {}
+	for _, guid in ipairs(tower.cfg(key).slots) do
+		local f = guid ~= "" and not seen[guid] and (data().PlayerUnits or {})[guid] and tower.fighter(guid)
+		if f then
+			seen[guid] = true
+			table.insert(team, f)
+		end
+	end
+	return team
+end
+
+function tower.plan(key)
+	local team, fl, secs
+	if tower.cfg(key).auto then
+		team, fl, secs = tower.bestTeam(key)
+	else
+		team = tower.pickedTeam(key)
+		if #team > 0 then
+			local ok
+			ok, fl, secs = pcall(tower.sim, key, team)
+			if not ok then
+				fl, secs = 0, 0
+			end
+		end
+	end
+	local p = { team = team or {}, floor = fl or 0, secs = secs or 0 }
+	tower.plans[key] = p
+	return p
+end
+function tower.planText(key)
+	local open, why = tower.open(key)
+	local head = ("best floor %d"):format(tower.best(key))
+	if not open then
+		return head .. "   locked: " .. tostring(why)
+	end
+	local p = tower.plans[key]
+	if not p then
+		return head .. "   not simulated yet"
+	end
+	if #p.team == 0 then
+		return head .. (tower.cfg(key).auto and "   no players to send" or "   no slots picked")
+	end
+	local names = {}
+	for _, f in ipairs(p.team) do
+		table.insert(names, tower.who(f.Guid))
+	end
+	return ("%s   %s: %s\ndies on floor %d, ~%dm a run"):format(head, tower.cfg(key).auto and "best order" or "your order", table.concat(names, " > "), p.floor, math.floor(p.secs / 60 + 0.5))
+end
+
+function tower.onTick(_, info)
+	tower.lastTick = os.clock()
+	if type(info) == "table" then
+		tower.floor = tonumber(info.Floor) or tower.floor
+		tower.name = info.TowerName or tower.name
+	end
+end
+function tower.onEnded(name, gotRewards, cashWon)
+	tower.lastTick = -math.huge -- run over: the next lap starts another
+	tower.name = type(name) == "string" and name or tower.name
+	stats.towerEnds = stats.towerEnds + 1
+	tower.last = ("%s ended on floor %d%s%s"):format(tower.title(tower.name), tower.floor, gotRewards and "" or " -- no rewards", (tonumber(cashWon) or 0) > 0 and (", " .. money(cashWon)) or "")
+	log("tower: " .. tower.last)
+end
+-- Always listening, loop or not: a run you started by hand is still one run.
+for name, fn in pairs({ InfinityTowerBattleTick = tower.onTick, InfinityTowerBattleEnded = tower.onEnded }) do
+	local r = R[name]
+	if r then
+		table.insert(listeners, r.OnClientEvent:Connect(fn))
+	end
+end
+
+function tower.start(key, p)
+	local guids = {}
+	for _, f in ipairs(p.team) do
+		table.insert(guids, f.Guid)
+	end
+	local got
+	-- Not proven range-free: the game only opens the picker inside the tower's hitbox, so act()
+	-- tries from here and hops to the tower on a miss.
+	local hitbox = CollectionService:GetTagged("TowerHitbox")[1]
+	local ok = act("tower start", posOf(hitbox), function()
+		task.spawn(function()
+			local r = callTimed(R.StartInfinityTowerBattle, CALL_TIMEOUT, key, guids)
+			if r and r[1] then
+				got = r[1]
+			end
+		end)
+	end, function()
+		return got ~= nil or os.clock() - tower.lastTick < 1
+	end, 3)
+	if ok then
+		tower.strikes[key] = 0
+		tower.lastTick, tower.name, tower.floor, tower.team = os.clock(), key, 1, guids
+		stats.towerRuns = stats.towerRuns + 1
+		local names = {}
+		for _, g in ipairs(guids) do
+			table.insert(names, tower.who(g))
+		end
+		log(("tower: %s started -- %s, sim says floor %d (~%dm)"):format(tower.title(key), table.concat(names, " > "), p.floor, math.floor(p.secs / 60 + 0.5)))
+	elseif ok == false then
+		tower.strikes[key] = (tower.strikes[key] or 0) + 1
+		if tower.strikes[key] >= TOWER_STRIKES then
+			tower.strikes[key] = 0
+			tower.parkUntil[key] = os.clock() + TOWER_PARK
+			local _, why = tower.open(key)
+			warn(("[bluelock] tower: %s refused %d starts -- skipped %ds. unlock: %s; game said: %s"):format(tower.title(key), TOWER_STRIKES, TOWER_PARK, tostring(why or "open"), os.clock() - toast.at < 10 and toast.text or "nothing"))
+		end
+	end
+	return ok
+end
+
+tower.loop = looper("tower", function(alive)
+	if not (TowerService and TowerBattle and #tower.list > 0 and R.StartInfinityTowerBattle) then
+		say("tower: this build has no Infinity Tower")
+		tower.loop.set(false)
+		tower.kill = true
+		return
+	end
+	if os.clock() - tower.lastTick < TOWER_IDLE then
+		return -- a run is ticking
+	end
+	-- A quiet run (between ticks under lag, or started by hand) must not get a second start.
+	step("tower state")
+	local st = callTimed(R.GetInfinityTowerBattleState)
+	if st and type(st[1]) == "table" then
+		local s = st[1]
+		tower.lastTick, tower.name, tower.floor = os.clock(), s.TowerName or tower.name, tonumber(s.Floor) or tower.floor
+		tower.team = {}
+		for _, u in ipairs(type(s.Units) == "table" and s.Units or {}) do
+			table.insert(tower.team, u.Guid)
+		end
+		return
+	end
+	-- Highest enabled tower you can climb. A team that can't clear floor 1 earns nothing there.
+	local skipped = {}
+	for i = #tower.list, 1, -1 do
+		local key = tower.list[i]
+		if not alive() then
+			return
+		end
+		if tower.cfg(key).enabled and tower.open(key) and os.clock() >= (tower.parkUntil[key] or 0) then
+			step("tower plan " .. key)
+			local p = tower.plan(key)
+			tower.texts[key] = tower.planText(key)
+			if #p.team == 0 then
+				table.insert(skipped, tower.title(key) .. ": no team")
+			elseif p.floor <= 1 then
+				table.insert(skipped, tower.title(key) .. ": can't clear floor 1")
+			else
+				step("tower start " .. key)
+				tower.start(key, p)
+				return
+			end
+		end
+	end
+	say("tower: nothing to run" .. (#skipped > 0 and (" -- " .. table.concat(skipped, "; ")) or " -- no enabled tower is unlocked"))
+end, function()
+	return TOWER_GAP
+end)
+
+-- traits ---------------------------------------------------------------------
+-- RerollPlayerUnitTrait(guid, currentTrait) is TraitGuiClient's own call: one Trait token a
+-- roll, no cash route, TraitService cooldown 0.75s. The same shape as grading -- the current
+-- trait rides along as the stale-roll guard -- so it runs grading's probed pace: fire, wait
+-- for the reply, the next roll counted from the fire. Every trait multiplies cash, damage
+-- or health (the tower reads the last two). The game's own auto-roll stops on the
+-- ConfirmBeforeReroll traits, Assassin up; those are the default targets here. Tokens drop
+-- from tower floors (1.5-2% a floor), so running out waits instead of switching off.
+-- One table, like tower: the main chunk is at Luau's 200-local limit.
+local trait = { want = {}, picks = {}, misses = 0, kill = false }
+trait.labels, trait.keyOf, trait.labelFor = {}, {}, {}
+if Traits and TraitService then
+	local list = {}
+	for key, t in pairs(Traits) do
+		if type(t) == "table" and t.LayoutOrder then
+			table.insert(list, key)
+		end
+	end
+	table.sort(list, function(a, b)
+		return Traits[a].LayoutOrder < Traits[b].LayoutOrder
+	end)
+	for _, key in ipairs(list) do
+		local ok, pct = pcall(TraitService.GetPercent, key)
+		local label = ("%s (%s)"):format(Traits[key].DisplayName or key, ok and pct or "?")
+		table.insert(trait.labels, label)
+		trait.keyOf[label], trait.labelFor[key] = key, label
+	end
+end
+trait.WHICH = { "Best first (all slots)", "Tower team", "Picked only" }
+trait.AFTER = { "Next unit", "Stop" }
+saved.trait = type(saved.trait) == "table" and saved.trait or {}
+trait.which = table.find(trait.WHICH, saved.trait.which) and saved.trait.which or trait.WHICH[1]
+trait.after = table.find(trait.AFTER, saved.trait.after) and saved.trait.after or trait.AFTER[1]
+if type(saved.trait.targets) == "table" then
+	for _, key in ipairs(saved.trait.targets) do
+		if trait.labelFor[key] then
+			trait.want[key] = true
+		end
+	end
+else
+	for key in pairs(trait.labelFor) do
+		trait.want[key] = Traits[key].ConfirmBeforeReroll == true or nil
+	end
+end
+for _, guid in ipairs(type(saved.trait.picks) == "table" and saved.trait.picks or {}) do
+	trait.picks[guid] = true
+end
+function trait.save()
+	local targets, picks = {}, {}
+	for key in pairs(trait.want) do
+		table.insert(targets, key)
+	end
+	for guid in pairs(trait.picks) do
+		table.insert(picks, guid)
+	end
+	saved.trait = { targets = targets, picks = picks, which = trait.which, after = trait.after }
+	save()
+end
+
+function trait.tokens()
+	return ((data().Tokens or {})[TraitService and TraitService.TRAIT_TOKEN_NAME or "Trait"]) or 0
+end
+-- Units still short of a target trait, in the order they'll be rolled.
+function trait.targets()
+	local units, out = data().PlayerUnits or {}, {}
+	local function add(guid, v)
+		local u = units[guid]
+		if u and not trait.want[u.Trait] then
+			table.insert(out, { guid = guid, u = u, v = v })
+		end
+	end
+	if trait.which == "Tower team" then
+		for i, guid in ipairs(tower.team) do
+			add(guid, -i) -- slot 1 first: it fights the most floors
+		end
+	elseif trait.which == "Picked only" then
+		for guid in pairs(trait.picks) do
+			local u = units[guid]
+			add(guid, u and potential(u.PlayerUnitName, u.Variant, u.Level, nil) or 0)
+		end
+	else
+		for _, e in ipairs(slotted()) do
+			add(e.guid, potential(e.u.PlayerUnitName, e.u.Variant, e.u.Level, nil))
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.v ~= b.v then
+			return a.v > b.v
+		end
+		return a.guid < b.guid
+	end)
+	return out
+end
+-- Moves on every roll: the trait, the token count, or a pity counter.
+function trait.sig(guid)
+	local u = (data().PlayerUnits or {})[guid]
+	if not u then
+		return "gone"
+	end
+	local s = { tostring(u.Trait), tostring(trait.tokens()) }
+	for _, t in ipairs(TraitService.PityTraits or {}) do
+		table.insert(s, tostring((u.TraitPity or {})[t]))
+	end
+	return table.concat(s, "/")
+end
+function trait.pity(u)
+	local out = {}
+	for _, t in ipairs(TraitService.PityTraits or {}) do
+		table.insert(out, ("%s %d/%d"):format(Traits[t].DisplayName or t, (u.TraitPity or {})[t] or 0, TraitService.GetPityThreshold(t) or 0))
+	end
+	return table.concat(out, "  ")
+end
+function trait.text(key)
+	return key and (Traits[key] and Traits[key].DisplayName or tostring(key)) or "none"
+end
+
+trait.rolling = { guid = nil, n = 0 }
+trait.firedAt = nil -- nil = the last pass didn't roll
+trait.loop = looper("traits", function()
+	trait.firedAt = nil
+	if not (TraitService and Traits and R.RerollPlayerUnitTrait) then
+		say("traits: this build has no TraitService / RerollPlayerUnitTrait")
+		trait.loop.set(false)
+		trait.kill = true
+		return
+	end
+	if not next(trait.want) then
+		say("traits: tick at least one target trait")
+		return
+	end
+	local e = trait.targets()[1]
+	if not e then
+		say(trait.which == "Tower team" and #tower.team == 0 and "traits: no tower team yet -- start a run first" or "traits: every unit in '" .. trait.which .. "' has a target trait")
+		return
+	end
+	if trait.tokens() < 1 then
+		say("traits: out of Trait tokens -- waiting (tower floors drop them)")
+		return
+	end
+	local guid, u = e.guid, e.u
+	if trait.rolling.guid ~= guid then
+		trait.rolling.guid, trait.rolling.n = guid, 0
+	end
+	local before = trait.sig(guid)
+	step("trait " .. tostring(u.PlayerUnitName))
+	trait.firedAt = os.clock()
+	pcall(function()
+		R.RerollPlayerUnitTrait:FireServer(guid, u.Trait)
+	end)
+	local ok = waitFor(function()
+		return trait.sig(guid) ~= before
+	end, GRADE_CONFIRM)
+	if ok then
+		trait.misses = 0
+		trait.rolling.n = trait.rolling.n + 1
+		stats.traits = stats.traits + 1
+		local now = (data().PlayerUnits or {})[guid] or u
+		if trait.want[now.Trait] then
+			log(("trait: %s %s rolled %s in %d rolls"):format(tostring(u.Variant), tostring(u.PlayerUnitName), trait.text(now.Trait), trait.rolling.n))
+			if trait.after == "Stop" then
+				say(("traits: %s landed on %s -- stopped"):format(tostring(u.PlayerUnitName), trait.text(now.Trait)))
+				trait.loop.set(false)
+				trait.kill = true
+				return
+			end
+		end
+		say(("trait %s: %s, %d rolls, %d tokens left   %s"):format(tostring(u.PlayerUnitName), trait.text(now.Trait), trait.rolling.n, trait.tokens(), trait.pity(now)))
+	else
+		trait.misses = trait.misses + 1
+		if trait.misses >= GRADE_STRIKES then
+			warn(("[bluelock] RerollPlayerUnitTrait: %d unconfirmed in a row -- traits switched off"):format(trait.misses))
+			say("traits: switched off -- rolls weren't landing (F9)")
+			trait.loop.set(false)
+			trait.kill = true
+		end
+	end
+end, function()
+	if not trait.firedAt then
+		return GRADE_IDLE
+	end
+	local ok, cd = pcall(TraitService.GetRerollCooldown, player)
+	return math.max(0, trait.firedAt + (ok and tonumber(cd) or 0.75) + GRADE_SLACK - os.clock())
 end)
 
 -- spawns ---------------------------------------------------------------------
@@ -1975,6 +2520,75 @@ local function unitsSig(labels, key)
 	return table.concat(s, "\0")
 end
 
+-- The Tower slots and the Traits units list: every player you own, kept in step from
+-- Heartbeat (syncAll). Tower sections are added as towers unlock.
+-- One table (Luau's 200-local limit): the rows the Heartbeat drain writes, and the lists.
+local ui = { slotDrops = {}, shown = {}, planPara = {}, NONE = "(empty)", allAt = 0 }
+ui.allLabels, ui.allKey = unitLabels(allUnits())
+ui.allSig = unitsSig(ui.allLabels, ui.allKey)
+function ui.labelOf(guid)
+	for l, g in pairs(ui.allKey) do
+		if g == guid then
+			return l
+		end
+	end
+end
+function ui.addTower(key)
+	ui.shown[key] = true
+	local c = tower.cfg(key)
+	local sec = ui.towerTab:Section({
+		Title = ("%s (%s)"):format(tower.title(key), tostring(Floors[key].SubHeader or "")),
+		Icon = "solar:cup-star-bold",
+		Box = true,
+		BoxBorder = true,
+		Opened = false,
+	})
+	sec:Toggle({
+		Title = "Enabled",
+		Desc = "Auto tower runs the highest enabled tower your team can climb",
+		Value = c.enabled,
+		Callback = function(on)
+			c.enabled = on
+			save()
+		end,
+	})
+	sec:Toggle({
+		Title = "Auto equip best",
+		Desc = ("Your %d strongest, simulated in every order with the game's own battle maths -- the order that climbs highest goes. Off: the slots below, top to bottom"):format(TOWER_POOL),
+		Value = c.auto,
+		Callback = function(on)
+			c.auto = on
+			save()
+		end,
+	})
+	for i = 1, tower.slotsN do
+		local d = sec:Dropdown({
+			Title = "Slot " .. i .. (i == 1 and " (fights first)" or ""),
+			Values = withNone(ui.NONE, ui.allLabels),
+			Value = ui.labelOf(c.slots[i]) or ui.NONE,
+			Callback = function(v)
+				local g = pick(v, ui.allKey, ui.NONE)
+				if g ~= nil then
+					c.slots[i] = g or ""
+					save()
+				end
+			end,
+		})
+		table.insert(ui.slotDrops, { drop = d, key = key, i = i })
+	end
+	ui.planPara[key] = sec:Paragraph({ Title = "Plan", Desc = tower.planText(key) })
+	sec:Button({
+		Title = "Simulate",
+		Desc = "What this tower's team reaches right now",
+		Callback = function()
+			task.spawn(function()
+				local ok = pcall(tower.plan, key)
+				tower.texts[key] = ok and tower.planText(key) or "simulation failed"
+			end)
+		end,
+	})
+end
+
 do
 	local Main = Window:Tab({ Title = "Farm", Icon = "solar:home-2-bold" })
 
@@ -2275,6 +2889,113 @@ do
 		end,
 	})
 
+	ui.towerTab = Window:Tab({ Title = "Tower", Icon = "solar:cup-star-bold" })
+	local TwSec = ui.towerTab:Section({ Title = "Infinity Tower", Icon = "solar:cup-star-bold", Box = true, BoxBorder = true, Opened = true })
+	ui.towerToggle = TwSec:Toggle({
+		Title = "Auto tower",
+		Desc = "Keeps one run going -- the highest enabled tower your team clears floor 1 of -- and starts the next as each ends. The server fights it while you farm; one run at a time is the game's rule",
+		Value = false,
+		Callback = function(on)
+			tower.kill = false
+			table.clear(tower.parkUntil)
+			table.clear(tower.strikes)
+			tower.loop.set(on)
+		end,
+	})
+	ui.towerPara = TwSec:Paragraph({ Title = "Run", Desc = "reading..." })
+	for _, key in ipairs(tower.list) do
+		if tower.open(key) then
+			ui.addTower(key)
+		end
+	end
+
+	local Tr = Window:Tab({ Title = "Traits", Icon = "solar:magic-stick-3-bold" })
+	local TrSec = Tr:Section({ Title = "Trait reroll", Icon = "solar:magic-stick-3-bold", Box = true, BoxBorder = true, Opened = true })
+	ui.traitToggle = TrSec:Toggle({
+		Title = "Auto trait",
+		Desc = "Rolls one unit until it lands a target trait, then the next. A roll REPLACES the trait; a target trait is never rolled. 1 Trait token a roll",
+		Value = false,
+		Callback = function(on)
+			trait.misses, trait.kill = 0, false
+			trait.loop.set(on)
+		end,
+	})
+	local wantLabels = {}
+	for _, l in ipairs(trait.labels) do
+		if trait.want[trait.keyOf[l]] then
+			table.insert(wantLabels, l)
+		end
+	end
+	TrSec:Dropdown({
+		Title = "Target traits",
+		Desc = "Any one of these ends the rolling on that unit. Default: the ones the game asks before rerolling",
+		Values = trait.labels,
+		Multi = true,
+		AllowNone = true,
+		Value = wantLabels,
+		Callback = function(v)
+			table.clear(trait.want)
+			for name in pairs(ticked(v)) do
+				if trait.keyOf[name] then
+					trait.want[trait.keyOf[name]] = true
+				end
+			end
+			trait.save()
+		end,
+	})
+	TrSec:Dropdown({
+		Title = "Roll which",
+		Desc = "Best first: slotted players by $/ball. Tower team: the four in your current or last run, slot 1 first",
+		Values = trait.WHICH,
+		Value = trait.which,
+		Callback = function(v)
+			local k = pick(v, ids(trait.WHICH))
+			if k then
+				trait.which = k
+				trait.save()
+			end
+		end,
+	})
+	TrSec:Dropdown({
+		Title = "When a target lands",
+		Desc = "Next unit keeps going down the list; Stop switches Auto trait off",
+		Values = trait.AFTER,
+		Value = trait.after,
+		Callback = function(v)
+			local k = pick(v, ids(trait.AFTER))
+			if k then
+				trait.after = k
+				trait.save()
+			end
+		end,
+	})
+	local keep = {}
+	for guid in pairs(trait.picks) do
+		local l = ui.labelOf(guid)
+		if l then
+			table.insert(keep, l)
+		end
+	end
+	ui.traitUnits = TrSec:Dropdown({
+		Title = "Units (Picked only)",
+		Desc = "Every player you own",
+		Values = ui.allLabels,
+		Multi = true,
+		AllowNone = true,
+		Value = keep,
+		Callback = function(v)
+			-- Only labels on the current list: a Refresh re-fires this with the old ticks.
+			table.clear(trait.picks)
+			for name in pairs(ticked(v)) do
+				if ui.allKey[name] then
+					trait.picks[ui.allKey[name]] = true
+				end
+			end
+			trait.save()
+		end,
+	})
+	ui.traitPara = TrSec:Paragraph({ Title = "Tokens & pity", Desc = "reading..." })
+
 	local Up = Window:Tab({ Title = "Upgrades", Icon = "solar:bolt-circle-bold" })
 	local UpSec = Up:Section({ Title = "Permanent upgrades", Icon = "solar:graph-up-bold", Box = true, BoxBorder = true, Opened = true })
 	UpSec:Toggle({
@@ -2372,6 +3093,57 @@ for _, title in ipairs({ "Plot", "Session" }) do
 	dashRow[title] = statsSec:Paragraph({ Title = title, Desc = "reading..." })
 end
 dashRow.Belt = beltPara
+dashRow.Tower = ui.towerPara
+dashRow.Traits = ui.traitPara
+
+-- New towers get their section; the every-player lists follow sells and pulls. Slot picks
+-- are held by guid, so a rebuilt list re-selects the same player under its new label.
+function ui.syncAll()
+	for _, key in ipairs(tower.list) do
+		if not ui.shown[key] and tower.open(key) then
+			ui.addTower(key)
+			log(("tower: %s unlocked -- added to the Tower tab"):format(tower.title(key)))
+		end
+	end
+	local labels, key = unitLabels(allUnits())
+	local sig = unitsSig(labels, key)
+	if sig == ui.allSig then
+		return
+	end
+	ui.allSig, ui.allKey, ui.allLabels = sig, key, labels
+	for _, s in ipairs(ui.slotDrops) do
+		local c = tower.cfg(s.key)
+		local g = c.slots[s.i]
+		local l = g ~= "" and ui.labelOf(g) or nil
+		if g ~= "" and not l then
+			g = ""
+			log(("tower: %s slot %d's player is gone -- slot emptied"):format(tower.title(s.key), s.i))
+		end
+		pcall(function()
+			s.drop:Refresh(withNone(ui.NONE, labels))
+			s.drop:Select(l or ui.NONE) -- writes the pick, fires nothing
+		end)
+		c.slots[s.i] = g -- the Refresh re-fire may have run already
+	end
+	save()
+	if ui.traitUnits then
+		local picks, keep = table.clone(trait.picks), {}
+		for guid in pairs(picks) do
+			local l = ui.labelOf(guid)
+			if l then
+				table.insert(keep, l)
+			end
+		end
+		pcall(function()
+			ui.traitUnits:Refresh(labels)
+			ui.traitUnits:Select(keep)
+		end)
+		table.clear(trait.picks)
+		for guid in pairs(picks) do
+			trait.picks[guid] = true
+		end
+	end
+end
 
 -- The Units list follows your slots. Rebuilt only when the line-up changes (WindUI keeps
 -- every rebuilt row's connections until Destroy), and a pick that left its slot is dropped
@@ -2416,6 +3188,27 @@ local drain = RunService.Heartbeat:Connect(function()
 		unitsAt = os.clock()
 		pcall(syncUnits)
 	end
+	if tower.kill then
+		tower.kill = false
+		pcall(ui.towerToggle.Set, ui.towerToggle, false)
+	end
+	if trait.kill then
+		trait.kill = false
+		pcall(ui.traitToggle.Set, ui.traitToggle, false)
+	end
+	if ui.towerTab and os.clock() - ui.allAt > ALL_UNITS_GAP then
+		ui.allAt = os.clock()
+		local ok, err = pcall(ui.syncAll)
+		if not ok then
+			warn("[bluelock] tower/trait lists: " .. tostring(err))
+		end
+	end
+	for key, text in pairs(tower.texts) do
+		tower.texts[key] = nil
+		if ui.planPara[key] then
+			pcall(ui.planPara[key].SetDesc, ui.planPara[key], text)
+		end
+	end
 	for title, text in pairs(dashText) do
 		dashText[title] = nil
 		pcall(dashRow[title].SetDesc, dashRow[title], text)
@@ -2457,6 +3250,35 @@ local builders = {
 		table.insert(lines, ("grade tokens %d"):format(gradeTokens()))
 		return table.concat(lines, "\n")
 	end,
+	Tower = function()
+		local lines = {}
+		if os.clock() - tower.lastTick < TOWER_IDLE then
+			table.insert(lines, ("running %s, floor %d (best %d)"):format(tower.title(tower.name), tower.floor, tower.best(tower.name)))
+		else
+			table.insert(lines, tower.loop.on and "between runs" or "no run seen -- Auto tower is off")
+		end
+		if #tower.team > 0 then
+			local names = {}
+			for _, g in ipairs(tower.team) do
+				table.insert(names, tower.who(g))
+			end
+			table.insert(lines, "team: " .. table.concat(names, " > "))
+		end
+		if tower.last then
+			table.insert(lines, "last: " .. tower.last)
+		end
+		return table.concat(lines, "\n")
+	end,
+	Traits = function()
+		local lines = { ("Trait tokens %d"):format(trait.tokens()) }
+		local e = trait.targets()[1]
+		if e then
+			table.insert(lines, ("next: %s (now %s)   %s"):format(tostring(e.u.PlayerUnitName), trait.text(e.u.Trait), trait.pity(e.u)))
+		else
+			table.insert(lines, "nothing to roll in '" .. trait.which .. "'")
+		end
+		return table.concat(lines, "\n")
+	end,
 	Session = function()
 		local on, hops = {}, {}
 		for _, l in ipairs(loops) do
@@ -2479,7 +3301,7 @@ local builders = {
 				stats.polished,
 				stats.upgrades
 			),
-			("grade rolls %d"):format(stats.grades),
+			("grade rolls %d   trait rolls %d   tower runs %d started, %d ended"):format(stats.grades, stats.traits, stats.towerRuns, stats.towerEnds),
 			("spawns %d (lost %d races)   hop first: %s"):format(stats.spawns, stats.lost, #hops > 0 and table.concat(hops, ", ") or "none"),
 			("running: %s   at: %s"):format(#on > 0 and table.concat(on, ", ") or "nothing", mark),
 		}, "\n")
@@ -2516,7 +3338,7 @@ local function stopAll()
 	dogGen = dogGen + 1
 	dashGen = dashGen + 1
 	afk.set(false) -- a stopped script must not rejoin you
-	for _, c in ipairs(toastConns) do
+	for _, c in ipairs(listeners) do
 		c:Disconnect()
 	end
 	pcall(drain.Disconnect, drain)
