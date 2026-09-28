@@ -74,7 +74,8 @@ local INDEX_LEVEL_GAP = 60
 local TRAIN_GAP = 3
 local PAD_SETTLE = 0.4 -- after a hop onto a pad, for the server to see you there
 local CONFIRM = 2.5 -- s to wait for the server's backpack/eco push after an action
-local SNIPE_RETRIES = 4
+local SNIPE_WINDOW = 8 -- s of kill+pick retries per Super Loot; raise if it lands late, lower if it blocks the farm
+local SNIPE_GAP = 1
 
 local WATCHDOG = 30
 local AFK_BEAT = 60 -- AFKClient fires AFKHandle after 1100s without input
@@ -204,6 +205,7 @@ local R = {
 	stageFinished = remote("Stage", "StageFinishedRF"),
 	getOre = remote("Stage", "GetOreRF"),
 	claimAll = remote("Stage", "ClaimedAllOreRE"),
+	enchStone = remote("Stage", "GetEnhantStoneRE"),
 	forge = remote("Forge", "ForgeRF"),
 	equip = remote("Backpack", "TryEquipItemRE"),
 	sell = remote("Backpack", "TrySellItemRE"),
@@ -516,11 +518,21 @@ local function farmOnce()
 	farm.clears += 1
 	farm.lastStage = n
 
+	-- A drop is an ore id string OR a {ID, Type, Number} table (enchant stones and the like).
+	-- OreUtils.CreateOres claims the tables with GetEnhantStoneRE, never GetOreRF: fed to GetOreRF
+	-- they bank as an "Ore" whose ID isn't in Config.Ore, and ForgeGUI.OpenRightOreList dies on
+	-- it ("Argument 1 missing or nil") -- which is why the Forge list shows only some of your ores.
 	local list = {}
 	for uuid, id in pairs(drops) do
-		local rank = C.ore and C.ore.GetRarityNumber(id) or 1
-		if rank >= farm.minRank then
-			table.insert(list, { uuid = uuid, id = id, price = C.ore and C.ore.GetPrice(id) or 0 })
+		if type(id) == "table" then
+			fire(R.enchStone, uuid)
+		elseif C.ore and not C.ore.CheckID(id) then
+			warn("[loot_forge] " .. stage .. " dropped an unknown ore id " .. tostring(id) .. " -- skipped")
+		else
+			local rank = C.ore and C.ore.GetRarityNumber(id) or 1
+			if rank >= farm.minRank then
+				table.insert(list, { uuid = uuid, id = id, price = C.ore and C.ore.GetPrice(id) or 0 })
+			end
 		end
 	end
 	table.sort(list, function(a, b)
@@ -563,21 +575,28 @@ table.insert(conns, R.superLoot.OnClientEvent:Connect(function(rarity, uuid, ore
 	end
 end))
 
+-- ponytail: unprobed. A real kill takes HP hits (6/10/15), so the server may refuse a kill that
+-- lands the instant it spawns; re-firing the kill across SNIPE_WINDOW covers a min-alive check.
+-- If every one still misses, the gate is something else (being in that stage) -- probe it.
 local function snipeOnce()
 	local s = table.remove(snipe.queue, 1)
 	step("snipe " .. s.rarity)
-	fire(R.killSuperLoot, s.uuid)
-	for _ = 1, SNIPE_RETRIES do
-		task.wait(0.3)
+	claim() -- GetOreRF refuses on a full bag, which reads exactly like a refused kill
+	local firedAt = os.clock()
+	repeat
+		fire(R.killSuperLoot, s.uuid)
+		task.wait(SNIPE_GAP)
 		if pick(s.uuid) then
 			claim()
 			snipe.got += 1
-			log(("sniped %s Super Loot (%s)"):format(s.rarity, tostring(s.id)))
+			log(("sniped %s Super Loot (%s) after %.1fs"):format(s.rarity, tostring(s.id), os.clock() - firedAt))
 			return
 		end
-	end
+	until os.clock() - firedAt > SNIPE_WINDOW
 	snipe.missed += 1
-	log(("%s Super Loot refused%s"):format(s.rarity, os.clock() - lastMsgAt < 3 and (" -- server: " .. lastMsg) or ""))
+	-- the "X has spawned in stage N" broadcast lands right next to the kill; it isn't a reason
+	local why = lastMsgAt > firedAt and not lastMsg:lower():find("spaw") and (" -- server: " .. lastMsg) or ""
+	log(("%s Super Loot refused for %ds%s"):format(s.rarity, SNIPE_WINDOW, why))
 end
 
 -- tower ----------------------------------------------------------------------
@@ -699,11 +718,26 @@ local forge = {
 	plan = { Weapon = "-", Hat = "-" },
 }
 
+-- An "Ore" the config doesn't know: the item that breaks the game's own Forge list. Named once,
+-- never forged or sold (nothing prices it).
+local badOre = {}
+local function knownOre(uuid, it)
+	if not C.ore or C.ore.CheckID(it.ID) then
+		return true
+	end
+	if not badOre[uuid] then
+		badOre[uuid] = true
+		warn(("[loot_forge] backpack ore %s has id %s (x%s), not in Config.Ore -- the Forge GUI stops listing ores at it"):format(
+			tostring(uuid), tostring(it.ID), tostring(it.Number)))
+	end
+	return false
+end
+
 -- Your ore stacks, highest power first.
 local function oreStacks(have)
 	local list = {}
 	for uuid, it in pairs(have or {}) do
-		if it.Type == "Ore" and (it.Number or 0) > 0 then
+		if it.Type == "Ore" and (it.Number or 0) > 0 and knownOre(uuid, it) then
 			table.insert(list, {
 				uuid = uuid,
 				id = it.ID,
@@ -1591,6 +1625,11 @@ local builders = {
 	end,
 	Forge = function()
 		local bp = S("Backpack") or {}
+		for uuid, it in pairs(bp.have or {}) do
+			if it.Type == "Ore" then
+				knownOre(uuid, it) -- names a Forge-breaking ore even with Auto Forge off
+			end
+		end
 		local eq = bp.equiped or {}
 		local function name(slot)
 			local it = eq[slot] and (bp.have or {})[eq[slot]]
