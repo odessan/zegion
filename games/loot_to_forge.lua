@@ -727,7 +727,7 @@ local function knownOre(uuid, it)
 	end
 	if not badOre[uuid] then
 		badOre[uuid] = true
-		warn(("[loot_forge] backpack ore %s has id %s (x%s), not in Config.Ore -- the Forge GUI stops listing ores at it"):format(
+		warn(("[loot_forge] backpack ore %s has id %s (x%s), not in Config.Ore -- unsellable, hidden from the Forge list"):format(
 			tostring(uuid), tostring(it.ID), tostring(it.Number)))
 	end
 	return false
@@ -914,6 +914,52 @@ local function forgeOnce()
 		end
 	end
 end
+
+-- forge gui ------------------------------------------------------------------
+-- The table-id "ores" an older farm banked ({ID = {ID = "EnhantStone_1", Type = "Material", ...},
+-- Type = "Ore"}) can't be sold -- TrySellItemRE ignores them (probed) -- and they kill
+-- ForgeGUI.OpenRightOreList. So the game's list gets a wrapper that drops them from the client's
+-- own backpack mirror first. Display only: the server still holds them.
+local guiPatch = {}
+task.spawn(function()
+	if not getgc then
+		warn("[loot_forge] no getgc on this executor -- the Forge list stays broken by junk ores")
+		return
+	end
+	local guis, backpacks = {}, {}
+	for _, v in ipairs(getgc(true)) do
+		if type(v) == "table" then
+			if type(rawget(v, "OpenRightOreList")) == "function" and type(rawget(v, "PutOre")) == "function" then
+				table.insert(guis, v)
+			elseif type(rawget(v, "GetData")) == "function" and type(rawget(v, "TrySellItem")) == "function" then
+				table.insert(backpacks, v)
+			end
+		end
+	end
+	for _, gui in ipairs(guis) do
+		local orig = gui.OpenRightOreList
+		gui.OpenRightOreList = function(...)
+			for _, b in ipairs(backpacks) do
+				local ok, data = pcall(b.GetData)
+				if ok and type(data) == "table" and type(data.have) == "table" then
+					for uuid, it in pairs(data.have) do
+						if type(it) == "table" and it.Type == "Ore" and type(it.ID) ~= "string" then
+							data.have[uuid] = nil
+						end
+					end
+				end
+			end
+			return orig(...)
+		end
+		table.insert(guiPatch, { gui = gui, orig = orig })
+	end
+	local line = ("forge list patched against junk ores (%d gui, %d backpack)"):format(#guis, #backpacks)
+	if #guis == 0 or #backpacks == 0 then
+		warn("[loot_forge] " .. line .. " -- didn't find the game's tables, the Forge list stays broken")
+	else
+		log(line)
+	end
+end)
 
 -- equip ----------------------------------------------------------------------
 local equipBad = {} -- uuid -> true when the server refused to equip it (UsePower, say)
@@ -1693,6 +1739,9 @@ local function stopAll()
 	dashGen += 1
 	afk.set(false) -- a stopped script must not rejoin you
 	pcall(drain.Disconnect, drain)
+	for _, p in ipairs(guiPatch) do
+		p.gui.OpenRightOreList = p.orig
+	end
 	for _, c in ipairs(conns) do
 		pcall(c.Disconnect, c)
 	end
