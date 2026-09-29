@@ -22,7 +22,7 @@ local BRAND = "Zegion"
 local KEY = Enum.KeyCode.RightControl -- shade
 local HIDE_KEY = Enum.KeyCode.RightAlt -- hide outright
 local DISPLAY_ORDER = 2147483643 -- Obsidian ships at 998, under the Esc menu's own screens
-local SCALE = 0.8 -- same as panel.lua: about as small as the 11-14px text stays comfortable at 1080p
+local SCALE = 0.9 -- panel.lua uses 0.8, but Obsidian's text is smaller to begin with (11-14px)
 
 -- Everything look-shaped lives here, so a restyle is one block. Graphite: neutral greys
 -- with a near-white accent, so an "on" toggle reads as bright-vs-dark with no hue to
@@ -34,7 +34,7 @@ local PALETTE = {
 	AccentColor = Color3.fromRGB(229, 229, 229), -- toggles, tab underline, hover ring
 	FontColor = Color3.fromRGB(242, 242, 242), -- a hair under pure white
 }
-local FONT = Enum.Font.Jura -- squared, techy sans; Obsidian's default is Code (monospace)
+local FONT = Enum.Font.RobotoMono -- Jura was tried and dropped: thin, squared strokes turn to mush at 11-14px. Obsidian's own default is Code
 local RADIUS = 8 -- Obsidian ships 4; rows, boxes and buttons all follow it
 local ICON = "zap" -- lucide's bolt; stands in for the WindUI bolt-circle mark
 
@@ -218,7 +218,7 @@ end
 -- opts.size  window size, default 440x320
 -- opts.key      shade key, default RightControl
 -- opts.hideKey  hide-outright key, default RightAlt
--- opts.scale    UI scale, default SCALE (0.8)
+-- opts.scale    UI scale, default SCALE (0.9)
 local function panel(opts)
 	local Library, why = loadObsidian()
 	if not Library then
