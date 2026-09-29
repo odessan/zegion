@@ -36,7 +36,7 @@
      Stop: getgenv().deepFishingStop() ]]
 
 -- config ---------------------------------------------------------------------
--- ThrowRod.lua:818 scores the cast off the power byte alone:
+-- ThrowRod.lua:906 scores the cast off the power byte alone:
 --   p >= 0.4 and p < 0.55 -> quality 2 ("Perfect"), 0.1..0.9 -> 1.5, else 1.
 -- Quality is the whole of distance, depth and therefore rarity, so there is exactly one
 -- right number to send and no timing to simulate. Dead centre of the perfect band.
@@ -62,9 +62,10 @@ local GAP_UP = 1.6 -- multiplier after a refusal
 local FLIGHT_SLACK = 6 -- on arc + bounces + dive, waiting for the catch window
 local LAND_SLACK = 8 -- on pull-up + return, waiting for "Landed"
 -- FishHooked("won") is rejected unless os.clock() - fight.started >= required / MaxClickRate
--- (ThrowRod.lua:1152, CatchFight.MaxClickRate = 12). That wait is the floor for a Secret or
+-- (ThrowRod.lua:1750, CatchFight.MaxClickRate = 12). That wait is the floor for a Secret or
 -- Exotic and nothing else in the script can shorten it.
 local FIGHT_PAD = 0.2 -- margin over required/12 to cover the round trip in both directions
+local REEL_MARGIN = 0.5 -- skip ReelBait when less pull-up than this is left: a late reel is Report 6
 
 local SELL_BATCH = 40 -- Sell invokes fired together; Warp packs one identifier's requests into one packet
 local SELL_GAP = 0.25 -- between batches, well inside Warp's 200-per-2s per-identifier limit
@@ -208,10 +209,14 @@ end
 local function claimCap()
 	local d = data()
 	local hooks = 3
+	-- Upgrades are per world now: World 1 levels live in Data.Upgrades, every other world in
+	-- Data.WorldUpgrades[key], each with its own Base. Same three calls FishCaught makes.
 	pcall(function()
+		local up = Config.UpgradesConfig
 		local world = Config.WorldsConfig.ForPlayerData(d)
-		hooks = Config.UpgradesConfig.CapacityValue(d.Upgrades and d.Upgrades.Capacity or 0, world.UpgradeEffect or 1)
-			+ (Modules.Enchant.Add(d, "HookSlots") or 0)
+		local key = up.KeyForData(d)
+		hooks = up.CapacityValue(up.LevelOf(d, "Capacity", key), world.UpgradeEffect or 1, key)
+			+ (Modules.Enchant.Add(d, "HookSlots", d.RodEquipped) or 0)
 	end)
 	local free = hooks
 	pcall(function()
@@ -404,9 +409,11 @@ end
 -- The old shortcut here -- claim on "Started", CancelThrow, re-cast -- now trips reports 2,
 -- 1 and 4 on every single cast. Don't reintroduce it.
 --
--- CancelThrow is no longer free either: the server answers it by locking you out of a
--- re-cast for however much of the flight was left, capped at 5s (that's the "Your line is
--- still coming back" toast). So it is only for genuinely walking away from a cast.
+-- CancelThrow is no longer free either: the server saves the cancelled roll (school, sizes,
+-- mutations, specials, and the old minDuration) and the next cast in the same world
+-- replays it instead of rolling -- it isn't even counted as a cast. Cancel-and-recast can't
+-- reroll a school any more; it only delays the same one. So it is for walking away from a
+-- cast you mean to finish later (a full bag), never for skipping a bad one.
 local function abandon(cancel)
 	if cancel then
 		cancel:Fire(true)
@@ -483,10 +490,9 @@ local function cast()
 	while #picks > cap do
 		table.remove(picks)
 	end
-	if #picks == 0 and #specials == 0 then
-		abandon(cancel)
-		return "nothing worth keeping"
-	end
+	-- A school with nothing worth keeping is still flown out, not cancelled: CancelThrow
+	-- saves the roll and the next cast replays the exact same school, so cancelling a bad
+	-- one is a loop that never ends. Reeling the empty line home is the only way to reroll.
 
 	-- Wait out the flight. There is no way around this any more: FishCaught is rejected
 	-- outright unless the server has already set landedAt, and hooking is rejected unless
@@ -512,17 +518,17 @@ local function cast()
 
 	-- Hook, inside the window. FishCaught only claims indices the server saw hooked, so this
 	-- is no longer optional -- and a "fight" sent for a fish that doesn't need one is its own
-	-- report, so the two kinds are kept strictly apart.
+	-- report, so the two kinds are kept strictly apart. Plain hooks go first: they're instant,
+	-- and the fights below hold the window open for as long as they run.
 	step("cast/hook")
-	local hooked, longest = {}, 0
+	local hooked, fights = {}, {}
 	for _, pick in ipairs(picks) do
 		if pick.fight then
-			fishHooked:Fire(true, pick.index, "fight", nil, true)
-			longest = math.max(longest, pick.fight)
+			table.insert(fights, pick)
 		else
 			fishHooked:Fire(true, pick.index)
+			table.insert(hooked, pick.index)
 		end
-		table.insert(hooked, pick.index)
 	end
 	-- Specials (scrolls, chests, junk) sit past the end of the school and cost no hook slot,
 	-- but they still have to be hooked inside the window like everything else.
@@ -532,21 +538,30 @@ local function cast()
 		table.insert(hooked, idx)
 	end
 
-	if longest > 0 then
-		-- FishHooked("won") is rejected unless required/MaxClickRate seconds have passed
-		-- since the "fight". Starting every fight in one frame runs their clocks together.
-		step("cast/fight")
-		task.wait(longest / CatchFight.MaxClickRate + FIGHT_PAD)
-		for _, pick in ipairs(picks) do
-			if pick.fight then
-				fishHooked:Fire(true, pick.index, "won", pick.fight)
-			end
-		end
-	elseif reel and wire.closeAt <= firedAt then
-		-- The one accelerator left, and only because it's what the real client sends when
-		-- you press the button: it breaks the server's pull-up wait early. Legal only while
-		-- the window is open, and never during a fight -- the reel would end the window
-		-- before the fight could be won.
+	-- One fight at a time. The server now refuses a "fight" while another is still open
+	-- (not won, not lost, under 65s) and flags it FightParallel -- the refused fish is never
+	-- won, so claiming it is Report 4 on top. "won" is rejected unless required/MaxClickRate
+	-- seconds passed since that fish's "fight". Both go down one reliable channel, so the
+	-- next "fight" lands after the previous "won" and the server has already closed it.
+	local fightSpent = 0
+	for _, pick in ipairs(fights) do
+		step("cast/fight " .. pick.name)
+		local t0 = os.clock()
+		fishHooked:Fire(true, pick.index, "fight", nil, true)
+		task.wait(pick.fight / CatchFight.MaxClickRate + FIGHT_PAD)
+		fishHooked:Fire(true, pick.index, "won", pick.fight)
+		table.insert(hooked, pick.index)
+		fightSpent = fightSpent + (os.clock() - t0)
+	end
+
+	-- The one accelerator left, and only because it's what the real client sends when you
+	-- press the button: it breaks the server's pull-up wait early. Legal only while the
+	-- window is open (else Report 6). A fight pauses the pull-up clock, so what's left of it
+	-- is pullUp minus the time spent outside fights; skip the reel when that's inside one
+	-- round trip rather than race the server's close.
+	local pullUp = tonumber(started.pullUpDuration) or 2
+	local pulled = os.clock() - wire.openAt - fightSpent
+	if reel and wire.closeAt <= firedAt and pulled < pullUp - REEL_MARGIN then
 		reel:Fire(true)
 	end
 
@@ -560,10 +575,14 @@ local function cast()
 		return "the line never came back" -- no abandon: cancelling now would only add a lock
 	end
 
+	stats.casts = stats.casts + 1
+	if #hooked == 0 then
+		return "ok", picks -- an empty line home: nothing to claim, no receipt to expect
+	end
+
 	step("cast/claim")
 	fishCaught:Fire(true, throwId, hooked, false)
 
-	stats.casts = stats.casts + 1
 	stats.caught = stats.caught + #picks
 	dry = dry + 1
 	if dry == 5 then
@@ -1214,13 +1233,28 @@ local function buyUpgrades()
 end
 
 -- loop -------------------------------------------------------------------------
+-- The game's own "double speed" (really 1.5x, DoubleSpeedConfig.Multiplier) on the arc and
+-- bounces. Server state, honoured only when Data.IsInGroup -- and it credits the saved time
+-- against FishCaught's minDuration, so it's the one speed-up the claim check knows about.
+-- Turned back off with the farm: the game's own cinematic keeps its own copy of the flag.
+local function doubleSpeed(on)
+	local chan = ev("DoubleSpeed")
+	if chan then
+		chan:Fire(true, on)
+	end
+end
+
 local function setFarm(on)
 	farm.on = on
 	farm.gen = farm.gen + 1
 	local mine = farm.gen
+	doubleSpeed(on)
 	if not on then
 		step("idle")
 		return
+	end
+	if not (data() and data().IsInGroup) then
+		log("not in the game's group -- joining it makes every flight 1.5x faster")
 	end
 	task.spawn(function()
 		local sinceSell = 0
