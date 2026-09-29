@@ -24,6 +24,20 @@ local HIDE_KEY = Enum.KeyCode.RightAlt -- hide outright
 local DISPLAY_ORDER = 2147483643 -- Obsidian ships at 998, under the Esc menu's own screens
 local SCALE = 0.8 -- same as panel.lua: about as small as the 11-14px text stays comfortable at 1080p
 
+-- Everything look-shaped lives here, so a restyle is one block. Obsidian ships near-black
+-- grey with one purple accent, which reads as grey-on-grey; the fix is a tinted ground and
+-- an accent that actually stands out, not more ornament.
+local PALETTE = {
+	BackgroundColor = Color3.fromRGB(11, 13, 20), -- ink blue, not neutral grey
+	MainColor = Color3.fromRGB(20, 24, 36), -- rows and groupboxes, one step up from the ground
+	OutlineColor = Color3.fromRGB(38, 46, 66), -- borders visible without shouting
+	AccentColor = Color3.fromRGB(56, 189, 248), -- sky cyan: toggles, tab underline, hover ring
+	FontColor = Color3.fromRGB(232, 238, 252), -- slightly cool off-white, easier than pure #fff
+}
+local FONT = Enum.Font.GothamMedium -- Obsidian's default is Code (monospace), which is what reads as "terminal"
+local RADIUS = 8 -- Obsidian ships 4; rows, boxes and buttons all follow it
+local ICON = "zap" -- lucide's bolt; stands in for the WindUI bolt-circle mark
+
 local LIB_URL = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"
 
 local TweenService = game:GetService("TweenService")
@@ -83,7 +97,7 @@ local function installShade(Library, Window, shadeKey)
 	btn.BorderSizePixel = 0
 	btn.Text = ""
 	local round = Instance.new("UICorner")
-	round.CornerRadius = UDim.new(0, 4)
+	round.CornerRadius = UDim.new(0, RADIUS / 2)
 	round.Parent = btn
 	local ring = Instance.new("UIStroke")
 	ring.Color = scheme.OutlineColor
@@ -112,7 +126,7 @@ local function installShade(Library, Window, shadeKey)
 	end)
 	btn.Parent = topbar
 
-	local shaded, fullSize = false, nil
+	local shaded, fullSize, fullHolder = false, nil, holder.Size
 	local hidden = {} -- only what WE hid, so a row Obsidian keeps invisible stays invisible
 	local function toggle()
 		if not main.Parent then
@@ -137,7 +151,11 @@ local function installShade(Library, Window, shadeKey)
 			-- AbsoluteContentSize is post-UIScale, Size offsets are pre-scale.
 			local s = scale and scale.Scale > 0 and scale.Scale or 1
 			to = UDim2.fromOffset(math.max(SHADE_MIN, BTN_PAD + layout.AbsoluteContentSize.X / s + 16), SHADE_H)
+			-- The holder is 30% of the FULL width and centres its content, so left alone the
+			-- title floats off to the right of a bar that is now much narrower than it.
+			holder.Size = UDim2.new(0, to.X.Offset - BTN_PAD, 1, 0)
 		else
+			holder.Size = fullHolder
 			for _, c in ipairs(hidden) do
 				if c.Parent then
 					c.Visible = true
@@ -208,14 +226,30 @@ local function panel(opts)
 		return nil
 	end
 
+	-- Palette first: elements read the scheme when they're built, so anything created by
+	-- CreateWindow already comes out in it. The registry pass afterwards catches what
+	-- Obsidian built at load (floats, tooltips, notifications).
+	for key, color in pairs(PALETTE) do
+		Library.Scheme[key] = color
+	end
+
+	-- The brand mark, only if the lucide pack answered: a window Icon that fails to
+	-- resolve leaves an empty square beside the title.
+	local icon = Library:GetIcon(ICON) and ICON or nil
+
 	local Window = Library:CreateWindow({
 		Title = BRAND,
+		Icon = icon,
+		IconSize = UDim2.fromOffset(18, 18), -- 30 default; the title holder is only ~98px wide
 		Footer = opts.game,
 		Size = opts.size or UDim2.fromOffset(440, 320),
+		Font = FONT,
+		CornerRadius = RADIUS,
 		Center = true,
 		AutoShow = true,
 		Resizable = true,
 		AlwaysOnTop = true, -- OnTopOfCoreBlur, or the Esc menu's blur frosts the panel
+		ShowCustomCursor = false, -- Obsidian hides the Roblox cursor and draws a "+" crosshair while the window is open
 		ToggleKeybind = opts.hideKey or HIDE_KEY,
 		NotifySide = "Right",
 	})
@@ -227,6 +261,8 @@ local function panel(opts)
 	pcall(function()
 		Library.ScreenGui.DisplayOrder = DISPLAY_ORDER
 	end)
+
+	Library:UpdateColorsUsingRegistry()
 
 	-- Obsidian's SetDPIScale takes a percent and rescales every UIScale it owns, so the
 	-- window, rows, text and dropdowns shrink together and Size offsets stay in unscaled
