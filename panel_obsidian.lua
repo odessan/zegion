@@ -24,17 +24,17 @@ local HIDE_KEY = Enum.KeyCode.RightAlt -- hide outright
 local DISPLAY_ORDER = 2147483643 -- Obsidian ships at 998, under the Esc menu's own screens
 local SCALE = 0.8 -- same as panel.lua: about as small as the 11-14px text stays comfortable at 1080p
 
--- Everything look-shaped lives here, so a restyle is one block. Obsidian ships near-black
--- grey with one purple accent, which reads as grey-on-grey; the fix is a tinted ground and
--- an accent that actually stands out, not more ornament.
+-- Everything look-shaped lives here, so a restyle is one block. Graphite: neutral greys
+-- with a near-white accent, so an "on" toggle reads as bright-vs-dark with no hue to
+-- clash with a game's own UI. Swap AccentColor alone for a coloured variant.
 local PALETTE = {
-	BackgroundColor = Color3.fromRGB(11, 13, 20), -- ink blue, not neutral grey
-	MainColor = Color3.fromRGB(20, 24, 36), -- rows and groupboxes, one step up from the ground
-	OutlineColor = Color3.fromRGB(38, 46, 66), -- borders visible without shouting
-	AccentColor = Color3.fromRGB(56, 189, 248), -- sky cyan: toggles, tab underline, hover ring
-	FontColor = Color3.fromRGB(232, 238, 252), -- slightly cool off-white, easier than pure #fff
+	BackgroundColor = Color3.fromRGB(16, 16, 16), -- the ground
+	MainColor = Color3.fromRGB(26, 26, 26), -- rows and groupboxes, one step up from the ground
+	OutlineColor = Color3.fromRGB(46, 46, 46), -- borders visible without shouting
+	AccentColor = Color3.fromRGB(229, 229, 229), -- toggles, tab underline, hover ring
+	FontColor = Color3.fromRGB(242, 242, 242), -- a hair under pure white
 }
-local FONT = Enum.Font.GothamMedium -- Obsidian's default is Code (monospace), which is what reads as "terminal"
+local FONT = Enum.Font.Jura -- squared, techy sans; Obsidian's default is Code (monospace)
 local RADIUS = 8 -- Obsidian ships 4; rows, boxes and buttons all follow it
 local ICON = "zap" -- lucide's bolt; stands in for the WindUI bolt-circle mark
 
