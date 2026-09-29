@@ -10,18 +10,154 @@
      the two -- the callback timing and Set() re-entrancy differ, so an adapter would only
      hide a second set of quirks. panel.lua and every WindUI script are untouched.
 
-     Key:   RightControl  hides / shows the window (Obsidian's own ToggleKeybind)
-     Stop:  Library:Unload() -- runs every Library:OnUnload callback, then destroys the UI.
-
-     No shade pill: Obsidian hides the whole window and the key brings it back, which is
-     enough on PC. Add one if a script needs the loops visible while collapsed. ]]
+     Same controls as panel.lua:
+       "-" button    (top-left of the title bar) or RightControl -- rolls the body up so the
+                     window is just its title bar, where it stands; again to roll it down
+       RightAlt      hides the window outright, for a screenshot (Obsidian's ToggleKeybind)
+     Loops keep running under either one.
+     Stop:  Library:Unload() -- runs every Library:OnUnload callback, then destroys the UI. ]]
 
 -- brand ----------------------------------------------------------------------
 local BRAND = "Zegion"
-local KEY = Enum.KeyCode.RightControl
+local KEY = Enum.KeyCode.RightControl -- shade
+local HIDE_KEY = Enum.KeyCode.RightAlt -- hide outright
 local DISPLAY_ORDER = 2147483643 -- Obsidian ships at 998, under the Esc menu's own screens
+local SCALE = 0.8 -- same as panel.lua: about as small as the 11-14px text stays comfortable at 1080p
 
 local LIB_URL = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"
+
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+-- shade ----------------------------------------------------------------------
+-- Obsidian has no minimise, only hide. Rebuilt the way panel.lua does it: hide the body,
+-- shrink the window to its title bar, and pin the TOP-LEFT so it collapses where it
+-- stands (Obsidian anchors MainFrame at (0,0), so a plain Size change already does).
+--
+-- Obsidian doesn't expose its title bar, so it's found by shape: the 48px-tall,
+-- full-width, transparent Frame directly under MainFrame; its title holder is whichever
+-- child carries the TextLabel reading BRAND.
+local SHADE_H = 48 -- Obsidian's title bar height, hardcoded in CreateWindow
+local BTN = 20 -- shade button size
+local BTN_PAD = 34 -- room the button takes off the left of the title holder
+local SHADE_MIN = 120 -- never narrower than the button plus the title
+local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+local function installShade(Library, Window, shadeKey)
+	local main = Window.MainFrame
+	local scale = main:FindFirstChildOfClass("UIScale")
+	local topbar, label
+	for _, c in ipairs(main:GetChildren()) do
+		if c:IsA("Frame") and c.BackgroundTransparency == 1 and c.Size == UDim2.new(1, 0, 0, SHADE_H) then
+			topbar = c
+			break
+		end
+	end
+	for _, d in ipairs(topbar and topbar:GetDescendants() or {}) do
+		if d:IsA("TextLabel") and d.Text == BRAND then
+			label = d
+			break
+		end
+	end
+	local holder = label and label.Parent
+	local layout = holder and holder:FindFirstChildOfClass("UIListLayout")
+	if not (holder and layout) then
+		warn("[zegion] Obsidian's title bar changed shape -- no shade button. RightAlt still hides.")
+		return
+	end
+
+	-- Make room on the left for the button; the holder centres its content in what's left.
+	holder.Position = UDim2.fromOffset(BTN_PAD, 0)
+	holder.Size = UDim2.new(0, holder.Size.X.Offset - BTN_PAD, 1, 0)
+
+	-- Dressed in Obsidian's own scheme (panel colour, outline, lucide "minus") rather than
+	-- WindUI's yellow, so it reads as part of this window and follows its palette.
+	local scheme = Library.Scheme
+	local btn = Instance.new("TextButton")
+	btn.Name = "Shade"
+	btn.AnchorPoint = Vector2.new(0, 0.5)
+	btn.Position = UDim2.new(0, 10, 0.5, 0)
+	btn.Size = UDim2.fromOffset(BTN, BTN)
+	btn.BackgroundColor3 = scheme.MainColor
+	btn.AutoButtonColor = false
+	btn.BorderSizePixel = 0
+	btn.Text = ""
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(0, 4)
+	round.Parent = btn
+	local ring = Instance.new("UIStroke")
+	ring.Color = scheme.OutlineColor
+	ring.Parent = btn
+	local glyph = Library:GetIcon("minus")
+	if glyph then
+		local img = Instance.new("ImageLabel")
+		img.AnchorPoint = Vector2.new(0.5, 0.5)
+		img.Position = UDim2.fromScale(0.5, 0.5)
+		img.Size = UDim2.fromOffset(BTN - 8, BTN - 8)
+		img.BackgroundTransparency = 1
+		img.ImageColor3 = scheme.FontColor
+		Library:ApplyLucideIcon(img, glyph)
+		img.Parent = btn
+	else
+		btn.Text = "-" -- icon pack unavailable: a plain dash still does the job
+		btn.TextColor3 = scheme.FontColor
+		btn.TextSize = 14
+		btn.Font = Enum.Font.Code
+	end
+	btn.MouseEnter:Connect(function()
+		ring.Color = scheme.AccentColor
+	end)
+	btn.MouseLeave:Connect(function()
+		ring.Color = scheme.OutlineColor
+	end)
+	btn.Parent = topbar
+
+	local shaded, fullSize = false, nil
+	local hidden = {} -- only what WE hid, so a row Obsidian keeps invisible stays invisible
+	local function toggle()
+		if not main.Parent then
+			return -- window was unloaded; the key handler outlives it by a frame
+		end
+		shaded = not shaded
+		local to
+		if shaded then
+			fullSize = main.Size -- read live: a window the user resized comes back its own size
+			for _, c in ipairs(main:GetChildren()) do
+				if c:IsA("GuiObject") and c ~= topbar and c.Visible then
+					c.Visible = false
+					hidden[#hidden + 1] = c
+				end
+			end
+			for _, c in ipairs(topbar:GetChildren()) do -- search box, move icon
+				if c:IsA("GuiObject") and c ~= holder and c ~= btn and c.Visible then
+					c.Visible = false
+					hidden[#hidden + 1] = c
+				end
+			end
+			-- AbsoluteContentSize is post-UIScale, Size offsets are pre-scale.
+			local s = scale and scale.Scale > 0 and scale.Scale or 1
+			to = UDim2.fromOffset(math.max(SHADE_MIN, BTN_PAD + layout.AbsoluteContentSize.X / s + 16), SHADE_H)
+		else
+			for _, c in ipairs(hidden) do
+				if c.Parent then
+					c.Visible = true
+				end
+			end
+			table.clear(hidden)
+			to = fullSize
+		end
+		TweenService:Create(main, SHADE_TWEEN, { Size = to }):Play()
+	end
+
+	btn.MouseButton1Click:Connect(toggle)
+	-- gameProcessed is the whole guard: the panel has a search box, and without it the key
+	-- shades the window from under you while you're typing in it.
+	Library:GiveSignal(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if not gameProcessed and input.KeyCode == shadeKey then
+			toggle()
+		end
+	end))
+end
 
 -- library --------------------------------------------------------------------
 -- Obsidian keeps ONE ScreenGui and publishes itself as getgenv().Library, and a second
@@ -62,7 +198,9 @@ end
 -- panel ----------------------------------------------------------------------
 -- opts.game  the footer, until the live name lands (required)
 -- opts.size  window size, default 440x320
--- opts.key   show/hide key, default RightControl
+-- opts.key      shade key, default RightControl
+-- opts.hideKey  hide-outright key, default RightAlt
+-- opts.scale    UI scale, default SCALE (0.8)
 local function panel(opts)
 	local Library, why = loadObsidian()
 	if not Library then
@@ -78,7 +216,7 @@ local function panel(opts)
 		AutoShow = true,
 		Resizable = true,
 		AlwaysOnTop = true, -- OnTopOfCoreBlur, or the Esc menu's blur frosts the panel
-		ToggleKeybind = opts.key or KEY,
+		ToggleKeybind = opts.hideKey or HIDE_KEY,
 		NotifySide = "Right",
 	})
 	if not Window then
@@ -89,6 +227,15 @@ local function panel(opts)
 	pcall(function()
 		Library.ScreenGui.DisplayOrder = DISPLAY_ORDER
 	end)
+
+	-- Obsidian's SetDPIScale takes a percent and rescales every UIScale it owns, so the
+	-- window, rows, text and dropdowns shrink together and Size offsets stay in unscaled
+	-- pixels -- same trade as panel.lua's SCALE. Before the shade, which reads it live.
+	pcall(function()
+		Library:SetDPIScale((opts.scale or SCALE) * 100)
+	end)
+
+	installShade(Library, Window, opts.key or KEY)
 
 	-- The live name, after the window exists: GetProductInfo yields, and rate-limited or
 	-- dead it costs nothing but the fallback footer.
