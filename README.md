@@ -84,6 +84,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Anime Dice                          | `113290951185459` | `anime_dice.lua`                 |
 | +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`        |
 | Ride a Pet                          | `124216119978534` | `ride_a_pet.lua`                 |
+| Roll a Fisherman                    | `90920025162454`  | `roll_a_fisherman.lua`           |
 | Chop a Tree                         | `110730550789828` | `chop_a_tree.lua`                |
 | Steal a Mysterious Egg (World 2)    | `117032685902228` | `steal_a_mysterious_egg.lua`     |
 | Deep Fishing                        | `132239307080610` | `deep_fishing.lua`               |
