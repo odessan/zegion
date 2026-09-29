@@ -74,8 +74,12 @@ local SHOP_WINDOW = 20 -- most seconds the farm waits between runs for auto-roll
 
 -- Roll/buy stations. Both prompts have MaxActivationDistance 5, so we stand on the part.
 local SETTLE = 0.25 -- after the hop, for the position to replicate before the press
-local ROLL_CONFIRM = 3 -- waiting for our RollSpin (a Legendary+ skip asks first)
-local DISPLAY_SLACK = 3 -- on top of the spin duration, waiting for RollDisplay
+local ROLL_CONFIRM = 1.5 -- waiting for our RollSpin after a press
+-- Gap between rolls on one station. It starts at the spin animation's length (what a hand
+-- does: roll again once it lands) and creeps down 10% per accepted roll -- the client
+-- cancels a running spin when a new one arrives, so the server may well allow it -- and
+-- backs off 1.5x on a press the server ignored. This is its floor.
+local ROLL_GAP_MIN = 0.3
 local BUY_CONFIRM = 3
 
 -- Car upgrade. The Packets server drops a client past ~10 batches a second, so edits are
@@ -878,7 +882,10 @@ shop = {
 	windowOpen = false,
 	windowDone = 0,
 	gen = 0,
-	method = nil, -- winning press method index, once one has bought something
+	method = {}, -- "roll"/"buy" -> winning press method index; the two prompts differ
+	lastRoll = {}, -- station -> os.clock() of our last accepted roll
+	revealAt = {}, -- station -> when the spin animation lands (the buy prompt may wait for it)
+	gap = nil, -- learned roll gap, seeded from the spin duration on first use
 	held = {}, -- station -> part we already said we're holding, so it's said once
 }
 local STATIONS = { "RollBlocks", "RollWeapons" }
@@ -888,9 +895,21 @@ local function mine(plotName)
 	return p ~= nil and p.Name == plotName
 end
 
-on("RollSpin", function(plotName, station, _, uid)
+local function spinDuration()
+	local speed = 1
+	pcall(function()
+		speed = GamepassConfig.RollSpeed(player)
+	end)
+	return RollConfig.SpinDuration / math.max(tonumber(speed) or 1, 0.1)
+end
+
+-- The roll's RESULT rides in RollSpin: the client flashes through the list and lands on
+-- its LAST entry (RollController's spin thread). There is no RollDisplay after a roll --
+-- that one only re-syncs a pedestal -- so this is the only moment we learn what landed.
+on("RollSpin", function(plotName, station, list, uid)
 	if mine(plotName) then
-		shop.shown[station] = nil
+		shop.shown[station] = type(list) == "table" and list[#list] or nil
+		shop.revealAt[station] = os.clock() + spinDuration()
 		if uid == player.UserId then
 			shop.spun[station] = os.clock()
 		end
@@ -978,7 +997,11 @@ local function hop(part)
 	if hum and hum.SeatPart then
 		return false -- seated means a car; the shop only runs in the lobby
 	end
-	hrp.CFrame = CFrame.new(part.Position + Vector3.new(0, 1.5, 0))
+	local target = part.Position + Vector3.new(0, 1.5, 0)
+	if (hrp.Position - target).Magnitude < 3 then
+		return true -- already here: re-rolling one lever shouldn't pay a settle every time
+	end
+	hrp.CFrame = CFrame.new(target)
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	task.wait(SETTLE)
 	return true
@@ -1009,21 +1032,24 @@ local METHODS = {
 	end,
 }
 
-local function press(prompt, landed, timeout)
+-- Once a method has won for this kind of prompt it's the only one pressed: falling
+-- through to the others on a refusal would turn one cooldown miss into three presses.
+local function press(kind, prompt, landed, timeout)
 	openGates(prompt)
 	local order = {}
-	if shop.method then
-		table.insert(order, shop.method)
-	end
-	for i = 1, #METHODS do
-		if i ~= shop.method and (i ~= 1 or fireproximityprompt) then
-			table.insert(order, i)
+	if shop.method[kind] then
+		order = { shop.method[kind] }
+	else
+		for i = 1, #METHODS do
+			if i ~= 1 or fireproximityprompt then
+				table.insert(order, i)
+			end
 		end
 	end
 	for _, i in ipairs(order) do
 		pcall(METHODS[i], prompt)
 		if waitFor(landed, timeout) then
-			shop.method = i
+			shop.method[kind] = i
 			return true
 		end
 	end
@@ -1048,21 +1074,17 @@ local function rollStation(station)
 		return false
 	end
 	local since = os.clock()
-	local ok = press(prompt, function()
+	local ok = press("roll", prompt, function()
 		return (shop.spun[station] or 0) >= since
 	end, ROLL_CONFIRM)
+	shop.lastRoll[station] = os.clock()
 	if not ok then
+		shop.gap = math.min(spinDuration() * 1.5, shop.gap * 1.5 + 0.2)
 		return false
 	end
+	shop.gap = math.max(ROLL_GAP_MIN, shop.gap * 0.9)
 	stats.rolls += 1
-	local speed = 1
-	pcall(function()
-		speed = GamepassConfig.RollSpeed(player)
-	end)
-	waitFor(function()
-		return shop.shown[station] ~= nil
-	end, RollConfig.SpinDuration / math.max(speed, 0.1) + DISPLAY_SLACK)
-	return true
+	return true -- the result is already in shop.shown; no waiting for the animation
 end
 
 local function buyStation(station, part)
@@ -1074,15 +1096,22 @@ local function buyStation(station, part)
 	local f = stationFolder(station)
 	local place = f and f:FindFirstChild("ItemPlace")
 	local prompt = place and place:FindFirstChild("BuyPrompt", true)
-	if not (prompt and prompt.Enabled) then
+	if not prompt then
 		return false
 	end
 	step("buy " .. part)
 	if not hop(place) then
 		return false
 	end
+	-- The server may only switch the prompt on once the spin has landed.
+	waitFor(function()
+		return prompt.Enabled or shop.shown[station] ~= part
+	end, math.max((shop.revealAt[station] or 0) - os.clock(), 0) + 1.5)
+	if not prompt.Enabled or shop.shown[station] ~= part then
+		return false
+	end
 	local since, before = os.clock(), cash()
-	local ok = press(prompt, function()
+	local ok = press("buy", prompt, function()
 		return (shop.bought[station] or 0) >= since or shop.shown[station] ~= part or cash() <= before - def.Cost * 0.5
 	end, BUY_CONFIRM)
 	if ok then
@@ -1136,9 +1165,14 @@ local function shopPass()
 				say(("stopped on %s (%s) -- buy it or roll on"):format(PartCatalog.Parts[part] and PartCatalog.Parts[part].Name or part, PartCatalog.Parts[part] and PartCatalog.Parts[part].Rarity or "?"))
 			end
 		elseif shop.roll then
-			claim(function()
-				did = rollStation(station) or did
-			end)
+			shop.gap = shop.gap or spinDuration()
+			if os.clock() - (shop.lastRoll[station] or 0) >= shop.gap then
+				claim(function()
+					did = rollStation(station) or did
+				end)
+			else
+				did = true -- a roll is due in a moment: not "nothing to do", keep the window open
+			end
 		end
 	end
 	return did, true
