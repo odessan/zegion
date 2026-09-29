@@ -82,6 +82,7 @@ local GAMES = {
 	["118805555015549"] = "loot_to_forge.lua", -- Loot to Forge
 	["78490532994307"] = "build_an_ant_empire.lua", -- Build an Ant Empire
 	["90920025162454"] = "roll_a_fisherman.lua", -- Roll a Fisherman
+	["100641654440407"] = "turret_defense.lua", -- Turret Defense (working title -- the dump doesn't carry the game's name)
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
