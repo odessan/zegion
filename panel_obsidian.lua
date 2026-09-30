@@ -16,7 +16,9 @@
                         screen only while the window is closed; tap it to open the window
        RightControl     the same toggle from a keyboard
      Obsidian's own mobile Toggle/Lock buttons are turned off -- the logo replaces them.
-     A window with a single tab hides its sidebar; a second tab brings it back.
+     A window with a single tab hides its sidebar; a second tab brings it back as a 56px
+     icon rail. Window:AddSettingsTab("Folder", { "IdxToNotSave" }) adds a Settings tab with
+     the config manager (see "settings" below).
      Stop:  Library:Unload() -- runs every Library:OnUnload callback, then destroys the UI. ]]
 
 -- brand ----------------------------------------------------------------------
@@ -54,6 +56,7 @@ local MIN_BTN = 24 -- title-bar "-" button
 local MARK = 20 -- title-bar logo mark
 local BAR_PAD = 66 -- room both take off the left of the title holder: 8 + 24 + 8 + 20 + 6
 local BAR_H = 48 -- Obsidian's title bar height, hardcoded in CreateWindow
+local RAIL_W = 56 -- the icon-only sidebar a window gets once it has two tabs
 
 local function logoAsset()
 	if not (writefile and isfile and getcustomasset and makefolder and isfolder) then
@@ -306,6 +309,63 @@ local function installReadout(Library, Window)
 	end))
 end
 
+-- settings -------------------------------------------------------------------
+-- Window:AddSettingsTab(folder, ignore) -- a "Settings" tab with Obsidian's config manager
+-- (SaveManager): name, save, load, delete, autoload, import/export. Call it once, AFTER the
+-- script has built the rest of its UI, because the autoload runs at the end of it and a
+-- config can only restore controls that already exist. `folder` names the per-game config
+-- folder under workspace/Zegion/. `ignore` lists Idx values that must not be saved, e.g. a
+-- master switch, whose restore would flip everything else a second time.
+--
+-- Loading a config fires every control's callback, so a saved "Auto Click = on" starts
+-- the loop. That is the point, and it is why autoload is something the user sets on
+-- purpose: nothing loads until a config is marked autoload.
+--
+-- ponytail: SaveManager comes from upstream, unforked. Its load makes an empty
+-- ObsidianLibSettings folder in workspace as a side effect; fork the file if that bothers you.
+local SAVE_URL = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua"
+local SCALES = { "80%", "90%", "100%", "110%", "120%" }
+
+local function addSettingsTab(Library, Window, folder, ignore, keyName)
+	local ok, SaveManager = pcall(function()
+		local src = game:HttpGet(SAVE_URL)
+		if type(src) ~= "string" or #src < 1000 then
+			error("empty response from raw.githubusercontent (rate limit)")
+		end
+		return assert(loadstring(src))()
+	end)
+	if not ok then
+		warn("[zegion] SaveManager would not load (" .. tostring(SaveManager) .. ") -- no Settings tab.")
+		return
+	end
+
+	SaveManager:SetLibrary(Library)
+	SaveManager:IgnoreThemeSettings()
+	SaveManager:SetFolder("Zegion/" .. folder)
+	local skip = { "ZegionScale" }
+	for _, idx in ipairs(ignore or {}) do
+		skip[#skip + 1] = idx
+	end
+	SaveManager:SetIgnoreIndexes(skip)
+
+	local Tab = Window:AddTab("Settings", "settings")
+	local Interface = Tab:AddLeftGroupbox("Interface")
+	Interface:AddDropdown("ZegionScale", {
+		Text = "Scale",
+		Values = SCALES,
+		Default = "100%",
+		Callback = function(v)
+			pcall(function()
+				Library:SetDPIScale(tonumber(tostring(v):match("%d+")))
+			end)
+		end,
+	})
+	Interface:AddLabel("Open and close: " .. keyName, true)
+
+	SaveManager:BuildConfigSection(Tab)
+	SaveManager:LoadAutoloadConfig()
+end
+
 -- library --------------------------------------------------------------------
 -- Obsidian keeps ONE ScreenGui and publishes itself as getgenv().Library, and a second
 -- load does not unload the first -- two windows stack. So unload whatever is there before
@@ -412,8 +472,15 @@ local function panel(opts)
 	Window.AddTab = function(self, ...)
 		local tab = addTab(self, ...)
 		tabs += 1
-		Window:SetSidebarHidden(tabs < 2)
+		if tabs < 2 then
+			Window:SetSidebarHidden(true)
+		else
+			Window:SetSidebarRail(RAIL_W)
+		end
 		return tab
+	end
+	Window.AddSettingsTab = function(_, folder, ignore)
+		addSettingsTab(Library, Window, folder, ignore, (opts.key or KEY).Name)
 	end
 
 	installTitleControls(Library, Window, asset)
