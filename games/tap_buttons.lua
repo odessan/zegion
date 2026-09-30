@@ -798,6 +798,10 @@ Window:SetStatusAction("Unload", function()
 	Library:Unload()
 end, true)
 
+-- last, so the autoload finds every control: "All" is the master switch, and restoring it
+-- would flip every other saved toggle a second time
+Window:AddSettingsTab("TapButtons", { "All" })
+
 local VirtualUser = game:GetService("VirtualUser")
 table.insert(conns, player.Idled:Connect(function()
 	pcall(function()
