@@ -11,7 +11,7 @@
      hide a second set of quirks. panel.lua and every WindUI script are untouched.
 
      Open and close, the same on every platform:
-       "-" button       top-left of the window: closes it (loops keep running)
+       "-" button       top-right of the window, left of the drag icon: closes it (loops keep running)
        floating logo    a 56px draggable button, a third of the way in and a bit above the
                         middle of the screen (drag it anywhere). It is on
                         screen only while the window is closed; tap it to open the window
@@ -26,7 +26,7 @@
 local BRAND = "Zegion"
 local KEY = Enum.KeyCode.RightControl -- open / close, same as the buttons
 local DISPLAY_ORDER = 2147483643 -- Obsidian ships at 998, under the Esc menu's own screens
-local MIN_WIDTH = 480 -- narrower and the title holder has no room for the two title-bar controls
+local MIN_WIDTH = 480 -- narrower and the title plus the search box run out of room beside the "-" and drag icon
 
 -- Everything look-shaped lives here, so a restyle is one block. Warm charcoal with one
 -- vermilion signal colour: an "on" toggle is the only saturated thing on screen. Swap
@@ -53,9 +53,10 @@ local LOGO_FILE = LOGO_DIR .. "/logo_v1.png" -- bump the suffix when logo.png ch
 local BUBBLE = 56 -- floating button; 44 is the touch-target floor, 56 reads on a phone
 local BUBBLE_AT_X, BUBBLE_AT_Y = 0.346, 0.30 -- where its centre starts, as a fraction of the screen: a third of the way in, a bit above the middle
 local DRAG_SLOP = 8 -- px a press may wander and still count as a tap
-local MIN_BTN = 24 -- title-bar "-" button
+local MIN_BTN = 28 -- title-bar "-" button, the size of Obsidian's drag icon beside it
+local BTN_RIGHT = 46 -- its right edge's distance from the title bar's: the drag icon takes 10 + 28, then 8 of air
 local MARK = 20 -- title-bar logo mark
-local BAR_PAD = 66 -- room both take off the left of the title holder: 8 + 24 + 8 + 20 + 6
+local BAR_PAD = 34 -- room the mark takes off the left of the title holder: 8 + 20 + 6
 local BAR_H = 48 -- Obsidian's title bar height, hardcoded in CreateWindow
 local RAIL_W = 56 -- the icon-only sidebar a window gets once it has two tabs
 
@@ -218,15 +219,27 @@ local function installTitleControls(Library, Window, asset)
 		return
 	end
 
-	-- Make room on the left; the holder centres its content in what's left.
+	-- Make room on the left for the mark; the holder centres its content in what's left.
 	holder.Position = UDim2.fromOffset(BAR_PAD, 0)
 	holder.Size = UDim2.new(0, holder.Size.X.Offset - BAR_PAD, 1, 0)
+
+	-- And on the right for the "-": the search box lives in a wrapper that ends 49px from the
+	-- right edge, just left of the drag icon. Pull that edge in by however far the button
+	-- pushes past it, keeping the wrapper's left edge where it was.
+	local pull = BTN_RIGHT + MIN_BTN + 8 - 49
+	for _, c in ipairs(topbar:GetChildren()) do
+		if c:IsA("Frame") and c.AnchorPoint == Vector2.new(1, 0.5) and c.Position.X.Offset == -49 then
+			c.Position = UDim2.new(1, -49 - pull, 0.5, 0)
+			c.Size = UDim2.new(c.Size.X.Scale, c.Size.X.Offset - pull, c.Size.Y.Scale, c.Size.Y.Offset)
+			break
+		end
+	end
 
 	local scheme = Library.Scheme
 	local btn = Instance.new("TextButton")
 	btn.Name = "Minimize"
-	btn.AnchorPoint = Vector2.new(0, 0.5)
-	btn.Position = UDim2.new(0, 8, 0.5, 0)
+	btn.AnchorPoint = Vector2.new(1, 0.5)
+	btn.Position = UDim2.new(1, -BTN_RIGHT, 0.5, 0)
 	btn.Size = UDim2.fromOffset(MIN_BTN, MIN_BTN)
 	btn.BackgroundColor3 = scheme.MainColor
 	btn.AutoButtonColor = false
@@ -268,7 +281,7 @@ local function installTitleControls(Library, Window, asset)
 	local mark = Instance.new("TextLabel")
 	mark.Name = "Mark"
 	mark.AnchorPoint = Vector2.new(0, 0.5)
-	mark.Position = UDim2.new(0, 8 + MIN_BTN + 8, 0.5, 0)
+	mark.Position = UDim2.new(0, 8, 0.5, 0)
 	mark.Size = UDim2.fromOffset(MARK, MARK)
 	mark.BackgroundTransparency = 1
 	mark.Text = ""
