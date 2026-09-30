@@ -22,7 +22,6 @@ local BRAND = "Zegion"
 local KEY = Enum.KeyCode.RightControl -- shade
 local HIDE_KEY = Enum.KeyCode.RightAlt -- hide outright
 local DISPLAY_ORDER = 2147483643 -- Obsidian ships at 998, under the Esc menu's own screens
-local SCALE = 0.9 -- panel.lua uses 0.8, but Obsidian's text is smaller to begin with (11-14px)
 
 -- Everything look-shaped lives here, so a restyle is one block. Graphite: neutral greys
 -- with a near-white accent, so an "on" toggle reads as bright-vs-dark with no hue to
@@ -218,7 +217,7 @@ end
 -- opts.size  window size, default 440x320
 -- opts.key      shade key, default RightControl
 -- opts.hideKey  hide-outright key, default RightAlt
--- opts.scale    UI scale, default SCALE (0.9)
+-- opts.scale    UI scale, e.g. 0.9; default is Obsidian's own 100%
 local function panel(opts)
 	local Library, why = loadObsidian()
 	if not Library then
@@ -264,12 +263,14 @@ local function panel(opts)
 
 	Library:UpdateColorsUsingRegistry()
 
-	-- Obsidian's SetDPIScale takes a percent and rescales every UIScale it owns, so the
-	-- window, rows, text and dropdowns shrink together and Size offsets stay in unscaled
-	-- pixels -- same trade as panel.lua's SCALE. Before the shade, which reads it live.
-	pcall(function()
-		Library:SetDPIScale((opts.scale or SCALE) * 100)
-	end)
+	-- Obsidian's own 100% unless a script asks. SetDPIScale takes a percent and rescales
+	-- every UIScale it owns, so the window, rows, text and dropdowns move together and Size
+	-- offsets stay in unscaled pixels. Before the shade, which reads it live.
+	if opts.scale then
+		pcall(function()
+			Library:SetDPIScale(opts.scale * 100)
+		end)
+	end
 
 	installShade(Library, Window, opts.key or KEY)
 
