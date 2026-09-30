@@ -10,57 +10,120 @@
      the two -- the callback timing and Set() re-entrancy differ, so an adapter would only
      hide a second set of quirks. panel.lua and every WindUI script are untouched.
 
-     Same controls as panel.lua:
-       "-" button    (top-left of the title bar) or RightControl -- rolls the body up so the
-                     window is just its title bar, where it stands; again to roll it down
-       RightAlt      hides the window outright, for a screenshot (Obsidian's ToggleKeybind)
-     Loops keep running under either one.
+     One control, on every platform: the Zegion logo.
+       floating logo   a 56px draggable button that stays on screen whether the window is open
+                       or not -- tap it to open, tap it again to close
+       title-bar logo  the same mark at the window's top-left; also closes it
+       RightControl    the same toggle from a keyboard
+     Closing hides the window outright; loops keep running. Obsidian's own mobile Toggle/Lock
+     buttons are turned off -- the logo replaces them.
      Stop:  Library:Unload() -- runs every Library:OnUnload callback, then destroys the UI. ]]
 
 -- brand ----------------------------------------------------------------------
 local BRAND = "Zegion"
-local KEY = Enum.KeyCode.RightControl -- shade
-local HIDE_KEY = Enum.KeyCode.RightAlt -- hide outright
+local KEY = Enum.KeyCode.RightControl -- open / close, same as the logo
 local DISPLAY_ORDER = 2147483643 -- Obsidian ships at 998, under the Esc menu's own screens
 
--- Everything look-shaped lives here, so a restyle is one block. Graphite: neutral greys
--- with a near-white accent, so an "on" toggle reads as bright-vs-dark with no hue to
--- clash with a game's own UI. Swap AccentColor alone for a coloured variant.
+-- Everything look-shaped lives here, so a restyle is one block. Warm charcoal with one
+-- vermilion signal colour: an "on" toggle is the only saturated thing on screen. Swap
+-- AccentColor alone for another signal (the design canvas tried #d8ff4f, #5cd1c4, #e8e3d8).
 local PALETTE = {
-	BackgroundColor = Color3.fromRGB(16, 16, 16), -- the ground
-	MainColor = Color3.fromRGB(26, 26, 26), -- rows and groupboxes, one step up from the ground
-	OutlineColor = Color3.fromRGB(46, 46, 46), -- borders visible without shouting
-	AccentColor = Color3.fromRGB(229, 229, 229), -- toggles, tab underline, hover ring
-	FontColor = Color3.fromRGB(242, 242, 242), -- a hair under pure white
+	BackgroundColor = Color3.fromRGB(14, 13, 12), -- the ground
+	MainColor = Color3.fromRGB(23, 22, 19), -- rows and groupboxes, one step up from the ground
+	OutlineColor = Color3.fromRGB(46, 43, 37), -- borders visible without shouting
+	AccentColor = Color3.fromRGB(255, 106, 61), -- toggles, tab underline, hover ring, the logo
+	FontColor = Color3.fromRGB(236, 231, 221), -- warm off-white
 }
 local FONT = Enum.Font.RobotoMono -- Jura was tried and dropped: thin, squared strokes turn to mush at 11-14px. Obsidian's own default is Code
 local RADIUS = 8 -- Obsidian ships 4; rows, boxes and buttons all follow it
-local ICON = "zap" -- lucide's bolt; stands in for the WindUI bolt-circle mark
+local ICON = "zap" -- lucide's bolt: only the stand-in when the logo image cannot load
 
-local LIB_URL = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"
-
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-
--- shade ----------------------------------------------------------------------
--- Obsidian has no minimise, only hide. Rebuilt the way panel.lua does it: hide the body,
--- shrink the window to its title bar, and pin the TOP-LEFT so it collapses where it
--- stands (Obsidian anchors MainFrame at (0,0), so a plain Size change already does).
---
--- Obsidian doesn't expose its title bar, so it's found by shape: the 48px-tall,
--- full-width, transparent Frame directly under MainFrame; its title holder is whichever
--- child carries the TextLabel reading BRAND.
+-- logo -----------------------------------------------------------------------
+-- logo.png is a white mark on transparent, so ImageLabel.ImageColor3 tints it to whatever
+-- AccentColor is. Executors cannot upload to Roblox, so the file is fetched once, written
+-- next to the workspace and read back with getcustomasset; any missing piece falls back to
+-- a lucide bolt, then to a plain "Z", so the buttons always exist.
+local LOGO_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/logo.png"
+local LOGO_DIR = "Zegion"
+local LOGO_FILE = LOGO_DIR .. "/logo_v1.png" -- bump the suffix when logo.png changes, or the old copy is kept
+local BUBBLE = 56 -- floating button; 44 is the touch-target floor, 56 reads on a phone
+local BUBBLE_AT = UDim2.fromOffset(12, 120) -- under Roblox's own top-left buttons
+local BAR_BTN = 32 -- title-bar logo
+local BAR_BTN_PAD = 40 -- room it takes off the left of the title holder
 local SHADE_H = 48 -- Obsidian's title bar height, hardcoded in CreateWindow
-local BTN = 20 -- shade button size
-local BTN_PAD = 34 -- room the button takes off the left of the title holder
-local SHADE_MIN = 120 -- never narrower than the button plus the title
-local SHADE_TWEEN = TweenInfo.new(0.08, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
-local function installShade(Library, Window, shadeKey)
-	local main = Window.MainFrame
-	local scale = main:FindFirstChildOfClass("UIScale")
+local function logoAsset()
+	if not (writefile and isfile and getcustomasset and makefolder and isfolder) then
+		return nil
+	end
+	local ok, asset = pcall(function()
+		if not isfolder(LOGO_DIR) then
+			makefolder(LOGO_DIR)
+		end
+		if not isfile(LOGO_FILE) then
+			local png = game:HttpGet(LOGO_URL)
+			if type(png) ~= "string" or png:sub(2, 4) ~= "PNG" then
+				error("logo.png did not come back as a PNG")
+			end
+			writefile(LOGO_FILE, png)
+		end
+		return getcustomasset(LOGO_FILE)
+	end)
+	return ok and asset or nil
+end
+
+-- Draws the mark into `btn`, whichever of the three forms is available.
+local function drawMark(Library, btn, px, asset, fallbackSize)
+	local scheme = Library.Scheme
+	if asset then
+		local img = Instance.new("ImageLabel")
+		img.AnchorPoint = Vector2.new(0.5, 0.5)
+		img.Position = UDim2.fromScale(0.5, 0.5)
+		img.Size = UDim2.fromOffset(px, px)
+		img.BackgroundTransparency = 1
+		img.Image = asset
+		img.ImageColor3 = scheme.AccentColor
+		img.Parent = btn
+		return
+	end
+	local glyph = Library:GetIcon(ICON)
+	if glyph then
+		local img = Instance.new("ImageLabel")
+		img.AnchorPoint = Vector2.new(0.5, 0.5)
+		img.Position = UDim2.fromScale(0.5, 0.5)
+		img.Size = UDim2.fromOffset(px * 0.7, px * 0.7)
+		img.BackgroundTransparency = 1
+		img.ImageColor3 = scheme.AccentColor
+		Library:ApplyLucideIcon(img, glyph)
+		img.Parent = btn
+	else
+		btn.Text = "Z"
+		btn.TextColor3 = scheme.AccentColor
+		btn.TextSize = fallbackSize
+		btn.Font = Enum.Font.Code
+	end
+end
+
+-- Floating button. Obsidian's AddDraggableButton already tells a tap from a drag (a click
+-- only counts if the pointer moved 12px or less), so a thumb that nudges it while tapping
+-- still opens the window. Excluded from UIScale: a touch target that shrinks with the
+-- panel's scale stops being one.
+local function installBubble(Library, asset)
+	local drag = Library:AddDraggableButton("", function()
+		Library:Toggle()
+	end, true, true)
+	local btn = drag.Button
+	btn.Size = UDim2.fromOffset(BUBBLE, BUBBLE)
+	btn.Position = BUBBLE_AT
+	drawMark(Library, btn, BUBBLE - 20, asset, 30)
+end
+
+-- Title-bar logo. Obsidian doesn't expose its title bar, so it is found by shape: the
+-- 48px-tall, full-width, transparent Frame directly under MainFrame; its title holder is
+-- whichever child carries the TextLabel reading BRAND.
+local function installTitleLogo(Library, Window, asset)
 	local topbar, label
-	for _, c in ipairs(main:GetChildren()) do
+	for _, c in ipairs(Window.MainFrame:GetChildren()) do
 		if c:IsA("Frame") and c.BackgroundTransparency == 1 and c.Size == UDim2.new(1, 0, 0, SHADE_H) then
 			topbar = c
 			break
@@ -73,107 +136,29 @@ local function installShade(Library, Window, shadeKey)
 		end
 	end
 	local holder = label and label.Parent
-	local layout = holder and holder:FindFirstChildOfClass("UIListLayout")
-	if not (holder and layout) then
-		warn("[zegion] Obsidian's title bar changed shape -- no shade button. RightAlt still hides.")
+	if not holder then
+		warn("[zegion] Obsidian's title bar changed shape -- no title logo. The floating logo still works.")
 		return
 	end
 
 	-- Make room on the left for the button; the holder centres its content in what's left.
-	holder.Position = UDim2.fromOffset(BTN_PAD, 0)
-	holder.Size = UDim2.new(0, holder.Size.X.Offset - BTN_PAD, 1, 0)
+	holder.Position = UDim2.fromOffset(BAR_BTN_PAD, 0)
+	holder.Size = UDim2.new(0, holder.Size.X.Offset - BAR_BTN_PAD, 1, 0)
 
-	-- Dressed in Obsidian's own scheme (panel colour, outline, lucide "minus") rather than
-	-- WindUI's yellow, so it reads as part of this window and follows its palette.
-	local scheme = Library.Scheme
 	local btn = Instance.new("TextButton")
-	btn.Name = "Shade"
+	btn.Name = "Logo"
 	btn.AnchorPoint = Vector2.new(0, 0.5)
-	btn.Position = UDim2.new(0, 10, 0.5, 0)
-	btn.Size = UDim2.fromOffset(BTN, BTN)
-	btn.BackgroundColor3 = scheme.MainColor
+	btn.Position = UDim2.new(0, 4, 0.5, 0)
+	btn.Size = UDim2.fromOffset(BAR_BTN, BAR_BTN)
+	btn.BackgroundTransparency = 1
 	btn.AutoButtonColor = false
 	btn.BorderSizePixel = 0
 	btn.Text = ""
-	local round = Instance.new("UICorner")
-	round.CornerRadius = UDim.new(0, RADIUS / 2)
-	round.Parent = btn
-	local ring = Instance.new("UIStroke")
-	ring.Color = scheme.OutlineColor
-	ring.Parent = btn
-	local glyph = Library:GetIcon("minus")
-	if glyph then
-		local img = Instance.new("ImageLabel")
-		img.AnchorPoint = Vector2.new(0.5, 0.5)
-		img.Position = UDim2.fromScale(0.5, 0.5)
-		img.Size = UDim2.fromOffset(BTN - 8, BTN - 8)
-		img.BackgroundTransparency = 1
-		img.ImageColor3 = scheme.FontColor
-		Library:ApplyLucideIcon(img, glyph)
-		img.Parent = btn
-	else
-		btn.Text = "-" -- icon pack unavailable: a plain dash still does the job
-		btn.TextColor3 = scheme.FontColor
-		btn.TextSize = 14
-		btn.Font = Enum.Font.Code
-	end
-	btn.MouseEnter:Connect(function()
-		ring.Color = scheme.AccentColor
-	end)
-	btn.MouseLeave:Connect(function()
-		ring.Color = scheme.OutlineColor
+	drawMark(Library, btn, BAR_BTN - 8, asset, 22)
+	btn.MouseButton1Click:Connect(function()
+		Library:Toggle()
 	end)
 	btn.Parent = topbar
-
-	local shaded, fullSize, fullHolder = false, nil, holder.Size
-	local hidden = {} -- only what WE hid, so a row Obsidian keeps invisible stays invisible
-	local function toggle()
-		if not main.Parent then
-			return -- window was unloaded; the key handler outlives it by a frame
-		end
-		shaded = not shaded
-		local to
-		if shaded then
-			fullSize = main.Size -- read live: a window the user resized comes back its own size
-			for _, c in ipairs(main:GetChildren()) do
-				if c:IsA("GuiObject") and c ~= topbar and c.Visible then
-					c.Visible = false
-					hidden[#hidden + 1] = c
-				end
-			end
-			for _, c in ipairs(topbar:GetChildren()) do -- search box, move icon
-				if c:IsA("GuiObject") and c ~= holder and c ~= btn and c.Visible then
-					c.Visible = false
-					hidden[#hidden + 1] = c
-				end
-			end
-			-- AbsoluteContentSize is post-UIScale, Size offsets are pre-scale.
-			local s = scale and scale.Scale > 0 and scale.Scale or 1
-			to = UDim2.fromOffset(math.max(SHADE_MIN, BTN_PAD + layout.AbsoluteContentSize.X / s + 16), SHADE_H)
-			-- The holder is 30% of the FULL width and centres its content, so left alone the
-			-- title floats off to the right of a bar that is now much narrower than it.
-			holder.Size = UDim2.new(0, to.X.Offset - BTN_PAD, 1, 0)
-		else
-			holder.Size = fullHolder
-			for _, c in ipairs(hidden) do
-				if c.Parent then
-					c.Visible = true
-				end
-			end
-			table.clear(hidden)
-			to = fullSize
-		end
-		TweenService:Create(main, SHADE_TWEEN, { Size = to }):Play()
-	end
-
-	btn.MouseButton1Click:Connect(toggle)
-	-- gameProcessed is the whole guard: the panel has a search box, and without it the key
-	-- shades the window from under you while you're typing in it.
-	Library:GiveSignal(UserInputService.InputBegan:Connect(function(input, gameProcessed)
-		if not gameProcessed and input.KeyCode == shadeKey then
-			toggle()
-		end
-	end))
 end
 
 -- library --------------------------------------------------------------------
@@ -181,6 +166,8 @@ end
 -- load does not unload the first -- two windows stack. So unload whatever is there before
 -- fetching, and never cache: the library owns its own teardown, so a cached copy would be
 -- one that Unload() had already gutted.
+local LIB_URL = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"
+
 local function loadObsidian()
 	local env = getgenv and getgenv() or {}
 	local old = env.Library
@@ -215,9 +202,8 @@ end
 -- panel ----------------------------------------------------------------------
 -- opts.game  the footer, until the live name lands (required)
 -- opts.size  window size, default 440x320
--- opts.key      shade key, default RightControl
--- opts.hideKey  hide-outright key, default RightAlt
--- opts.scale    UI scale, e.g. 0.9; default is Obsidian's own 100%
+-- opts.key   open / close key, default RightControl
+-- opts.scale UI scale, e.g. 0.9; default is Obsidian's own 100%
 local function panel(opts)
 	local Library, why = loadObsidian()
 	if not Library then
@@ -232,14 +218,10 @@ local function panel(opts)
 		Library.Scheme[key] = color
 	end
 
-	-- The brand mark, only if the lucide pack answered: a window Icon that fails to
-	-- resolve leaves an empty square beside the title.
-	local icon = Library:GetIcon(ICON) and ICON or nil
+	local asset = logoAsset()
 
 	local Window = Library:CreateWindow({
 		Title = BRAND,
-		Icon = icon,
-		IconSize = UDim2.fromOffset(18, 18), -- 30 default; the title holder is only ~98px wide
 		Footer = opts.game,
 		Size = opts.size or UDim2.fromOffset(440, 320),
 		Font = FONT,
@@ -249,7 +231,8 @@ local function panel(opts)
 		Resizable = true,
 		AlwaysOnTop = true, -- OnTopOfCoreBlur, or the Esc menu's blur frosts the panel
 		ShowCustomCursor = false, -- Obsidian hides the Roblox cursor and draws a "+" crosshair while the window is open
-		ToggleKeybind = opts.hideKey or HIDE_KEY,
+		ShowMobileButtons = false, -- its Toggle/Lock buttons; the logo below replaces them
+		ToggleKeybind = opts.key or KEY,
 		NotifySide = "Right",
 	})
 	if not Window then
@@ -265,14 +248,15 @@ local function panel(opts)
 
 	-- Obsidian's own 100% unless a script asks. SetDPIScale takes a percent and rescales
 	-- every UIScale it owns, so the window, rows, text and dropdowns move together and Size
-	-- offsets stay in unscaled pixels. Before the shade, which reads it live.
+	-- offsets stay in unscaled pixels.
 	if opts.scale then
 		pcall(function()
 			Library:SetDPIScale(opts.scale * 100)
 		end)
 	end
 
-	installShade(Library, Window, opts.key or KEY)
+	installTitleLogo(Library, Window, asset)
+	installBubble(Library, asset)
 
 	-- The live name, after the window exists: GetProductInfo yields, and rate-limited or
 	-- dead it costs nothing but the fallback footer.
@@ -291,5 +275,7 @@ local function panel(opts)
 end
 
 -- ponytail: deliberately not cached, for the same reason panel.lua isn't -- edit, re-paste,
--- and the old copy would silently run.
+-- and the old copy would silently run. Obsidian itself is still upstream, not forked: the
+-- rail / flat-row layout from the design canvas is the change that needs Library.lua's
+-- CreateWindow, and nothing above does.
 return panel
