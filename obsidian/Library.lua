@@ -10875,6 +10875,7 @@ function Library:CreateWindow(WindowInfo)
     local StatusStrip
     local StatusLabel
     local StatusButton
+    local RailLine -- FORK(zegion): the hairline beside an icon rail; built the first time a rail is asked for
 
     --// Old Naming \\--
     if WindowInfo.Compact ~= nil then
@@ -11717,12 +11718,50 @@ function Library:CreateWindow(WindowInfo)
     -- showing it again restores the same width; the divider shrinks to the title bar.
     function Window:SetSidebarHidden(Hidden: boolean)
         Tabs.Visible = not Hidden
+        if RailLine then
+            RailLine.Visible = not Hidden
+        end
         if Hidden then
             DividerLine.Size = UDim2.new(0, 1, 0, 48)
             Container.Size = UDim2.new(1, 0, 1, -70 - StripH)
         else
             DividerLine.Size = UDim2.new(0, 1, 1, -21)
             Container.Size = UDim2.new(1, -Tabs.Size.X.Offset - 1, 1, -70 - StripH)
+        end
+    end
+
+    -- FORK(zegion): the sidebar as an icon-only rail of the given width. Unlike SetSidebarWidth
+    -- this leaves the title bar alone (SetSidebarWidth resizes the title holder to the sidebar's
+    -- width and hides the title text when compact), so the divider inside the title bar stays
+    -- where it was and the rail gets a hairline of its own below the title bar.
+    function Window:SetSidebarRail(Width: number)
+        Tabs.Visible = true
+        Tabs.Size = UDim2.new(0, Width, 1, -70 - StripH)
+        Container.Size = UDim2.new(1, -Width - 1, 1, -70 - StripH)
+        DividerLine.Size = UDim2.new(0, 1, 0, 48)
+
+        if not RailLine then
+            RailLine = New("Frame", {
+                BackgroundColor3 = "OutlineColor",
+                Parent = MainFrame,
+                ZIndex = 2,
+            })
+        end
+        RailLine.Visible = true
+        RailLine.Position = UDim2.fromOffset(Width, 49 + StripH)
+        RailLine.Size = UDim2.new(0, 1, 1, -70 - StripH)
+
+        for _, Button in Library.TabButtons do
+            if not Button.Icon then
+                continue
+            end
+
+            Button.Label.Visible = false
+            Button.Padding.PaddingBottom = UDim.new(0, 6)
+            Button.Padding.PaddingLeft = UDim.new(0, 6)
+            Button.Padding.PaddingRight = UDim.new(0, 6)
+            Button.Padding.PaddingTop = UDim.new(0, 6)
+            Button.Icon.SizeConstraint = Enum.SizeConstraint.RelativeXY
         end
     end
 
