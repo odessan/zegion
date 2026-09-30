@@ -8342,6 +8342,7 @@ do
             Size = UDim2.new(1, 0, 0, 21),
             Text = "---",
             TextSize = 14,
+            TextTruncate = Enum.TextTruncate.AtEnd, -- FORK(zegion): never spill past the box
             TextXAlignment = Enum.TextXAlignment.Left,
             ZIndex = 2,
             Parent = DisplayContainer,
@@ -8502,6 +8503,9 @@ do
             local IsDictionary = not IsSequentialArray(Dropdown.Values)
 
             if Info.Multi then
+                -- FORK(zegion): a count instead of every picked name joined with commas, which
+                -- ran past the box: none = "---", one = its name, everything = "All", else "N selected"
+                local PickedCount, PickedName = 0, ""
                 for Key, RawValue in Dropdown.Values do
                     local Value = IsDictionary and Key or RawValue
 
@@ -8510,13 +8514,20 @@ do
                             ValueImage = GetValueImage(Value, RawValue)
                         end
 
-                        Str = Str
-                            .. (Info.FormatDisplayValue and tostring(Info.FormatDisplayValue(RawValue)) or tostring(RawValue))
-                            .. ", "
+                        PickedCount += 1
+                        PickedName = Info.FormatDisplayValue and tostring(Info.FormatDisplayValue(RawValue)) or tostring(RawValue)
                     end
                 end
 
-                Str = Str:sub(1, #Str - 2)
+                if PickedCount == 0 then
+                    Str = ""
+                elseif PickedCount == 1 then
+                    Str = PickedName
+                elseif PickedCount >= GetTableSize(Dropdown.Values) then
+                    Str = "All"
+                else
+                    Str = PickedCount .. " selected"
+                end
             else
                 local DisplayValue = Dropdown.Value
                 if IsDictionary and Dropdown.Value ~= nil then
@@ -8745,7 +8756,7 @@ do
 
         local function ApplyDragIndex(Index, InRange)
             local Entry = FilteredEntries[Index]
-            if not Entry or Entry.IsDisabled then
+            if not Entry or Entry.IsDisabled or Entry.Action then -- FORK(zegion): a drag sweeps values, never the action rows
                 return
             end
 
@@ -8875,10 +8886,13 @@ do
                     Selected = Dropdown.Value == Entry.Value
                 end
 
-                Row.Selected = Selected and true or false
+                -- FORK(zegion): an action row reads as always lit, in the accent colour, and its
+                -- "Selected" flag stops the hover handlers from dimming it again
+                Row.Selected = (Selected or Entry.Action) and true or false
+                Button.TextColor3 = Entry.Action and Library.Scheme.AccentColor or Library.Scheme.FontColor
 
                 Container.BackgroundTransparency = Selected and 0 or 1
-                Button.TextTransparency = Entry.IsDisabled and 0.8 or Selected and 0 or 0.5
+                Button.TextTransparency = Entry.IsDisabled and 0.8 or (Selected or Entry.Action) and 0 or 0.5
 
                 if Entry.ValueImage then
                     Image.ImageTransparency = Entry.IsDisabled and 0.8 or Selected and 0 or 0.5
@@ -8888,6 +8902,11 @@ do
             table.insert(Dropdown.Connections, Button.MouseButton1Click:Connect(function()
                 local Entry = Row.Entry
                 if not Entry or Entry.IsDisabled or DragSelecting then
+                    return
+                end
+
+                if Entry.Action then -- FORK(zegion): Select all / Remove all
+                    Entry.Action()
                     return
                 end
 
@@ -8973,7 +8992,7 @@ do
                 end
 
                 local Entry = Row.Entry
-                if not Entry or Entry.IsDisabled then
+                if not Entry or Entry.IsDisabled or Entry.Action then -- FORK(zegion): no drag-select from an action row
                     return
                 end
 
@@ -9027,10 +9046,47 @@ do
             return Row
         end
 
+        -- FORK(zegion): the two pinned rows. Their Value is a key no real value can be, so the
+        -- rows' "is this selected" lookups read nil and nothing ever writes to it.
+        local SelectAllEntry = {
+            Value = "\0zegion:all",
+            RawValue = "Select all",
+            FormattedValue = "Select all",
+            IsDisabled = false,
+            Action = function()
+                local Picked = {}
+                local IsDict = not IsSequentialArray(Dropdown.Values)
+                for Key, Raw in Dropdown.Values do
+                    local Val = IsDict and Key or Raw
+                    if not table.find(Dropdown.DisabledValues, Val) then
+                        Picked[Val] = true
+                    end
+                end
+                Dropdown:SetValue(Picked)
+            end,
+        }
+        local ClearAllEntry = {
+            Value = "\0zegion:none",
+            RawValue = "Remove all",
+            FormattedValue = "Remove all",
+            IsDisabled = false,
+            Action = function()
+                Dropdown:SetValue({})
+            end,
+        }
+
         function Dropdown:BuildDropdownList()
             StopDragSelect()
 
             RecomputeFilteredEntries()
+
+            -- FORK(zegion): "Select all" and "Remove all" pinned above a multi dropdown's values.
+            -- They are entries like any other, marked by Action, so the row pool needs no new
+            -- kind of row; hidden while searching, when "all" would mean the matches only.
+            if Info.Multi and not (SearchBox and SearchBox.Text ~= "") then
+                table.insert(FilteredEntries, 1, ClearAllEntry)
+                table.insert(FilteredEntries, 1, SelectAllEntry)
+            end
 
             MenuTable.Menu.CanvasPosition = Vector2.new(0, 0)
 
