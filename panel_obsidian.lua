@@ -12,7 +12,8 @@
 
      Open and close, the same on every platform:
        "-" button       top-left of the window: closes it (loops keep running)
-       floating logo    a 56px draggable button, right edge, middle of the screen. It is on
+       floating logo    a 56px draggable button, a third of the way in and a bit above the
+                        middle of the screen (drag it anywhere). It is on
                         screen only while the window is closed; tap it to open the window
        RightControl     the same toggle from a keyboard
      Obsidian's own mobile Toggle/Lock buttons are turned off -- the logo replaces them.
@@ -50,7 +51,7 @@ local LOGO_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/logo.png
 local LOGO_DIR = "Zegion"
 local LOGO_FILE = LOGO_DIR .. "/logo_v1.png" -- bump the suffix when logo.png changes, or the old copy is kept
 local BUBBLE = 56 -- floating button; 44 is the touch-target floor, 56 reads on a phone
-local BUBBLE_MARGIN = 12 -- gap to the right edge of the screen
+local BUBBLE_AT_X, BUBBLE_AT_Y = 0.346, 0.30 -- where its centre starts, as a fraction of the screen: a third of the way in, a bit above the middle
 local DRAG_SLOP = 8 -- px a press may wander and still count as a tap
 local MIN_BTN = 24 -- title-bar "-" button
 local MARK = 20 -- title-bar logo mark
@@ -126,7 +127,13 @@ local function installBubble(Library, asset)
 	local btn = Instance.new("TextButton")
 	btn.Name = "LogoBubble"
 	btn.Size = UDim2.fromOffset(BUBBLE, BUBBLE)
-	btn.Position = UDim2.fromOffset(view.X - BUBBLE - BUBBLE_MARGIN, (view.Y - BUBBLE) / 2)
+	-- The fractions are of the whole screen; the ScreenGui starts below Roblox's top bar, so
+	-- take its inset back out of y.
+	local inset = game:GetService("GuiService"):GetGuiInset()
+	btn.Position = UDim2.fromOffset(
+		math.max(0, view.X * BUBBLE_AT_X - BUBBLE / 2),
+		math.max(0, (view.Y + inset.Y) * BUBBLE_AT_Y - inset.Y - BUBBLE / 2)
+	)
 	btn.BackgroundColor3 = Library.Scheme.BackgroundColor
 	btn.AutoButtonColor = false
 	btn.BorderSizePixel = 0
