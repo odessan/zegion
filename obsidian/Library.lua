@@ -11751,16 +11751,38 @@ function Library:CreateWindow(WindowInfo)
         RailLine.Position = UDim2.fromOffset(Width, 49 + StripH)
         RailLine.Size = UDim2.new(0, 1, 1, -70 - StripH)
 
+        -- Air: 8px around the rail, 6px between buttons, so a 56px rail holds 40px buttons.
+        local List = Tabs:FindFirstChildOfClass("UIListLayout")
+        if List then
+            List.Padding = UDim.new(0, 6)
+        end
+        local Pad = Tabs:FindFirstChildOfClass("UIPadding")
+        if Pad then
+            Pad.PaddingBottom = UDim.new(0, 8)
+            Pad.PaddingLeft = UDim.new(0, 8)
+            Pad.PaddingRight = UDim.new(0, 8)
+            Pad.PaddingTop = UDim.new(0, 8)
+        end
+        for _, Child in Tabs:GetChildren() do
+            if Child:IsA("TextButton") then
+                local Round = Child:FindFirstChildOfClass("UICorner")
+                if Round then
+                    Round.CornerRadius = UDim.new(0, 6)
+                end
+            end
+        end
+
+        -- 11px inside a 40px button leaves an 18px icon (was 28px, edge to edge).
         for _, Button in Library.TabButtons do
             if not Button.Icon then
                 continue
             end
 
             Button.Label.Visible = false
-            Button.Padding.PaddingBottom = UDim.new(0, 6)
-            Button.Padding.PaddingLeft = UDim.new(0, 6)
-            Button.Padding.PaddingRight = UDim.new(0, 6)
-            Button.Padding.PaddingTop = UDim.new(0, 6)
+            Button.Padding.PaddingBottom = UDim.new(0, 11)
+            Button.Padding.PaddingLeft = UDim.new(0, 11)
+            Button.Padding.PaddingRight = UDim.new(0, 11)
+            Button.Padding.PaddingTop = UDim.new(0, 11)
             Button.Icon.SizeConstraint = Enum.SizeConstraint.RelativeXY
         end
     end
