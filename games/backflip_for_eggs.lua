@@ -4,7 +4,7 @@
                Lobby line and the egg is yours ~0.25s later. Nothing walks and the guardian
                never lands (its chase is simulated on OUR client and it reports the catch
                itself). Best = the game's own AnimalConfig.rateOf on the nest's scale and
-               mutation, filtered by the rarities ticked and a max hatch time.
+               mutation, filtered by the rarities ticked.
      PLACE   : puts held eggs on free ground of your plot (placeEgg, ~0.3s apart). The plot takes
                PLOT_MAX_EGGS (20); once it is full nothing is fired and the farm keeps stealing
                into your hands, uncapped, so the best held egg drops in as each one hatches.
@@ -58,7 +58,8 @@ local GRID = 4 -- studs between candidate egg spots
 local INSET = 8 -- keep spots this far from the plot ground's edge
 local SPOT_CLEAR = 3.5 -- the server wants 2.5 between eggs; a little extra
 local RATE_EDGE = 1.01 -- a stored animal must beat the worst placed one by this factor to swap
-local MAX_HATCH_MIN = 60 -- default cap on an egg's hatch time, in minutes. A 24h egg is a dead slot
+-- ponytail: no hatch-time cap. Every egg over 60 min is secret, divine or eternal (Manticore 9h,
+-- Dragon 12h, Cerberus 24h), so a cap only ever hid the best ones.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -288,12 +289,11 @@ local function listen()
 end
 
 -- scoring --------------------------------------------------------------------
-local RARITIES = { "common", "uncommon", "rare", "epic", "legendary", "mythic", "cosmic", "secret", "divine" }
+local RARITIES = { "common", "uncommon", "rare", "epic", "legendary", "mythic", "cosmic", "secret", "divine", "eternal" } -- Libraries.Rarities, minus admin
 local rarityOn = {}
 for _, r in ipairs(RARITIES) do
 	rarityOn[r] = true
 end
-local maxHatch = MAX_HATCH_MIN * 60
 
 local function rateOf(id, scale, mutation, bestOwn)
 	local good, r = pcall(AnimalConfig.rateOf, id, scale, bestOwn or 0, mutation or "")
@@ -352,7 +352,7 @@ local function nests()
 					a = a.Parent
 				end
 				local platform = tonumber(a.Name)
-				if egg and animal and platform and rarityOn[animal.rarity] and egg.hatchTime <= maxHatch and claimable(platform, speed) then
+				if egg and animal and platform and rarityOn[animal.rarity] and claimable(platform, speed) then
 					out[#out + 1] = {
 						prompt = pr,
 						part = part,
@@ -439,7 +439,7 @@ local function farmStep(alive)
 	local list = nests()
 	local t = list[1]
 	if not t then
-		say("no eligible nest (rarity, hatch cap or speed)")
+		say("no eligible nest (rarity or speed)")
 		return 1
 	end
 	local res
@@ -928,17 +928,6 @@ Eggs:AddDropdown("Rarity", {
 		for name in pairs(ticked(picked)) do
 			rarityOn[name:lower()] = true
 		end
-	end,
-})
-Eggs:AddInput("MaxHatch", {
-	Text = "Max hatch (minutes)",
-	Tooltip = "Skips eggs that take longer than this to hatch. The rarest ones run to 24 hours and would sit in a slot all day",
-	Default = tostring(MAX_HATCH_MIN),
-	Numeric = true,
-	Finished = true,
-	Placeholder = "60",
-	Callback = function(v)
-		maxHatch = math.max(0, tonumber(v) or MAX_HATCH_MIN) * 60
 	end,
 })
 Eggs:AddToggle("Place", {
