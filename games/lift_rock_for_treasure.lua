@@ -33,7 +33,7 @@
      possible. Stage weights 1..15 run 100 .. 7.5e14, and lift time is Weight / Strength, so
      Strength (training) is what moves the Auto stage deeper.
 
-     RightControl rolls it up to a bare Zegion bar, RightAlt hides it outright.
+     The Zegion logo (floating button, or top-left of the window) or RightControl opens and closes it.
      Stop: getgenv().liftRockStop() (or the Unload button) ]]
 
 -- config ---------------------------------------------------------------------

@@ -42,7 +42,7 @@
      Not wired: the Teleporter purchase (unprobed), cart collection, bonus-consumable arming,
      Robux products, boosts.
 
-     RightControl rolls it up to a bare Zegion bar, RightAlt hides it outright.
+     The Zegion logo (floating button, or top-left of the window) or RightControl opens and closes it.
      Stop: getgenv().tapButtonsStop() (or the Unload button) ]]
 
 -- config ---------------------------------------------------------------------
