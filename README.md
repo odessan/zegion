@@ -40,65 +40,66 @@ progress. When a script "does nothing", the answer is in there.
 
 Names drift on Roblox; trust the id. The panel shows the live name on its topbar.
 
-| Game                                | PlaceId           | Script                           |
-| ----------------------------------- | ----------------- | -------------------------------- |
-| +1 Cut Grass Adventure              | `90086669327265`  | `cut_grass_adventure.lua`        |
-| +1 Jetpack for Brainrots            | `80234914611737`  | `jetpack_for_brainrots.lua`      |
-| +1 Poop for Brainrots               | `87810710637189`  | `poop_for_brainrots.lua`         |
-| +1 Skate for Brainrots              | `115852335239914` | `skate_for_brainrots.lua`        |
-| +1 Wings for Brainrots              | `84332574190497`  | `wings_for_brainrots.lua`        |
-| Be Flash For Brainrots!             | `136066387156306` | `flash_for_brainrots.lua`        |
-| Become a Brainrot                   | `99255447043899`  | `become_a_brainrot.lua`          |
-| Brainblast for Brainrot             | `102990893659741` | `brainblast_for_brainrot.lua`    |
-| Break Tape For Brainrots            | `104339804279870` | `break_tape_for_brainrots.lua`   |
-| Build a Bridge for Brainrots        | `88207898227053`  | `build_bridge_for_brainrots.lua` |
-| Build to Kill Zombie                | `105011592530400` | `build_to_kill_zombie.lua`       |
-| Chicken Farm                        | `137233438285284` | `chicken_farm.lua`               |
-| Dig Into Secrets                    | `119409763193569` | `dig_into_secrets.lua`           |
-| Don't Steal a Bobo                  | `120135584963579` | `dont_steal_a_bobo.lua`          |
+| Game                                | PlaceId           | Script                                 |
+| ----------------------------------- | ----------------- | -------------------------------------- |
+| +1 Cut Grass Adventure              | `90086669327265`  | `cut_grass_adventure.lua`              |
+| +1 Jetpack for Brainrots            | `80234914611737`  | `jetpack_for_brainrots.lua`            |
+| +1 Poop for Brainrots               | `87810710637189`  | `poop_for_brainrots.lua`               |
+| +1 Skate for Brainrots              | `115852335239914` | `skate_for_brainrots.lua`              |
+| +1 Wings for Brainrots              | `84332574190497`  | `wings_for_brainrots.lua`              |
+| Backflip for Eggs                   | `88611017452341`  | `backflip_for_eggs.lua`                |
+| Be Flash For Brainrots!             | `136066387156306` | `flash_for_brainrots.lua`              |
+| Become a Brainrot                   | `99255447043899`  | `become_a_brainrot.lua`                |
+| Brainblast for Brainrot             | `102990893659741` | `brainblast_for_brainrot.lua`          |
+| Break Tape For Brainrots            | `104339804279870` | `break_tape_for_brainrots.lua`         |
+| Build a Bridge for Brainrots        | `88207898227053`  | `build_bridge_for_brainrots.lua`       |
+| Build to Kill Zombie                | `105011592530400` | `build_to_kill_zombie.lua`             |
+| Chicken Farm                        | `137233438285284` | `chicken_farm.lua`                     |
+| Dig Into Secrets                    | `119409763193569` | `dig_into_secrets.lua`                 |
+| Don't Steal a Bobo                  | `120135584963579` | `dont_steal_a_bobo.lua`                |
 | Drill Block for Dumpling Squishy    | `86943068337855`  | `drill_block_for_dumpling_squishy.lua` |
-| Drill Ores                          | `122572082932179` | `drill_ores.lua`                 |
-| Fake a Brainrot                     | `110627433764494` | `fake_a_brainrot.lua`            |
-| Fall For Brainrots!                 | `86368783421928`  | `fall_for_brainrots.lua`         |
-| Fish an Anime!                      | `74729868188364`  | `fish_for_anime_rng.lua`         |
-| Jump for SCP                        | `123724279728430` | `jump_for_scp.lua`               |
-| Jump To Steal Soccer Players        | `133294838637122` | `jump_for_soccer_players.lua`    |
-| My Dancing Animals!                 | `102602309625870` | `dancing_animals.lua`            |
-| My Seafood Stand!                   | `72896199592423`  | `my_seafood_stand.lua`           |
-| Power Blast Lucky Block             | `119822977170203` | `power_blast_lucky_block.lua`    |
-| Pull a Lucky Block                  | `80861715191104`  | `pull_a_lucky_block.lua`         |
-| Pull a Lucky Fish                   | `112781315318195` | `pull_a_lucky_fish.lua`          |
-| Pull an Egg                         | `70640255604878`  | `pull_an_egg.lua`                |
-| Run For Brainrots!                  | `94702395375549`  | `run_for_brainrots.lua`          |
-| Run For Soccer Players              | `140417239274110` | `run_for_soccer_players.lua`     |
-| Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua`            |
-| Steal a Brainrot Base               | `103050497819513` | `steal_a_brainrot_base.lua`      |
-| Steal a Chicken Egg                 | `76503495566299`  | `steal_a_chicken_egg.lua`        |
-| Steal a Fish Egg                    | `99183404085821`  | `steal_a_fish_egg.lua`           |
-| Steal a Seed                        | `122216176958450` | `steal_a_seed.lua`               |
-| Sniper Arena                        | `119259569670784` | `sniper_arena.lua`               |
-| Split Sea for Animals               | `88047783411976`  | `split_sea_for_animals.lua`      |
-| Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`             |
-| Loot to Forge                       | `118805555015549` | `loot_to_forge.lua`              |
-| Lift Rock for Treasure              | `102555956950143` | `lift_rock_for_treasure.lua`     |
-| Tap Buttons                         | `77404766588393`  | `tap_buttons.lua`                |
-| Build an Ant Empire                 | `78490532994307`  | `build_an_ant_empire.lua`        |
-| Anime Dice                          | `113290951185459` | `anime_dice.lua`                 |
-| +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`        |
-| Ride a Pet                          | `124216119978534` | `ride_a_pet.lua`                 |
-| Roll a Fisherman                    | `90920025162454`  | `roll_a_fisherman.lua`           |
-| Chop a Tree                         | `110730550789828` | `chop_a_tree.lua`                |
-| Steal a Mysterious Egg (World 2)    | `117032685902228` | `steal_a_mysterious_egg.lua`     |
-| Deep Fishing                        | `132239307080610` | `deep_fishing.lua`               |
-| Sell Lemons (World 1)               | `79268393072444`  | `sell_lemons.lua`                |
-| Sell Lemons (World 2)               | `75881787709393`  | `sell_lemons_w2.lua`             |
-| Strength to Grow Arms               | `86259628805375`  | `strength_to_grow_arms.lua`      |
-| Surf for Lucky Blocks               | `98916904742148`  | `surf_for_brainrots.lua`         |
-| Swing Obby for Brainrots!           | `114640202062357` | `swing_obby_for_brainrots.lua`   |
-| TBOD^2                              | `139063887391814` | `one_dropper_tycoon.lua`         |
-| Tornado for Brainrots               | `72833051149233`  | `tornado_for_brainrots.lua`      |
-| Turret Defense                      | `100641654440407` | `turret_defense.lua`             |
-| Violence District                   | `93978595733734`  | `violence_district.lua`          |
+| Drill Ores                          | `122572082932179` | `drill_ores.lua`                       |
+| Fake a Brainrot                     | `110627433764494` | `fake_a_brainrot.lua`                  |
+| Fall For Brainrots!                 | `86368783421928`  | `fall_for_brainrots.lua`               |
+| Fish an Anime!                      | `74729868188364`  | `fish_for_anime_rng.lua`               |
+| Jump for SCP                        | `123724279728430` | `jump_for_scp.lua`                     |
+| Jump To Steal Soccer Players        | `133294838637122` | `jump_for_soccer_players.lua`          |
+| My Dancing Animals!                 | `102602309625870` | `dancing_animals.lua`                  |
+| My Seafood Stand!                   | `72896199592423`  | `my_seafood_stand.lua`                 |
+| Power Blast Lucky Block             | `119822977170203` | `power_blast_lucky_block.lua`          |
+| Pull a Lucky Block                  | `80861715191104`  | `pull_a_lucky_block.lua`               |
+| Pull a Lucky Fish                   | `112781315318195` | `pull_a_lucky_fish.lua`                |
+| Pull an Egg                         | `70640255604878`  | `pull_an_egg.lua`                      |
+| Run For Brainrots!                  | `94702395375549`  | `run_for_brainrots.lua`                |
+| Run For Soccer Players              | `140417239274110` | `run_for_soccer_players.lua`           |
+| Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua`                  |
+| Steal a Brainrot Base               | `103050497819513` | `steal_a_brainrot_base.lua`            |
+| Steal a Chicken Egg                 | `76503495566299`  | `steal_a_chicken_egg.lua`              |
+| Steal a Fish Egg                    | `99183404085821`  | `steal_a_fish_egg.lua`                 |
+| Steal a Seed                        | `122216176958450` | `steal_a_seed.lua`                     |
+| Sniper Arena                        | `119259569670784` | `sniper_arena.lua`                     |
+| Split Sea for Animals               | `88047783411976`  | `split_sea_for_animals.lua`            |
+| Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`                   |
+| Loot to Forge                       | `118805555015549` | `loot_to_forge.lua`                    |
+| Lift Rock for Treasure              | `102555956950143` | `lift_rock_for_treasure.lua`           |
+| Tap Buttons                         | `77404766588393`  | `tap_buttons.lua`                      |
+| Build an Ant Empire                 | `78490532994307`  | `build_an_ant_empire.lua`              |
+| Anime Dice                          | `113290951185459` | `anime_dice.lua`                       |
+| +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`              |
+| Ride a Pet                          | `124216119978534` | `ride_a_pet.lua`                       |
+| Roll a Fisherman                    | `90920025162454`  | `roll_a_fisherman.lua`                 |
+| Chop a Tree                         | `110730550789828` | `chop_a_tree.lua`                      |
+| Steal a Mysterious Egg (World 2)    | `117032685902228` | `steal_a_mysterious_egg.lua`           |
+| Deep Fishing                        | `132239307080610` | `deep_fishing.lua`                     |
+| Sell Lemons (World 1)               | `79268393072444`  | `sell_lemons.lua`                      |
+| Sell Lemons (World 2)               | `75881787709393`  | `sell_lemons_w2.lua`                   |
+| Strength to Grow Arms               | `86259628805375`  | `strength_to_grow_arms.lua`            |
+| Surf for Lucky Blocks               | `98916904742148`  | `surf_for_brainrots.lua`               |
+| Swing Obby for Brainrots!           | `114640202062357` | `swing_obby_for_brainrots.lua`         |
+| TBOD^2                              | `139063887391814` | `one_dropper_tycoon.lua`               |
+| Tornado for Brainrots               | `72833051149233`  | `tornado_for_brainrots.lua`            |
+| Turret Defense                      | `100641654440407` | `turret_defense.lua`                   |
+| Violence District                   | `93978595733734`  | `violence_district.lua`                |
 
 `GAMES` in `loader.lua` is the source of truth. Only ids that were actually confirmed
 are in it — a wrong id is worse than a missing one, because the loader would quietly run

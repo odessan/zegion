@@ -78,6 +78,7 @@ local GAMES = {
 	["75881787709393"] = "sell_lemons_w2.lua", -- Sell Lemons (World 2)
 	["105011592530400"] = "build_to_kill_zombie.lua", -- Build to Kill Zombie
 	["88047783411976"] = "split_sea_for_animals.lua", -- Split Sea for Animals
+	["88611017452341"] = "backflip_for_eggs.lua", -- Backflip for Eggs
 	["132767904294856"] = "blue_lock_farm.lua", -- Blue Lock Farm
 	["118805555015549"] = "loot_to_forge.lua", -- Loot to Forge
 	["78490532994307"] = "build_an_ant_empire.lua", -- Build an Ant Empire
