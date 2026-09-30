@@ -1,8 +1,8 @@
 --[[ Zegion panel (Obsidian) -- the same idea as panel.lua, for scripts that want the
-     Obsidian look instead of WindUI.
+     Obsidian look instead of WindUI. Loads Zegion's fork of Obsidian (obsidian/Library.lua).
 
      local panel = loadstring(game:HttpGet(PANEL_URL))()
-     local Window, Library = panel({ game = "TP for Brainrots", size = UDim2.fromOffset(440, 320) })
+     local Window, Library = panel({ game = "TP for Brainrots", size = UDim2.fromOffset(480, 320) })
      if not Window then return end
 
      Rows are Obsidian's own API, not WindUI's: Window:AddTab -> Tab:AddLeftGroupbox ->
@@ -10,19 +10,20 @@
      the two -- the callback timing and Set() re-entrancy differ, so an adapter would only
      hide a second set of quirks. panel.lua and every WindUI script are untouched.
 
-     One control, on every platform: the Zegion logo.
-       floating logo   a 56px draggable button that stays on screen whether the window is open
-                       or not -- tap it to open, tap it again to close
-       title-bar logo  the same mark at the window's top-left; also closes it
-       RightControl    the same toggle from a keyboard
-     Closing hides the window outright; loops keep running. Obsidian's own mobile Toggle/Lock
-     buttons are turned off -- the logo replaces them.
+     Open and close, the same on every platform:
+       "-" button       top-left of the window: closes it (loops keep running)
+       floating logo    a 56px draggable button, right edge, middle of the screen. It is on
+                        screen only while the window is closed; tap it to open the window
+       RightControl     the same toggle from a keyboard
+     Obsidian's own mobile Toggle/Lock buttons are turned off -- the logo replaces them.
+     A window with a single tab hides its sidebar; a second tab brings it back.
      Stop:  Library:Unload() -- runs every Library:OnUnload callback, then destroys the UI. ]]
 
 -- brand ----------------------------------------------------------------------
 local BRAND = "Zegion"
-local KEY = Enum.KeyCode.RightControl -- open / close, same as the logo
+local KEY = Enum.KeyCode.RightControl -- open / close, same as the buttons
 local DISPLAY_ORDER = 2147483643 -- Obsidian ships at 998, under the Esc menu's own screens
+local MIN_WIDTH = 480 -- narrower and the title holder has no room for the two title-bar controls
 
 -- Everything look-shaped lives here, so a restyle is one block. Warm charcoal with one
 -- vermilion signal colour: an "on" toggle is the only saturated thing on screen. Swap
@@ -47,10 +48,12 @@ local LOGO_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/logo.png
 local LOGO_DIR = "Zegion"
 local LOGO_FILE = LOGO_DIR .. "/logo_v1.png" -- bump the suffix when logo.png changes, or the old copy is kept
 local BUBBLE = 56 -- floating button; 44 is the touch-target floor, 56 reads on a phone
-local BUBBLE_AT = UDim2.fromOffset(12, 120) -- under Roblox's own top-left buttons
-local BAR_BTN = 32 -- title-bar logo
-local BAR_BTN_PAD = 40 -- room it takes off the left of the title holder
-local SHADE_H = 48 -- Obsidian's title bar height, hardcoded in CreateWindow
+local BUBBLE_MARGIN = 12 -- gap to the right edge of the screen
+local DRAG_SLOP = 8 -- px a press may wander and still count as a tap
+local MIN_BTN = 24 -- title-bar "-" button
+local MARK = 20 -- title-bar logo mark
+local BAR_PAD = 66 -- room both take off the left of the title holder: 8 + 24 + 8 + 20 + 6
+local BAR_H = 48 -- Obsidian's title bar height, hardcoded in CreateWindow
 
 local function logoAsset()
 	if not (writefile and isfile and getcustomasset and makefolder and isfolder) then
@@ -72,7 +75,7 @@ local function logoAsset()
 	return ok and asset or nil
 end
 
--- Draws the mark into `btn`, whichever of the three forms is available.
+-- Draws the mark into `btn` (a TextButton or TextLabel), whichever form is available.
 local function drawMark(Library, btn, px, asset, fallbackSize)
 	local scheme = Library.Scheme
 	if asset then
@@ -104,27 +107,91 @@ local function drawMark(Library, btn, px, asset, fallbackSize)
 	end
 end
 
--- Floating button. Obsidian's AddDraggableButton already tells a tap from a drag (a click
--- only counts if the pointer moved 12px or less), so a thumb that nudges it while tapping
--- still opens the window. Excluded from UIScale: a touch target that shrinks with the
--- panel's scale stops being one.
+-- Floating logo. Own press/drag handling rather than Obsidian's AddDraggableButton: that one
+-- decides "tap" from the pointer's state at release and felt dead here. A press that moves
+-- more than DRAG_SLOP drags the button; one that does not, opens the window on release.
+-- Hidden while the window is open -- the window has its own "-".
 local function installBubble(Library, asset)
-	local drag = Library:AddDraggableButton("", function()
-		Library:Toggle()
-	end, true, true)
-	local btn = drag.Button
+	local UserInputService = game:GetService("UserInputService")
+	local RunService = game:GetService("RunService")
+
+	local view = Library.ScreenGui.AbsoluteSize
+	if view.X < 100 or view.Y < 100 then
+		view = workspace.CurrentCamera.ViewportSize
+	end
+
+	local btn = Instance.new("TextButton")
+	btn.Name = "LogoBubble"
 	btn.Size = UDim2.fromOffset(BUBBLE, BUBBLE)
-	btn.Position = BUBBLE_AT
+	btn.Position = UDim2.fromOffset(view.X - BUBBLE - BUBBLE_MARGIN, (view.Y - BUBBLE) / 2)
+	btn.BackgroundColor3 = Library.Scheme.BackgroundColor
+	btn.AutoButtonColor = false
+	btn.BorderSizePixel = 0
+	btn.Text = ""
+	btn.Visible = false -- the Heartbeat below shows it once the window is closed
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(0, RADIUS + 6)
+	round.Parent = btn
+	local ring = Instance.new("UIStroke")
+	ring.Color = Library.Scheme.OutlineColor
+	ring.Parent = btn
 	drawMark(Library, btn, BUBBLE - 20, asset, 30)
+	btn.Parent = Library.Floats
+
+	local pressed, from, origin, moved
+	btn.InputBegan:Connect(function(input)
+		local t = input.UserInputType
+		if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+			pressed, from, origin, moved = t, input.Position, btn.Position, false
+		end
+	end)
+	Library:GiveSignal(UserInputService.InputChanged:Connect(function(input)
+		if not pressed then
+			return
+		end
+		local t = input.UserInputType
+		if t ~= Enum.UserInputType.MouseMovement and t ~= pressed then
+			return
+		end
+		local d = input.Position - from
+		if not moved and math.sqrt(d.X * d.X + d.Y * d.Y) <= DRAG_SLOP then
+			return
+		end
+		moved = true
+		local size = Library.ScreenGui.AbsoluteSize
+		btn.Position = UDim2.fromOffset(
+			math.clamp(origin.X.Offset + d.X, 0, math.max(0, size.X - BUBBLE)),
+			math.clamp(origin.Y.Offset + d.Y, 0, math.max(0, size.Y - BUBBLE))
+		)
+	end))
+	Library:GiveSignal(UserInputService.InputEnded:Connect(function(input)
+		if not pressed or input.UserInputType ~= pressed then
+			return
+		end
+		local wasDrag = moved
+		pressed = nil
+		if not wasDrag then
+			Library:Toggle(true)
+		end
+	end))
+
+	-- Heartbeat, not a task loop: a resumed thread lacks the capability to write the hidden GUI.
+	Library:GiveSignal(RunService.Heartbeat:Connect(function()
+		local want = not Library.Toggled
+		if btn.Visible ~= want then
+			btn.Visible = want
+		end
+	end))
 end
 
--- Title-bar logo. Obsidian doesn't expose its title bar, so it is found by shape: the
--- 48px-tall, full-width, transparent Frame directly under MainFrame; its title holder is
--- whichever child carries the TextLabel reading BRAND.
-local function installTitleLogo(Library, Window, asset)
+-- Title-bar controls: a "-" button that closes the window, and the logo mark beside it.
+-- Obsidian doesn't expose its title bar, so it is found by shape: the 48px-tall, full-width,
+-- transparent Frame directly under MainFrame; its title holder is whichever child carries
+-- the TextLabel reading BRAND.
+local function installTitleControls(Library, Window, asset)
 	local topbar, label
 	for _, c in ipairs(Window.MainFrame:GetChildren()) do
-		if c:IsA("Frame") and c.BackgroundTransparency == 1 and c.Size == UDim2.new(1, 0, 0, SHADE_H) then
+		if c:IsA("Frame") and c.BackgroundTransparency == 1 and c.Size == UDim2.new(1, 0, 0, BAR_H) then
 			topbar = c
 			break
 		end
@@ -137,28 +204,66 @@ local function installTitleLogo(Library, Window, asset)
 	end
 	local holder = label and label.Parent
 	if not holder then
-		warn("[zegion] Obsidian's title bar changed shape -- no title logo. The floating logo still works.")
+		warn("[zegion] Obsidian's title bar changed shape -- no title-bar controls. RightControl still closes.")
 		return
 	end
 
-	-- Make room on the left for the button; the holder centres its content in what's left.
-	holder.Position = UDim2.fromOffset(BAR_BTN_PAD, 0)
-	holder.Size = UDim2.new(0, holder.Size.X.Offset - BAR_BTN_PAD, 1, 0)
+	-- Make room on the left; the holder centres its content in what's left.
+	holder.Position = UDim2.fromOffset(BAR_PAD, 0)
+	holder.Size = UDim2.new(0, holder.Size.X.Offset - BAR_PAD, 1, 0)
 
+	local scheme = Library.Scheme
 	local btn = Instance.new("TextButton")
-	btn.Name = "Logo"
+	btn.Name = "Minimize"
 	btn.AnchorPoint = Vector2.new(0, 0.5)
-	btn.Position = UDim2.new(0, 4, 0.5, 0)
-	btn.Size = UDim2.fromOffset(BAR_BTN, BAR_BTN)
-	btn.BackgroundTransparency = 1
+	btn.Position = UDim2.new(0, 8, 0.5, 0)
+	btn.Size = UDim2.fromOffset(MIN_BTN, MIN_BTN)
+	btn.BackgroundColor3 = scheme.MainColor
 	btn.AutoButtonColor = false
 	btn.BorderSizePixel = 0
 	btn.Text = ""
-	drawMark(Library, btn, BAR_BTN - 8, asset, 22)
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(0, RADIUS / 2)
+	round.Parent = btn
+	local ring = Instance.new("UIStroke")
+	ring.Color = scheme.OutlineColor
+	ring.Parent = btn
+	local glyph = Library:GetIcon("minus")
+	if glyph then
+		local img = Instance.new("ImageLabel")
+		img.AnchorPoint = Vector2.new(0.5, 0.5)
+		img.Position = UDim2.fromScale(0.5, 0.5)
+		img.Size = UDim2.fromOffset(MIN_BTN - 8, MIN_BTN - 8)
+		img.BackgroundTransparency = 1
+		img.ImageColor3 = scheme.FontColor
+		Library:ApplyLucideIcon(img, glyph)
+		img.Parent = btn
+	else
+		btn.Text = "-" -- icon pack unavailable: a plain dash still does the job
+		btn.TextColor3 = scheme.FontColor
+		btn.TextSize = 16
+		btn.Font = Enum.Font.Code
+	end
+	btn.MouseEnter:Connect(function()
+		ring.Color = scheme.AccentColor
+	end)
+	btn.MouseLeave:Connect(function()
+		ring.Color = scheme.OutlineColor
+	end)
 	btn.MouseButton1Click:Connect(function()
-		Library:Toggle()
+		Library:Toggle(false)
 	end)
 	btn.Parent = topbar
+
+	local mark = Instance.new("TextLabel")
+	mark.Name = "Mark"
+	mark.AnchorPoint = Vector2.new(0, 0.5)
+	mark.Position = UDim2.new(0, 8 + MIN_BTN + 8, 0.5, 0)
+	mark.Size = UDim2.fromOffset(MARK, MARK)
+	mark.BackgroundTransparency = 1
+	mark.Text = ""
+	drawMark(Library, mark, MARK, asset, 16)
+	mark.Parent = topbar
 end
 
 -- readout --------------------------------------------------------------------
@@ -242,7 +347,7 @@ end
 
 -- panel ----------------------------------------------------------------------
 -- opts.game  the footer, until the live name lands (required)
--- opts.size  window size, default 440x320
+-- opts.size  window size, default 480x320; never narrower than 480
 -- opts.key   open / close key, default RightControl
 -- opts.statusBar  true reserves the 36px status strip; then Window:SetStatus({ {"Zone", 4}, ... })
 --                 and Window:SetStatusAction("Unload", fn, true) fill it. Off by default: an
@@ -264,10 +369,11 @@ local function panel(opts)
 
 	local asset = logoAsset()
 
+	local size = opts.size or UDim2.fromOffset(MIN_WIDTH, 320)
 	local Window = Library:CreateWindow({
 		Title = BRAND,
 		Footer = opts.game,
-		Size = opts.size or UDim2.fromOffset(440, 320),
+		Size = UDim2.fromOffset(math.max(size.X.Offset, MIN_WIDTH), size.Y.Offset),
 		Font = FONT,
 		CornerRadius = RADIUS,
 		Center = true,
@@ -276,7 +382,7 @@ local function panel(opts)
 		AlwaysOnTop = true, -- OnTopOfCoreBlur, or the Esc menu's blur frosts the panel
 		ShowCustomCursor = false, -- Obsidian hides the Roblox cursor and draws a "+" crosshair while the window is open
 		StatusBar = opts.statusBar == true, -- fork: the strip under the title bar; Window:SetStatus / SetStatusAction fill it
-		ShowMobileButtons = false, -- its Toggle/Lock buttons; the logo below replaces them
+		ShowMobileButtons = false, -- its Toggle/Lock buttons; the floating logo replaces them
 		ToggleKeybind = opts.key or KEY,
 		NotifySide = "Right",
 	})
@@ -300,7 +406,17 @@ local function panel(opts)
 		end)
 	end
 
-	installTitleLogo(Library, Window, asset)
+	-- Sidebar (fork): one tab needs none. Counted as the script adds tabs, so a second tab
+	-- brings it back without the script knowing.
+	local tabs, addTab = 0, Window.AddTab
+	Window.AddTab = function(self, ...)
+		local tab = addTab(self, ...)
+		tabs += 1
+		Window:SetSidebarHidden(tabs < 2)
+		return tab
+	end
+
+	installTitleControls(Library, Window, asset)
 	installBubble(Library, asset)
 	installReadout(Library, Window)
 
