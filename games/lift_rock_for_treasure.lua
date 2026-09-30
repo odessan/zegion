@@ -42,7 +42,8 @@ local ZONE_WAIT = 3 -- how long to wait for Started after hopping into a zone be
 local ENTER_TRIES = 3 -- hops into one zone before the run gives up on that stage
 local PICK_TRIES = 6 -- re-hops at one treasure while the server still says "Move closer"
 local PICK_GAP = 0.12 -- wait between those. Raise it if range refusals keep repeating
-local STALL_TIME = 1.5 -- seconds in a slow stone's zone with no Progress before we step out and back in
+local STALL_TIME = 2.5 -- seconds in a slow stone's zone with no Progress at all before we step out and back in
+local STOP_GRACE = 2 -- seconds to let the server restart a Stopped session itself before we step out. Raise it if re-entries still fire early
 local REENTER_TRIES = 3 -- step-out/step-in attempts per stone
 local REENTER_OUT = 25 -- studs to step back along z; the zone is 15 wide, so this is clear of it
 local REENTER_DX = 12 -- studs along x between re-entry spots (the zone is 90 long in x)
@@ -332,7 +333,7 @@ local function liftStage(s, st, alive)
 	end
 	local pos = zoneSpot(s)
 	local spot = pos -- where we are standing now; each re-entry tries a different x along the zone's 90-stud length
-	local entered, reentries = os.clock(), 0
+	local entered, reentries, resumedFrom = os.clock(), 0, nil
 	local dl = entered + eta * 1.5 + 3
 	while alive() and not run.done[s] and os.clock() < dl do
 		if aborted() then
@@ -341,8 +342,17 @@ local function liftStage(s, st, alive)
 		-- The game's own controller sends Stop when the server's Started lands before ITS zone
 		-- check has seen us arrive (RockLiftingController beginLift). The server then only
 		-- starts a new session on a fresh entry, so a stalled stone means: step out, step in.
-		local stopped = run.stopped[s] and run.stopped[s] >= entered
-		local silent = os.clock() - entered > STALL_TIME and not (run.progress[s] and run.progress[s] >= entered)
+		-- A Stopped is not yet a stall: the server restarts the session by itself while we are still
+		-- inside (seen in the logs: three instant re-entries lost ~3s, standing still finished the
+		-- stone in its normal lift time). So only Stopped + STOP_GRACE with no Progress after it counts.
+		local stoppedAt = run.stopped[s]
+		local progressed = run.progress[s]
+		if stoppedAt and stoppedAt >= entered and progressed and progressed > stoppedAt and resumedFrom ~= stoppedAt then
+			resumedFrom = stoppedAt
+			print(("[liftrock] stage %d session restarted by itself %.2fs after Stopped"):format(s, progressed - stoppedAt))
+		end
+		local stopped = stoppedAt and stoppedAt >= entered and os.clock() - stoppedAt > STOP_GRACE and not (progressed and progressed > stoppedAt)
+		local silent = os.clock() - entered > STALL_TIME and not (progressed and progressed >= entered)
 		if (stopped or silent) and reentries < REENTER_TRIES then
 			reentries += 1
 			local r0 = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
