@@ -8279,16 +8279,17 @@ do
 
         local Holder = New("Frame", {
             BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, Dropdown.Text and 39 or 21),
+            Size = UDim2.new(1, 0, 0, 21), -- FORK(zegion): label and box share one row (was 39 with a label above)
             Visible = Dropdown.Visible,
             Parent = Container,
         })
 
         local Label = New("TextLabel", {
             BackgroundTransparency = 1,
-            Size = UDim2.new(1, 0, 0, 14),
+            Size = UDim2.new(1, -124, 1, 0), -- FORK(zegion): left half of the row, the box takes the right 116px
             Text = Dropdown.Text,
             TextSize = 14,
+            TextTransparency = 0.4, -- FORK(zegion): same dim as a toggle's label
             TextXAlignment = Enum.TextXAlignment.Left,
             Visible = not not Info.Text,
             ZIndex = 3,
@@ -8296,10 +8297,10 @@ do
         })
 
         local DisplayContainer = New("TextButton", {
-            AnchorPoint = Vector2.new(0, 1),
+            AnchorPoint = Vector2.new(1, 1), -- FORK(zegion): right-aligned, 116px wide when there is a label (was full width)
             BackgroundColor3 = "MainColor",
-            Position = UDim2.fromScale(0, 1),
-            Size = UDim2.new(1, 0, 0, 21),
+            Position = UDim2.fromScale(1, 1),
+            Size = Dropdown.Text and UDim2.fromOffset(116, 21) or UDim2.new(1, 0, 0, 21),
             Text = "",
             TextTransparency = 1,
             ZIndex = 2,
@@ -9221,7 +9222,7 @@ do
 
         function Dropdown:SetText(Text: string)
             Dropdown.Text = Text
-            Holder.Size = UDim2.new(1, 0, 0, Text and 39 or 21)
+            Holder.Size = UDim2.new(1, 0, 0, 21) -- FORK(zegion): one row either way
 
             Label.Text = Text and Text or ""
             Label.Visible = not not Text
@@ -11712,6 +11713,19 @@ function Library:CreateWindow(WindowInfo)
         end
     end
 
+    -- FORK(zegion): a window with a single tab needs no sidebar. Tabs.Size is left alone so
+    -- showing it again restores the same width; the divider shrinks to the title bar.
+    function Window:SetSidebarHidden(Hidden: boolean)
+        Tabs.Visible = not Hidden
+        if Hidden then
+            DividerLine.Size = UDim2.new(0, 1, 0, 48)
+            Container.Size = UDim2.new(1, 0, 1, -70 - StripH)
+        else
+            DividerLine.Size = UDim2.new(0, 1, 1, -21)
+            Container.Size = UDim2.new(1, -Tabs.Size.X.Offset - 1, 1, -70 - StripH)
+        end
+    end
+
     function Window:ShowTabInfo(Name, Description)
         CurrentTabLabel.Text = Name
         CurrentTabDescription.Text = Description
@@ -12640,9 +12654,10 @@ function Library:CreateWindow(WindowInfo)
                     Visible = Info.DisableCollapsing ~= true,
                     AnchorPoint = Vector2.new(1, 0.5),
                     BackgroundTransparency = 1,
-                    ImageColor3 = "WhiteColor",
+                    ImageColor3 = "FontColor", -- FORK(zegion): small and dim, was a 22px white chevron
+                    ImageTransparency = 0.6,
                     Position = UDim2.fromScale(1, 0.5),
-                    Size = UDim2.fromOffset(22, 22),
+                    Size = UDim2.fromOffset(16, 16),
                     Parent = GroupboxTop,
                 })
                 if ArrowIcon then
