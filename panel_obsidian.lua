@@ -161,12 +161,53 @@ local function installTitleLogo(Library, Window, asset)
 	btn.Parent = topbar
 end
 
+-- readout --------------------------------------------------------------------
+-- "3 ACTIVE" in the title bar: how many of the script's toggles are on. Obsidian already
+-- has a title-bar slot for the current tab's name (Window:ShowTabInfo, beside the search
+-- box), which only fills when a tab has a description -- so it is free, and this drives it.
+-- Every toggle a script adds lands in Library.Toggles, so no script has to report anything.
+-- A master switch ("Everything") counts as one more; ponytail: exclude it by name if that
+-- ever reads wrong.
+local READOUT_BEAT = 0.25 -- seconds between counts; a toggle flip shows within a quarter second
+local DOT = "\226\151\143" -- U+25CF, escaped: Opiumware mangles UTF-8 in a paste
+
+local function installReadout(Library, Window)
+	-- The tab's own deselect hides the slot again; a readout that vanishes on tab switch
+	-- is worse than none, so the hide is a no-op here. ShowTabInfo is left alone.
+	Window.HideTabInfo = function() end
+
+	local RunService = game:GetService("RunService")
+	local shown, nextBeat = nil, 0
+	-- Heartbeat, not a task loop: a resumed thread lacks the capability to write the hidden GUI.
+	Library:GiveSignal(RunService.Heartbeat:Connect(function()
+		local now = os.clock()
+		if now < nextBeat then
+			return
+		end
+		nextBeat = now + READOUT_BEAT
+		local n = 0
+		for _, t in pairs(Library.Toggles) do
+			if t.Value == true then
+				n += 1
+			end
+		end
+		if n == shown then
+			return
+		end
+		shown = n
+		pcall(function()
+			Window:ShowTabInfo(('<font color="#%s">%s</font> %d ACTIVE'):format(Library.Scheme.AccentColor:ToHex(), DOT, n), "")
+		end)
+	end))
+end
+
 -- library --------------------------------------------------------------------
 -- Obsidian keeps ONE ScreenGui and publishes itself as getgenv().Library, and a second
 -- load does not unload the first -- two windows stack. So unload whatever is there before
 -- fetching, and never cache: the library owns its own teardown, so a cached copy would be
 -- one that Unload() had already gutted.
-local LIB_URL = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"
+-- Zegion's fork (obsidian/Library.lua, edits marked FORK(zegion)), not deividcomsono's upstream.
+local LIB_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/obsidian/Library.lua"
 
 local function loadObsidian()
 	local env = getgenv and getgenv() or {}
@@ -203,6 +244,9 @@ end
 -- opts.game  the footer, until the live name lands (required)
 -- opts.size  window size, default 440x320
 -- opts.key   open / close key, default RightControl
+-- opts.statusBar  true reserves the 36px status strip; then Window:SetStatus({ {"Zone", 4}, ... })
+--                 and Window:SetStatusAction("Unload", fn, true) fill it. Off by default: an
+--                 empty strip is 36px of nothing
 -- opts.scale UI scale, e.g. 0.9; default is Obsidian's own 100%
 local function panel(opts)
 	local Library, why = loadObsidian()
@@ -231,6 +275,7 @@ local function panel(opts)
 		Resizable = true,
 		AlwaysOnTop = true, -- OnTopOfCoreBlur, or the Esc menu's blur frosts the panel
 		ShowCustomCursor = false, -- Obsidian hides the Roblox cursor and draws a "+" crosshair while the window is open
+		StatusBar = opts.statusBar == true, -- fork: the strip under the title bar; Window:SetStatus / SetStatusAction fill it
 		ShowMobileButtons = false, -- its Toggle/Lock buttons; the logo below replaces them
 		ToggleKeybind = opts.key or KEY,
 		NotifySide = "Right",
@@ -257,6 +302,7 @@ local function panel(opts)
 
 	installTitleLogo(Library, Window, asset)
 	installBubble(Library, asset)
+	installReadout(Library, Window)
 
 	-- The live name, after the window exists: GetProductInfo yields, and rate-limited or
 	-- dead it costs nothing but the fallback footer.
@@ -275,7 +321,5 @@ local function panel(opts)
 end
 
 -- ponytail: deliberately not cached, for the same reason panel.lua isn't -- edit, re-paste,
--- and the old copy would silently run. Obsidian itself is still upstream, not forked: the
--- rail / flat-row layout from the design canvas is the change that needs Library.lua's
--- CreateWindow, and nothing above does.
+-- and the old copy would silently run.
 return panel
