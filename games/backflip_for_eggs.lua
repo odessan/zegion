@@ -18,6 +18,8 @@
                boost the moment it is offered (about 2x for 2.5s).
      CASH    : hops onto the collection machine pad every 15s. Standing on it IS the collect.
      INDEX   : claimAllRewards when a discovered animal has an unclaimed reward (cash + speed).
+     SELL    : stored animals of the ticked rarities, held on the sell pad (sellAnimal). Keeps any
+               animal Equip would place. Eggs have no sell path at all.
 
      Probed and dead (do not re-probe):
        enterTreadmill from anywhere   pays 0, the server sends treadmillLeft after 5s
@@ -52,6 +54,7 @@ local PLACE_FAILS = 2 -- consecutive failed placements before placing backs off 
 local FULL_HOLD = 15 -- placing rests this long after a "no room" the egg count did not predict, or until a hatch
 local HATCH_GAP = 0.3 -- between hatchEgg calls; a faster burst drops the later ones
 local HATCH_CONFIRM = 1.5
+local SELL_GAP = 0.3 -- between sellAnimal calls; the game's own client drops sends under 0.25s
 local PARK_AFTER = 1.5 -- the treadmill only takes you back after this long with nothing else moving you
 local COLLECT_EVERY = 15
 local GRID = 4 -- studs between candidate egg spots
@@ -371,7 +374,7 @@ local function nests()
 end
 
 -- farm -----------------------------------------------------------------------
-local stats = { stolen = 0, refused = 0, placed = 0, hatched = 0, swaps = 0, rebirths = 0, boosts = 0, upgrades = 0 }
+local stats = { stolen = 0, refused = 0, placed = 0, hatched = 0, swaps = 0, rebirths = 0, boosts = 0, upgrades = 0, sold = 0 }
 
 local function stealOne(t)
 	leaveBelt()
@@ -685,6 +688,89 @@ local function equipStep(alive)
 	return 1
 end
 
+-- Sells stored animals of the ticked rarities, the way a player does: hold it, stand on the pad,
+-- confirm. A sale pays AnimalConfig.sellValue, 60s of that animal's income.
+-- ponytail: always walks to the pad; sellAnimal from anywhere is untested and would skip the hop
+local sellOn = {} -- rarity -> true, nothing ticked by default
+local sellFails = 0
+local function sellPad()
+	local pads = workspace:FindFirstChild("Pads")
+	for _, d in ipairs(pads and pads:GetDescendants() or {}) do
+		if d:IsA("ProximityPrompt") and d:GetAttribute("PromptId") == "SellAnimal" then
+			local anchor = d.Parent -- Pads.Sell.PromptAnchor: stand on the pad under it
+			local pad = anchor and anchor.Parent
+			return pad and pad:IsA("BasePart") and pad or anchor
+		end
+	end
+	return nil
+end
+local function sellable()
+	local stored = dget("storedAnimals") or {}
+	local plot = plotModel()
+	local cap = plot and plot:GetAttribute("Capacity") or 0
+	local placed = plotAnimals()
+	local bestOwn = 0
+	pcall(function()
+		bestOwn = AnimalConfig.bestOwnRate(placed)
+	end)
+	local mine = ranked(placed, bestOwn)
+	local worst = mine[#mine]
+	local out = {}
+	-- Never sell what Equip would place: the best stored ones fill the free slots, and anything
+	-- that beats the worst placed animal is a swap, not junk.
+	for i, s in ipairs(ranked(stored, bestOwn)) do
+		local def = AnimalConfig.Animals[s.a.animalId]
+		local keep = i <= cap - #mine or (worst and s.r > worst.r * RATE_EDGE) or not def or def.bestMultiplier -- mimics sell for 0
+		if not keep and sellOn[def.rarity] then
+			out[#out + 1] = s
+		end
+	end
+	return out
+end
+local function sellStep(alive)
+	if next(sellOn) == nil then
+		return 2
+	end
+	local list = sellable()
+	local pad = sellPad()
+	if #list == 0 or not (pad and pad:IsA("BasePart")) then
+		return 3
+	end
+	withChar(function()
+		leaveBelt()
+		hop(pad.CFrame * CFrame.new(0, pad.Size.Y / 2 + 3, 0))
+		lastMove = os.clock()
+		task.wait(SETTLE)
+		for _, s in ipairs(list) do
+			if not alive() then
+				break
+			end
+			local tool = animalTool(s.key)
+			if tool and equip(tool) then
+				ev("AnimalInventory"):FireServer("sellAnimal", s.key)
+				if wait_until(function()
+					return (dget("storedAnimals") or {})[s.key] == nil
+				end, PLACE_CONFIRM) then
+					sellFails = 0
+					stats.sold += 1
+					say(("sold %s x%d"):format(s.a.animalId, stats.sold))
+				else
+					sellFails += 1
+				end
+			end
+			task.wait(SELL_GAP)
+		end
+		hop(plotHome())
+		lastMove = os.clock()
+	end, alive)
+	if sellFails >= 3 then
+		sellFails = 0
+		say("the server keeps refusing sellAnimal: turn Auto Sell off and probe it")
+		return 60
+	end
+	return 3
+end
+
 -- progress -------------------------------------------------------------------
 local lastCollect = 0
 local function storedCash()
@@ -859,6 +945,7 @@ local function setPlace(state)
 end
 local setHatch = loop("hatch", hatchStep)
 local setEquip = loop("equip", equipStep)
+local setSell = loop("sell", sellStep)
 local setRebirthLoop = loop("rebirth", rebirthStep)
 local function setRebirth(state)
 	rebirthOn = state
@@ -905,6 +992,7 @@ end
 
 local Tab = Window:AddTab("Main", "egg")
 local Eggs = Tab:AddLeftGroupbox("Eggs", "egg")
+local Animals = Tab:AddLeftGroupbox("Animals", "paw-print")
 local Progress = Tab:AddRightGroupbox("Progress", "trending-up")
 
 Eggs:AddToggle("Farm", {
@@ -942,11 +1030,30 @@ Eggs:AddToggle("Hatch", {
 	Default = false,
 	Callback = setHatch,
 })
-Eggs:AddToggle("Equip", {
+Animals:AddToggle("Equip", {
 	Text = "Auto Equip Best",
 	Tooltip = "Fills free plot slots with your best stored animal, then swaps a better stored one in for the worst placed one",
 	Default = false,
 	Callback = setEquip,
+})
+Animals:AddToggle("Sell", {
+	Text = "Auto Sell Animals",
+	Tooltip = "Sells stored animals of the rarities ticked below at the sell pad. Never sells one that would fill a free slot or beat your worst placed animal. Eggs cannot be sold",
+	Default = false,
+	Callback = setSell,
+})
+Animals:AddDropdown("SellRarity", {
+	Text = "Rarities to sell",
+	Tooltip = "A sale pays 60 seconds of that animal's income",
+	Values = rarityNames,
+	Default = {},
+	Multi = true,
+	Callback = function(picked)
+		table.clear(sellOn)
+		for name in pairs(ticked(picked)) do
+			sellOn[name:lower()] = true
+		end
+	end,
 })
 
 Progress:AddToggle("Rebirth", {
@@ -1042,6 +1149,7 @@ local function stopAll()
 	setPlace(false)
 	setHatch(false)
 	setEquip(false)
+	setSell(false)
 	setRebirth(false)
 	setUpgrade(false)
 	setCollect(false)
