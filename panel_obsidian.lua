@@ -269,46 +269,6 @@ local function installTitleControls(Library, Window, asset)
 	mark.Parent = topbar
 end
 
--- readout --------------------------------------------------------------------
--- "3 ACTIVE" in the title bar: how many of the script's toggles are on. Obsidian already
--- has a title-bar slot for the current tab's name (Window:ShowTabInfo, beside the search
--- box), which only fills when a tab has a description -- so it is free, and this drives it.
--- Every toggle a script adds lands in Library.Toggles, so no script has to report anything.
--- A master switch ("Everything") counts as one more; ponytail: exclude it by name if that
--- ever reads wrong.
-local READOUT_BEAT = 0.25 -- seconds between counts; a toggle flip shows within a quarter second
-local DOT = "\226\151\143" -- U+25CF, escaped: Opiumware mangles UTF-8 in a paste
-
-local function installReadout(Library, Window)
-	-- The tab's own deselect hides the slot again; a readout that vanishes on tab switch
-	-- is worse than none, so the hide is a no-op here. ShowTabInfo is left alone.
-	Window.HideTabInfo = function() end
-
-	local RunService = game:GetService("RunService")
-	local shown, nextBeat = nil, 0
-	-- Heartbeat, not a task loop: a resumed thread lacks the capability to write the hidden GUI.
-	Library:GiveSignal(RunService.Heartbeat:Connect(function()
-		local now = os.clock()
-		if now < nextBeat then
-			return
-		end
-		nextBeat = now + READOUT_BEAT
-		local n = 0
-		for _, t in pairs(Library.Toggles) do
-			if t.Value == true then
-				n += 1
-			end
-		end
-		if n == shown then
-			return
-		end
-		shown = n
-		pcall(function()
-			Window:ShowTabInfo(('<font color="#%s">%s</font> %d ACTIVE'):format(Library.Scheme.AccentColor:ToHex(), DOT, n), "")
-		end)
-	end))
-end
-
 -- settings -------------------------------------------------------------------
 -- Window:AddSettingsTab(folder, ignore) -- a "Settings" tab with Obsidian's config manager
 -- (SaveManager): name, save, load, delete, autoload, import/export. Call it once, AFTER the
@@ -485,7 +445,6 @@ local function panel(opts)
 
 	installTitleControls(Library, Window, asset)
 	installBubble(Library, asset)
-	installReadout(Library, Window)
 
 	-- The live name, after the window exists: GetProductInfo yields, and rate-limited or
 	-- dead it costs nothing but the fallback footer.
