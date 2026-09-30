@@ -84,6 +84,7 @@ local GAMES = {
 	["90920025162454"] = "roll_a_fisherman.lua", -- Roll a Fisherman
 	["100641654440407"] = "turret_defense.lua", -- Turret Defense (working title -- the dump doesn't carry the game's name)
 	["102555956950143"] = "lift_rock_for_treasure.lua", -- Lift Rock for Treasure
+	["77404766588393"] = "tap_buttons.lua", -- Tap Buttons
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.

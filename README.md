@@ -81,6 +81,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`             |
 | Loot to Forge                       | `118805555015549` | `loot_to_forge.lua`              |
 | Lift Rock for Treasure              | `102555956950143` | `lift_rock_for_treasure.lua`     |
+| Tap Buttons                         | `77404766588393`  | `tap_buttons.lua`                |
 | Build an Ant Empire                 | `78490532994307`  | `build_an_ant_empire.lua`        |
 | Anime Dice                          | `113290951185459` | `anime_dice.lua`                 |
 | +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`        |
