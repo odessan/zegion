@@ -689,15 +689,15 @@ end
 -- gui ------------------------------------------------------------------------
 local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel_obsidian.lua"
 local panel = loadstring(game:HttpGet(PANEL_URL))()
-local Window, Library = panel({ game = "Tap Buttons", size = UDim2.fromOffset(460, 380) })
+local Window, Library = panel({ game = "Tap Buttons", size = UDim2.fromOffset(560, 430), statusBar = true })
 if not Window then
 	return -- panel_obsidian.lua already said why
 end
 
 local Tab = Window:AddTab("Main", "house")
 local Farm = Tab:AddLeftGroupbox("Farm", "mouse-pointer-click")
-local Spend = Tab:AddLeftGroupbox("Spend", "coins")
-local Info = Tab:AddRightGroupbox("Status", "activity")
+local Spend = Tab:AddRightGroupbox("Spend", "coins")
+local Info = Tab:AddRightGroupbox("Stats", "activity") -- the live headline is the strip under the title bar; this holds the rest
 
 local toggles = {}
 local function tog(box, idx, text, tip, cb)
@@ -763,8 +763,8 @@ Farm:AddToggle("All", {
 	end,
 })
 
-local line = Info:AddLabel("Status: idle", true)
 local statsLine = Info:AddLabel("-", true)
+Info:SetCollapsed(true)
 -- a resumed thread lacks the capability to write the hidden GUI; Heartbeat (engine identity) does it
 local last, nextStats = { clicks = 0, claimCoins = 0 }, 0
 table.insert(conns, RunService.Heartbeat:Connect(function()
@@ -779,7 +779,13 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
 	for _ in pairs(pending) do
 		waiting += 1
 	end
-	line:SetText(("Zone %s | level %d | coins %s"):format(tostring(client.activeButton()), levelNow(), tostring(math.floor(coinsNow()))))
+	Window:SetStatus({
+		{ "Zone", tostring(client.activeButton()) },
+		{ "Level", levelNow() },
+		{ "Coins", math.floor(coinsNow()) },
+		{ "Clicks/s", cps },
+		{ "Refused", stats.refused },
+	})
 	statsLine:SetText(
 		("clicks %d/s | gap %.3fs | refused %d\nloot claimed %d | +%d coins/s | pending %d\nbanked: %d coins, %d items\ntree %d | items %d | equip %d | index %d | hops %d | bonus %d"):format(
 			cps, gap, stats.refused, stats.claimed, math.floor(cc), waiting, stats.claimCoins, stats.claimItems,
@@ -788,9 +794,9 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
 	)
 end))
 
-Info:AddButton({ Text = "Unload", Risky = true, Func = function()
+Window:SetStatusAction("Unload", function()
 	Library:Unload()
-end })
+end, true)
 
 local VirtualUser = game:GetService("VirtualUser")
 table.insert(conns, player.Idled:Connect(function()
