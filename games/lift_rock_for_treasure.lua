@@ -322,7 +322,18 @@ local function enterStage(s, alive, dx)
 	return nil
 end
 
-local function liftStage(s, st, alive)
+-- Nothing moves an anchored root, and that is the point: once a big stone starts to turn, its
+-- anchored geometry shoves an unanchored character out of the 15-stud zone (stall logs put us
+-- 7-11 studs off in z, toward -z, away from the stone) and the server ends the session. Held
+-- only for the length of one lift, released on every exit by liftStage below.
+local function pin(on)
+	local r = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if r then
+		r.Anchored = on
+	end
+end
+
+local function liftBody(s, st, alive)
 	if run.done[s] then
 		return true -- instant stones report Completed in the same breath as Started
 	end
@@ -335,6 +346,7 @@ local function liftStage(s, st, alive)
 	local spot = pos -- where we are standing now; each re-entry tries a different x along the zone's 90-stud length
 	local entered, reentries, resumedFrom = os.clock(), 0, nil
 	local dl = entered + eta * 1.5 + 3
+	pin(true)
 	while alive() and not run.done[s] and os.clock() < dl do
 		if aborted() then
 			return false, "run reset"
@@ -367,6 +379,7 @@ local function liftStage(s, st, alive)
 			if not enterStage(s, alive, dx) then
 				break
 			end
+			pin(true)
 			entered = os.clock()
 			dl = entered + eta * 1.5 + 3
 		else
@@ -378,6 +391,15 @@ local function liftStage(s, st, alive)
 		end
 	end
 	return run.done[s] == true, ("stage %d did not complete in time"):format(s)
+end
+
+local function liftStage(s, st, alive)
+	local ok, done, why = pcall(liftBody, s, st, alive)
+	pin(false) -- every exit, including a thrown error: an anchored character is a stuck one
+	if not ok then
+		error(done, 0)
+	end
+	return done, why
 end
 
 -- true = taken, false = refused (msg), nil = treasure part not streamed in
@@ -1010,9 +1032,12 @@ table.insert(conns, player.Idled:Connect(function()
 end))
 
 -- close ----------------------------------------------------------------------
--- Nothing here mutes or edits the game, so stopping is: end the loop, drop the listeners.
+-- Nothing here mutes or edits the game; the one thing we hold is the character's anchor during
+-- a lift, and the lift releases it itself. Stopping is: end the loops, free the character, drop
+-- the listeners.
 local function stopAll()
 	setFarm(false)
+	pin(false) -- the lift thread may still be asleep in a wait; don't leave the character frozen
 	setTap(false)
 	setStation(false)
 	setPlace(false)
