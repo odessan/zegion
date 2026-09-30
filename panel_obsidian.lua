@@ -346,6 +346,61 @@ local function addSettingsTab(Library, Window, folder, ignore, keyName)
 	SaveManager:LoadAutoloadConfig()
 end
 
+-- size -----------------------------------------------------------------------
+-- One window size for every Obsidian script, remembered between runs. A script no longer
+-- picks its own: the last size you left a window at is used everywhere, and the first time
+-- (or without file functions) it is DEFAULT_W x DEFAULT_H. Obsidian still clamps it to the
+-- screen, so a phone gets a smaller window without anything being saved wrongly for a desktop
+-- (the file is per machine).
+local DEFAULT_W, DEFAULT_H = 640, 500
+local MIN_HEIGHT = 240
+local SIZE_FILE = LOGO_DIR .. "/window_size.txt"
+local SIZE_SETTLE = 1.5 -- seconds a resize must sit still before it is written, so a drag is one write
+
+local function loadSize()
+	if not (isfile and readfile) then
+		return DEFAULT_W, DEFAULT_H
+	end
+	local ok, w, h = pcall(function()
+		if not isfile(SIZE_FILE) then
+			return nil
+		end
+		local a, b = readfile(SIZE_FILE):match("^(%d+),(%d+)")
+		return tonumber(a), tonumber(b)
+	end)
+	if ok and w and h and w >= MIN_WIDTH and h >= MIN_HEIGHT then
+		return w, h
+	end
+	return DEFAULT_W, DEFAULT_H
+end
+
+local function watchSize(Library, Window)
+	if not (writefile and makefolder and isfolder) then
+		return
+	end
+	local RunService = game:GetService("RunService")
+	local main = Window.MainFrame
+	local saved = main.Size
+	local seen, since = saved, os.clock()
+	-- Heartbeat, not a task loop: a resumed thread lacks the capability to read the hidden GUI.
+	Library:GiveSignal(RunService.Heartbeat:Connect(function()
+		local now = main.Size
+		if now ~= seen then
+			seen, since = now, os.clock()
+			return
+		end
+		if seen ~= saved and os.clock() - since >= SIZE_SETTLE then
+			saved = seen
+			pcall(function()
+				if not isfolder(LOGO_DIR) then
+					makefolder(LOGO_DIR)
+				end
+				writefile(SIZE_FILE, ("%d,%d"):format(seen.X.Offset, seen.Y.Offset))
+			end)
+		end
+	end))
+end
+
 -- library --------------------------------------------------------------------
 -- Obsidian keeps ONE ScreenGui and publishes itself as getgenv().Library, and a second
 -- load does not unload the first -- two windows stack. So unload whatever is there before
@@ -387,7 +442,7 @@ end
 
 -- panel ----------------------------------------------------------------------
 -- opts.game  the footer, until the live name lands (required)
--- opts.size  window size, default 480x320; never narrower than 480
+-- opts.size  accepted and ignored: one remembered size serves every script (see "size" above)
 -- opts.key   open / close key, default RightControl
 -- opts.statusBar  true reserves the 36px status strip; then Window:SetStatus({ {"Zone", 4}, ... })
 --                 and Window:SetStatusAction("Unload", fn, true) fill it. Off by default: an
@@ -409,11 +464,11 @@ local function panel(opts)
 
 	local asset = logoAsset()
 
-	local size = opts.size or UDim2.fromOffset(MIN_WIDTH, 320)
+	local width, height = loadSize()
 	local Window = Library:CreateWindow({
 		Title = BRAND,
 		Footer = opts.game,
-		Size = UDim2.fromOffset(math.max(size.X.Offset, MIN_WIDTH), size.Y.Offset),
+		Size = UDim2.fromOffset(width, height),
 		Font = FONT,
 		CornerRadius = RADIUS,
 		Center = true,
@@ -465,6 +520,7 @@ local function panel(opts)
 
 	installTitleControls(Library, Window, asset)
 	installBubble(Library, asset)
+	watchSize(Library, Window)
 
 	-- The live name, after the window exists: GetProductInfo yields, and rate-limited or
 	-- dead it costs nothing but the fallback footer.
