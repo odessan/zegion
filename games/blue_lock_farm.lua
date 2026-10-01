@@ -2505,7 +2505,6 @@ end
 -- The grading Units list, kept in step with your slots from Heartbeat (see syncUnits).
 local unitsDrop, unitKey, unitSig, unitsAt = nil, {}, nil, 0
 local gradeToggle
-local beltPara -- Roll groupbox's "why is the belt stopped" label, drained like the dashboard
 local function unitsSig(labels, key)
 	local s = {}
 	for _, l in ipairs(labels) do
@@ -2532,6 +2531,19 @@ function ui.setText(label, text)
 	end
 end
 assert(ui.esc("a<b>&c") == "a&lt;b&gt;&amp;c", "esc")
+-- Status text for the strip: the first `lines` lines of a builder's text on one line, escaped.
+ui.strip, ui.stripLines = { Belt = "off", Tower = "-", Traits = "-" }, { Belt = math.huge, Tower = 1, Traits = 1 }
+function ui.flat(text, lines)
+	local out = {}
+	for line in tostring(text):gmatch("[^\n]+") do
+		if #out >= (lines or 1) then
+			break
+		end
+		table.insert(out, line)
+	end
+	return ui.esc(table.concat(out, "  |  "))
+end
+assert(ui.flat("a\nb\nc", 2) == "a  |  b" and ui.flat("a\nb") == "a", "flat")
 function ui.labelOf(guid)
 	for l, g in pairs(ui.allKey) do
 		if g == guid then
@@ -2581,7 +2593,6 @@ function ui.addTower(key)
 		})
 		table.insert(ui.slotDrops, { drop = d, key = key, i = i })
 	end
-	box:AddDivider("Plan")
 	ui.planPara[key] = box:AddLabel(ui.esc(tower.planText(key)), true)
 	box:AddButton({
 		Text = "Simulate",
@@ -2608,8 +2619,6 @@ do
 			rollLoop.set(on)
 		end,
 	})
-	Roll:AddDivider("Belt")
-	beltPara = Roll:AddLabel("off", true)
 	Roll:AddToggle("BuyMatches", {
 		Text = "Buy matches",
 		Tooltip = "On: buys matches (one you'll afford within a minute is held). Off: rolling STOPS on a match until you buy it",
@@ -2743,7 +2752,8 @@ do
 		end,
 	})
 
-	local Sell = Main:AddLeftGroupbox("Sell", "tag", nil, true)
+	local Loot = Window:AddTab("Sell & loot", "coins")
+	local Sell = Loot:AddLeftGroupbox("Sell", "tag")
 	Sell:AddToggle("SellLockers", {
 		Text = "Auto sell lockers",
 		Tooltip = "Unplaced lockers in the tiers below; a locker sells for what it cost",
@@ -2794,7 +2804,7 @@ do
 		end,
 	})
 
-	local Map = Main:AddRightGroupbox("Crates & spawns", "map-pin", nil, true)
+	local Map = Loot:AddRightGroupbox("Crates & spawns", "map-pin")
 	Map:AddToggle("AutoCrates", {
 		Text = "Auto crates",
 		Tooltip = "Picks up your conveyor's pile and sells it at your sell NPC; always collects and sells polished crates",
@@ -2922,8 +2932,6 @@ do
 			tower.loop.set(on)
 		end,
 	})
-	TwSec:AddDivider("Run")
-	ui.towerPara = TwSec:AddLabel("reading...", true)
 	for _, key in ipairs(tower.list) do
 		if tower.open(key) then
 			ui.addTower(key)
@@ -3016,8 +3024,6 @@ do
 			trait.save()
 		end,
 	})
-	TrSec:AddDivider("Tokens & pity")
-	ui.traitPara = TrSec:AddLabel("reading...", true)
 
 	local Up = Window:AddTab("Upgrades", "trending-up")
 	local UpSec = Up:AddLeftGroupbox("Permanent upgrades", "trending-up")
@@ -3078,16 +3084,12 @@ end
 
 -- Loop threads lose the capability to write to the panel after their first yield, so they
 -- leave text in upvalues and Heartbeat (our own identity) writes it.
-local status, dashRow, dashText = nil, {}, {}
+-- Belt, Tower and Traits are status, not dashboard: they go to the strip (see the drain below).
+local dashRow, dashText = {}, {}
 do
 	local Stats = Window:AddTab("Stats", "activity")
-	local statsSec = Stats:AddLeftGroupbox("Dashboard", "activity")
-	statsSec:AddDivider("Status")
-	status = statsSec:AddLabel("idle", true)
-	for _, title in ipairs({ "Plot", "Session" }) do
-		statsSec:AddDivider(title)
-		dashRow[title] = statsSec:AddLabel("reading...", true)
-	end
+	dashRow.Plot = Stats:AddLeftGroupbox("Plot", "layout-grid"):AddLabel("reading...", true)
+	dashRow.Session = Stats:AddLeftGroupbox("Session", "activity"):AddLabel("reading...", true)
 
 	local Move = Stats:AddRightGroupbox("Teleport & idle", "footprints")
 	Move:AddToggle("TpWhenFar", {
@@ -3122,9 +3124,6 @@ do
 		end,
 	})
 end
-dashRow.Belt = beltPara
-dashRow.Tower = ui.towerPara
-dashRow.Traits = ui.traitPara
 
 -- New towers get their section; the every-player lists follow sells and pulls. Slot picks
 -- are held by guid, so a rebuilt list re-selects the same player under its new label.
@@ -3239,11 +3238,14 @@ local drain = RunService.Heartbeat:Connect(function()
 	end
 	for title, text in pairs(dashText) do
 		dashText[title] = nil
-		pcall(ui.setText, dashRow[title], text)
+		if dashRow[title] then
+			pcall(ui.setText, dashRow[title], text)
+		else
+			ui.strip[title] = ui.flat(text, ui.stripLines[title])
+		end
 	end
 	if pending then
 		ui.note, pending = pending, nil
-		pcall(ui.setText, status, ui.note)
 	end
 	local now = os.clock()
 	if now >= ui.stripAt then
@@ -3252,9 +3254,9 @@ local drain = RunService.Heartbeat:Connect(function()
 			Window:SetStatus({
 				{ "Cash", money(cash()) },
 				{ "Income", money(incomePerSec()) .. "/s" },
-				{ "Rolls", stats.rolls },
-				{ "Bought", stats.bought },
-				{ "Opened", stats.opened },
+				{ "Belt", ui.strip.Belt },
+				{ "Tower", ui.strip.Tower },
+				{ "Traits", ui.strip.Traits },
 				{ "Now", ui.esc(ui.note) },
 			})
 		end)
