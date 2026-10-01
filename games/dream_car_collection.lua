@@ -5,13 +5,11 @@
                and opens them when they hatch. Quick Open skips the reveal. Your own settings are put back
                when the panel closes. The real ceiling is your placed-crate limit (15 + Max Items upgrade):
                a Legendary holds a slot for 120s, so tick the tiers whose hatch time suits you.
-     CARS    : fills every empty card slot best car first, then swaps a placed car for a better backpack one
-               (pick up the worst, place the best). Same result as the group-only Place Best button.
-               The server places the car you HOLD, so each car goes hotbar -> equip -> PlaceCar.
-     SORT    : reorders the placed cars so slot 1 has the best $/s and the rest follow, highest first
-               (PickupCar + place, ~0.5s a move, ties keep their order). UNPROVEN as a whole: the pickup
-               and the hold-and-place were probed separately, the reordering was not.
-     CASH    : ClaimAll from anywhere (position-free, probed at 300 studs), every few seconds.
+     CARS    : the game's own Place Best, asked every few seconds: one server call that fills the empty card
+               slots, swaps in better backpack cars and sorts the book (~0.4s for a few swaps, nothing in your
+               hands, answers "" when there is nothing to do). Group-only: the switch stays off until you have
+               joined the game's group. It works from 150 studs of the button; farther, the script hops to it.
+     CASH   : ClaimAll from anywhere (position-free, probed at 300 studs), every few seconds.
      UPGRADE : buys the ticked upgrades in priority order with the game's own cost maths. Max Items first.
      REBIRTH : fires Rebirth.Request once the next rebirth is affordable. UNPROVEN: never fired, so what it
                resets is unknown. It prints a before/after line to F9. Off by default.
@@ -23,26 +21,23 @@
      Probed and dead (do not re-probe):
        BuyLuckyBlock / OpenRequest   no effect (the automation does both)
        PlaceCar with only a carId    ignored, the car must be held (12 of 12 refused)
-       PlaceBest for non-members     "group_only". Members: one call, ~0.15s, reason "sorted" (opt-in toggle)
+       PlaceBest for non-members     "group_only". Members: one call, reason "sorted", "too_far" past ~150-200 studs
+       hand placing and sorting      removed: PlaceCar needs the car held (MoveCarRequest + EquipTool), ~0.5s a move
        pickups in a 0.05s burst      18 of 27 dropped: PickupCar goes one at a time (~0.15s each)
        Instant clean                 Progress 100 at once is capped to ~5%/s by the server
        Cleaning mode "Auto"          never started a session
      Not wired (Robux): OpenNow / OpenAllNow / RecoverCrate, car packs, Rebirth skip, Upgrades.RobuxRequest,
        gem-shop Robux, offline double, Instant Hatch / Fast Hatch / Auto Skip passes. Never press a crate
        before its ReadyAt: the prompt turns into an OPEN NOW (Robux) offer.
-     Not wired (not asked): free spin, gem shop, codes, PlaceBest, trading, car shows.
+     Not wired (not asked): free spin, gem shop, codes, trading, car shows.
 
      RightControl opens / closes the panel. Stop: getgenv().dreamCarsStop() ]]
 
 -- config ---------------------------------------------------------------------
 local CLAIM_EVERY = 3 -- seconds between ClaimAll. The cards hold ~300k/s on a mid account; raise it to claim less
-local PLACE_EVERY = 2 -- how often the car loop looks for a free slot or a better car
-local TOOL_WAIT = 1.2 -- MoveCarRequest must turn the car into a Tool inside this (probed 0.05-0.2s)
-local EQUIP_WAIT = 1.5 -- the Tool must reach your hands inside this
-local PLACE_CONFIRM = 3 -- the card must show the car inside this (probed 0.1-0.2s)
-local PLACE_FAIL_BACKOFF = 5 -- a pass that placed nothing waits this long before trying again
-local PLACEBEST_REPLY = 2 -- Place Best answers inside this (probed 0.16s)
-local SORT_EVERY = 20 -- how often the slot order is re-checked. A new car better than the rest shifts everything below it, ~0.5s a move
+local PLACE_EVERY = 3 -- seconds between Place Best requests; an idle one answers in ~0.05s, raise it to ask less
+local PLACEBEST_REPLY = 2 -- Place Best answers inside this (probed 0.04-0.4s)
+local PLACEBEST_SNAP = 0.4 -- after hopping to the Place Best button, wait this long for the server to see you
 local UPGRADE_EVERY = 3
 local UPGRADE_BACKOFF = 30 -- an upgrade the server did not take is not retried for this long
 local BUY_REPLY = 2 -- an upgrade purchase answers inside this
@@ -154,7 +149,7 @@ local function cashNumber()
 	return ok and n or 0
 end
 
-local stats = { opened = 0, cleaned = 0, placed = 0, swapped = 0, sorted = 0, upgrades = 0, claimed = 0, rebirths = 0 }
+local stats = { opened = 0, cleaned = 0, upgrades = 0, claimed = 0, rebirths = 0 }
 local unsubs = {} -- listen() hands back an unsubscribe function
 
 -- state read by the loops -----------------------------------------------------
@@ -306,7 +301,7 @@ local function setClaim(on)
 	end
 end
 
--- one claim on the character: placing cars and cleaning both drive your hands
+-- one claim on the character: a cleaning session and the Place Best hop take turns
 local busy = false
 local function claim(fn, alive)
 	while busy do
@@ -369,146 +364,66 @@ local function survey()
 	return free, back, placed
 end
 
-local function toolFor(carId)
-	for _, root in ipairs({ player.Backpack, player.Character }) do
-		for _, t in ipairs(root and root:GetChildren() or {}) do
-			if t:IsA("Tool") and t:GetAttribute("CarId") == carId then
-				return t
-			end
-		end
-	end
-	return nil
-end
-
--- a car outside the hotbar is not a Tool yet: MoveCarRequest puts it in a hotbar slot (slot 1 took it
--- every time in the probe; the others are the fallback if the server refuses a slot)
-local function ensureTool(carId)
-	local t = toolFor(carId)
-	if t then
-		return t
-	end
-	for s = 1, 9 do
-		Networking.Backpack.MoveCarRequest.send({ carId = carId, slot = s })
-		local dl = os.clock() + TOOL_WAIT
-		while os.clock() < dl do
-			t = toolFor(carId)
-			if t then
-				return t
-			end
-			task.wait(0.05)
-		end
-	end
-	return nil
-end
-
-local function placeHeld(e, slotN)
-	local t = ensureTool(e.id)
-	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if not (t and hum) then
-		return false
-	end
-	pcall(hum.EquipTool, hum, t)
-	local dl = os.clock() + EQUIP_WAIT
-	while t.Parent ~= player.Character and os.clock() < dl do
-		task.wait(0.05)
-	end
-	local id = plotId()
-	if not id then
-		return false
-	end
-	Action:FireServer("PlaceCar", id, e.id, slotN)
-	dl = os.clock() + PLACE_CONFIRM
-	while slotOf(slotN) ~= e.id and os.clock() < dl do
-		task.wait(0.05)
-	end
-	return slotOf(slotN) == e.id
-end
-
--- The game's own Place Best: one server call that places and sorts the whole book (probed 0.15s for
--- 8 swaps, reason "sorted"). It is group-only: a non-member gets "group_only" once and we stop asking.
+-- The game's own Place Best: one server call that places and sorts the whole book (probed 0.4s for 3
+-- swaps, reason "sorted"; "" = nothing to do). Group-only: a non-member gets "group_only".
 local placeBestResult
 table.insert(unsubs, Networking.Backpack.PlaceBestResult.listen(function(v)
 	placeBestResult = v
 end))
-local usePlaceBest, groupBlocked = false, false
 
-local function tryPlaceBest()
+local function askPlaceBest()
 	placeBestResult = nil
 	Networking.Backpack.PlaceBestRequest.send()
 	local dl = os.clock() + PLACEBEST_REPLY
 	while not placeBestResult and os.clock() < dl do
 		task.wait(0.05)
 	end
-	local r = placeBestResult
-	if not r then
-		return false
+	return placeBestResult
+end
+
+-- ponytail: the hop is UNPROVEN. The server answers "too_far" when you are away from the base's PlaceBest
+-- button (probed: fine at 150 studs, too_far at 200); then we hop to the button, ask, and hop back.
+local function tryPlaceBest(alive)
+	local r = askPlaceBest()
+	if r and r.reason == "too_far" then
+		claim(function()
+			local plot = myPlot()
+			local button = plot and plot:FindFirstChild("scripted") and plot.scripted:FindFirstChild("PlaceBest")
+			local part = button and button:FindFirstChild("Primary")
+			local char = player.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if part and hrp then
+				local home = hrp.CFrame
+				hrp.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
+				task.wait(PLACEBEST_SNAP)
+				r = askPlaceBest()
+				hrp.CFrame = home
+				log("Place Best from the button:", r)
+			end
+		end, alive)
 	end
-	if r.reason == "group_only" then
-		groupBlocked = true
-		say("Place Best needs the game's group: placing by hand")
-		return false
-	end
-	return r.reason == "sorted" or r.reason == "" or r.reason == "cooldown"
+	return r and r.reason or nil
 end
 
 local genPlace, placeOn = 0, false
-local function placePass(mine)
+local placeToggle -- the panel switch, set once it exists: a non-member's switch flips itself back off
+
+local function placeLoop(mine)
 	local alive = function()
 		return placeOn and genPlace == mine
 	end
-	local free, back, placed = survey()
-	local swaps = back[1] and placed[1] and back[1].s > placed[1].s
-	if not ((#free > 0 and #back > 0) or swaps) then
-		return nil -- nothing to do
-	end
-	if usePlaceBest and not groupBlocked and tryPlaceBest() then
-		return true
-	end
-	local didAny = false
-	local ran = claim(function()
-		local k = 1
-		while free[k] and back[1] and alive() do
-			local e = table.remove(back, 1) -- best first
-			if not placeHeld(e, free[k]) then
-				return
-			end
-			stats.placed += 1
-			didAny = true
-			k += 1
-		end
-		-- sort the book: placed is worst-first, back is best-first, so this converges
-		local i = 1
-		local id = plotId()
-		while alive() and id and back[i] and placed[i] and back[i].s > placed[i].s do
-			Action:FireServer("PickupCar", id, placed[i].id)
-			local dl = os.clock() + PLACE_CONFIRM
-			while slotOf(placed[i].slot) and os.clock() < dl do
-				task.wait(0.05)
-			end
-			if not placeHeld(back[i], placed[i].slot) then
-				return
-			end
-			stats.swapped += 1
-			didAny = true
-			i += 1
-		end
-	end, alive)
-	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if hum then
-		hum:UnequipTools()
-	end
-	return ran and didAny
-end
-
-local function placeLoop(mine)
-	while placeOn and genPlace == mine do
-		local ok, did = pcall(placePass, mine)
+	while alive() do
+		local ok, reason = pcall(tryPlaceBest, alive)
 		if not ok then
-			warn("[dreamcars] place pass failed:", did)
-			did = false
+			warn("[dreamcars] place best failed:", reason)
+		elseif reason == "group_only" then
+			say("Place Best needs the game's group: join it, then switch this on again")
+			pcall(function()
+				placeToggle:SetValue(false) -- re-enters setPlace(false)
+			end)
+			return
 		end
-		-- nil = nothing to place (the normal idle state), false = there was work and none landed
-		task.wait(did == false and PLACE_FAIL_BACKOFF or PLACE_EVERY)
+		task.wait(PLACE_EVERY)
 	end
 end
 
@@ -517,102 +432,6 @@ local function setPlace(on)
 	placeOn = on
 	if on then
 		task.spawn(placeLoop, genPlace)
-	end
-end
-
--- sort the slots: best car in slot 1, descending. A move is PickupCar + hold + PlaceCar (~0.5s).
--- Slot i is made to hold target i by emptying it and lifting the wanted car off wherever it is; the
--- car that was bumped out lands later in its own slot (it can only belong further down), so no
--- spare slot is needed. Ties keep their current order, so a sorted book costs nothing to re-check.
-local function findSlot(carId)
-	for n = 1, slotCount() do
-		if slotOf(n) == carId then
-			return n
-		end
-	end
-	return nil
-end
-
-local function pickup(carId, slotN)
-	local id = plotId()
-	if not id then
-		return false
-	end
-	Action:FireServer("PickupCar", id, carId)
-	local dl = os.clock() + PLACE_CONFIRM
-	while slotOf(slotN) == carId and os.clock() < dl do
-		task.wait(0.05)
-	end
-	return slotOf(slotN) ~= carId
-end
-
-local genSort, sortOn = 0, false
-local function sortPass(mine)
-	local alive = function()
-		return sortOn and genSort == mine
-	end
-	if usePlaceBest and not groupBlocked then
-		-- Place Best sorts as well as places, and its order differs slightly from ours: sorting by hand
-		-- on top of it would shuffle two cars back and forth
-		if tryPlaceBest() then
-			return 0
-		end
-		if not groupBlocked then
-			return 0
-		end
-	end
-	local moved = 0
-	claim(function()
-		local _, _, placed = survey()
-		table.sort(placed, function(a, b)
-			if a.s ~= b.s then
-				return a.s > b.s
-			end
-			return a.slot < b.slot
-		end)
-		for i, want in ipairs(placed) do
-			if not alive() then
-				return
-			end
-			if slotOf(i) ~= want.id then
-				local cur = slotOf(i)
-				if cur and not pickup(cur, i) then
-					return
-				end
-				local at = findSlot(want.id)
-				if at and not pickup(want.id, at) then
-					return
-				end
-				if not placeHeld(want, i) then
-					return
-				end
-				moved += 1
-				stats.sorted += 1
-			end
-		end
-	end, alive)
-	local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if hum then
-		hum:UnequipTools()
-	end
-	return moved
-end
-
-local function sortLoop(mine)
-	while sortOn and genSort == mine do
-		local ok, moved = pcall(sortPass, mine)
-		if not ok then
-			warn("[dreamcars] sort pass failed:", moved)
-		end
-		task.wait(SORT_EVERY)
-	end
-end
-
-local function setSort(on)
-	genSort += 1
-	sortOn = on
-	if on then
-		task.spawn(sortLoop, genSort)
 	end
 end
 
@@ -968,25 +787,19 @@ Crates:AddToggle("Open", {
 	Default = false,
 	Callback = safe(setOpen),
 })
-Cars:AddToggle("Place", {
-	Text = "Auto Place + Sort Cars",
-	Tooltip = "Fills every empty card slot with your best backpack car, then swaps a placed car for a better one. Holds each car in your hands for a moment",
+-- Place Best is group-only: a non-member's switch is greyed out. IsInGroup is the client's cached answer, so
+-- the server's own "group_only" reply (placeLoop) is the backstop if it is stale.
+local inGroup = false
+pcall(function()
+	inGroup = player:IsInGroup(require(ReplicatedStorage.Shared.Configuration.Globals).Group)
+end)
+placeToggle = Cars:AddToggle("Place", {
+	Text = "Auto Place Best (group)",
+	Tooltip = "The game's own Place Best, asked every few seconds: fills empty card slots with your best backpack cars, swaps in better ones and sorts the book by income in one server call. Nothing is held in your hands",
+	Disabled = not inGroup,
+	DisabledTooltip = "Join the game's group (free), then rejoin the server to unlock Place Best",
 	Default = false,
 	Callback = safe(setPlace),
-})
-Cars:AddToggle("UsePlaceBest", {
-	Text = "Use game's Place Best (group)",
-	Tooltip = "Lets the game's own Place Best button do the placing and sorting in one server call (about 0.15s for the whole book). Needs you to have joined the game's group; without it the script says so and places by hand. Off by default: our own placing works for everyone",
-	Default = false,
-	Callback = safe(function(on)
-		usePlaceBest = on
-	end),
-})
-Cars:AddToggle("Sort", {
-	Text = "Sort Slots by Income",
-	Tooltip = "Reorders the placed cars so the best $/s is in slot 1 and the rest follow, highest first. Each move picks a car up and places it again (about 0.5s, and a pickup collects that card's cash). Equal cars keep their order. Works alone or with Auto Place",
-	Default = false,
-	Callback = safe(setSort),
 })
 Cars:AddToggle("Clean", {
 	Text = "Auto Clean Cars",
@@ -1127,7 +940,6 @@ end))
 local function stopAll()
 	setClaim(false)
 	setPlace(false)
-	setSort(false)
 	setClean(false)
 	setUpgrade(false)
 	setRebirth(false)
