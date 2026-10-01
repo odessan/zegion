@@ -8708,6 +8708,7 @@ do
                 Row.Corner.BottomLeftRadius = IsLast and UDim.new(0, Library.CornerRadius / 2) or UDim.new(0, 0)
 
                 Row.Button.Text = Entry.FormattedValue
+                Row:SetActions(Entry.Actions) -- FORK(zegion): icon pair on the pinned row, hidden elsewhere
 
                 if Entry.ValueImage then
                     Row.Image.Visible = true
@@ -8872,6 +8873,92 @@ do
             Row.Corner = Corner
             Row.Image = Image
             Row.Button = Button
+
+            -- FORK(zegion): the pinned "all / none" row is two icon buttons side by side instead of
+            -- two text rows. Built the first time a pool slot lands on that row, since only the
+            -- slot showing it ever needs them; they read Row.Entry at click time, so scrolling
+            -- a slot onto another entry cannot leave a stale handler behind.
+            function Row:SetActions(Specs)
+                local Actions = Row.Actions
+                if not Specs then
+                    if Actions then
+                        Actions.Frame.Visible = false
+                    end
+                    return
+                end
+
+                if not Actions then
+                    local Frame = New("Frame", {
+                        BackgroundTransparency = 1,
+                        Size = UDim2.fromScale(1, 1),
+                        Visible = false,
+                        Parent = Container,
+                    })
+                    Actions = { Frame = Frame }
+
+                    for Index = 1, 2 do
+                        local Slot = New("TextButton", {
+                            BackgroundColor3 = "MainColor",
+                            BackgroundTransparency = 1,
+                            Position = UDim2.fromScale((Index - 1) / 2, 0),
+                            Size = UDim2.fromScale(0.5, 1),
+                            Text = "",
+                            TextColor3 = "AccentColor",
+                            TextSize = 13,
+                            Parent = Frame,
+                        })
+                        local Glyph = New("ImageLabel", {
+                            AnchorPoint = Vector2.new(0.5, 0.5),
+                            BackgroundTransparency = 1,
+                            ImageColor3 = "AccentColor",
+                            Position = UDim2.fromScale(0.5, 0.5),
+                            Size = UDim2.fromOffset(14, 14),
+                            Visible = false,
+                            Parent = Slot,
+                        })
+
+                        table.insert(Dropdown.Connections, Slot.MouseButton1Click:Connect(function()
+                            local Spec = Row.Entry and Row.Entry.Actions and Row.Entry.Actions[Index]
+                            if Spec and not DragSelecting then
+                                Spec.Run()
+                            end
+                        end))
+                        table.insert(Dropdown.Connections, Slot.MouseEnter:Connect(function()
+                            TweenService:Create(Slot, Library.TweenInfo, { BackgroundTransparency = 0.85 }):Play()
+                        end))
+                        table.insert(Dropdown.Connections, Slot.MouseLeave:Connect(function()
+                            TweenService:Create(Slot, Library.TweenInfo, { BackgroundTransparency = 1 }):Play()
+                        end))
+
+                        Actions[Index] = { Slot = Slot, Glyph = Glyph }
+                    end
+
+                    -- a hairline between the two so they read as a pair, not one wide button
+                    New("Frame", {
+                        AnchorPoint = Vector2.new(0.5, 0.5),
+                        BackgroundColor3 = "OutlineColor",
+                        Position = UDim2.fromScale(0.5, 0.5),
+                        Size = UDim2.new(0, 1, 1, -8),
+                        Parent = Frame,
+                    })
+
+                    Row.Actions = Actions
+                end
+
+                Actions.Frame.Visible = true
+                for Index, Spec in Specs do
+                    local Part = Actions[Index]
+                    local Icon = Library:GetIcon(Spec.Icon)
+                    if Icon then
+                        Part.Slot.Text = ""
+                        Part.Glyph.Visible = true
+                        Library:ApplyLucideIcon(Part.Glyph, Icon)
+                    else -- icon pack unavailable: the label still works
+                        Part.Glyph.Visible = false
+                        Part.Slot.Text = Spec.Fallback
+                    end
+                end
+            end
 
             function Row:UpdateButton()
                 local Entry = Row.Entry
@@ -9048,31 +9135,29 @@ do
 
         -- FORK(zegion): the two pinned rows. Their Value is a key no real value can be, so the
         -- rows' "is this selected" lookups read nil and nothing ever writes to it.
-        local SelectAllEntry = {
-            Value = "\0zegion:all",
-            RawValue = "Select all",
-            FormattedValue = "Select all",
-            IsDisabled = false,
-            Action = function()
-                local Picked = {}
-                local IsDict = not IsSequentialArray(Dropdown.Values)
-                for Key, Raw in Dropdown.Values do
-                    local Val = IsDict and Key or Raw
-                    if not table.find(Dropdown.DisabledValues, Val) then
-                        Picked[Val] = true
-                    end
+        local function SelectAll()
+            local Picked = {}
+            local IsDict = not IsSequentialArray(Dropdown.Values)
+            for Key, Raw in Dropdown.Values do
+                local Val = IsDict and Key or Raw
+                if not table.find(Dropdown.DisabledValues, Val) then
+                    Picked[Val] = true
                 end
-                Dropdown:SetValue(Picked)
-            end,
-        }
-        local ClearAllEntry = {
-            Value = "\0zegion:none",
-            RawValue = "Remove all",
-            FormattedValue = "Remove all",
+            end
+            Dropdown:SetValue(Picked)
+        end
+        -- one row, two icon buttons (Row:SetActions). Action stays set, as a no-op, because it
+        -- is what the drag, hover and click code already key on to treat a row as "not a value".
+        local ActionsEntry = {
+            Value = "\0zegion:actions",
+            RawValue = "",
+            FormattedValue = "",
             IsDisabled = false,
-            Action = function()
-                Dropdown:SetValue({})
-            end,
+            Action = function() end,
+            Actions = {
+                { Icon = "check-check", Fallback = "All", Run = SelectAll },
+                { Icon = "x", Fallback = "None", Run = function() Dropdown:SetValue({}) end },
+            },
         }
 
         function Dropdown:BuildDropdownList()
@@ -9084,8 +9169,7 @@ do
             -- They are entries like any other, marked by Action, so the row pool needs no new
             -- kind of row; hidden while searching, when "all" would mean the matches only.
             if Info.Multi and not (SearchBox and SearchBox.Text ~= "") then
-                table.insert(FilteredEntries, 1, ClearAllEntry)
-                table.insert(FilteredEntries, 1, SelectAllEntry)
+                table.insert(FilteredEntries, 1, ActionsEntry)
             end
 
             MenuTable.Menu.CanvasPosition = Vector2.new(0, 0)
