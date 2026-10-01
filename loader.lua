@@ -87,6 +87,7 @@ local GAMES = {
 	["79226825467411"] = "cup_shuffle_zoo.lua", -- Cup Shuffle Zoo (working title -- the dump doesn't carry the game's name)
 	["102555956950143"] = "lift_rock_for_treasure.lua", -- Lift Rock for Treasure
 	["77404766588393"] = "tap_buttons.lua", -- Tap Buttons
+	["76841016201110"] = "dream_car_collection.lua", -- Dream Car Collection
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
