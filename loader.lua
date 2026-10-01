@@ -84,6 +84,7 @@ local GAMES = {
 	["78490532994307"] = "build_an_ant_empire.lua", -- Build an Ant Empire
 	["90920025162454"] = "roll_a_fisherman.lua", -- Roll a Fisherman
 	["100641654440407"] = "turret_defense.lua", -- Turret Defense (working title -- the dump doesn't carry the game's name)
+	["79226825467411"] = "cup_shuffle_zoo.lua", -- Cup Shuffle Zoo (working title -- the dump doesn't carry the game's name)
 	["102555956950143"] = "lift_rock_for_treasure.lua", -- Lift Rock for Treasure
 	["77404766588393"] = "tap_buttons.lua", -- Tap Buttons
 
