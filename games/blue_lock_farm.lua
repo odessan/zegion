@@ -43,7 +43,7 @@
                 (slot 1 fights first); per tower, Auto equip best simulates your 5 strongest in
                 all 120 orders with the game's own battle module, or you set the 4 slots.
                 Towers appear as they unlock (floor 250 of the one before). Picks are saved.
-     trait.labels   : RerollPlayerUnitTrait, 1 Trait token a roll (tower floors drop them), grading's
+     TRAITS   : RerollPlayerUnitTrait, 1 Trait token a roll (tower floors drop them), grading's
                 pace. Rolls until a unit lands any target trait, then the next -- slotted best
                 first, the tower team, or picks. Out of tokens waits. Unprobed on the wire.
      SPAWNS   : variant tokens (server-wide race, rarest first), grade tokens and potions,
@@ -57,8 +57,9 @@
      to (then back) only on a miss; two hop-cured misses make that action hop first. F9 says
      which way each one went. Not wired: SkipBoxOnDropper / Skip All / Recover (dev products).
 
-     Executor only: the panel is WindUI, fetched with HttpGet, which Studio blocks.
-     RightControl rolls it up to a bare Zegion pill, RightAlt hides it outright.
+     Executor only: the panel is Obsidian (panel_obsidian.lua), fetched with HttpGet, which
+     Studio blocks. RightControl opens / closes it (so does the Zegion logo). The Settings tab
+     saves the toggles as configs; tower and trait picks keep their own file (SAVE_FILE).
      Stop: getgenv().blueLockFarmStop() ]]
 
 -- config ---------------------------------------------------------------------
@@ -2444,34 +2445,27 @@ local function startDog()
 end
 
 -- gui ------------------------------------------------------------------------
-local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
+local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel_obsidian.lua"
 local panel = loadstring(game:HttpGet(PANEL_URL))()
-local Window = panel({
-	game = "Blue Lock Farm", -- fallback until the live name lands
-	folder = "BlueLockFarm", -- never rename: saved configs orphan
-	size = UDim2.fromOffset(540, 460),
-})
+local Window, Library = panel({ game = "Blue Lock Farm", statusBar = true }) -- the game arg is the footer until the live name lands
 if not Window then
-	return -- panel.lua already said why
+	return -- panel_obsidian.lua already said why
 end
 
--- WindUI hands a Multi dropdown a list, a map or the row tables depending on the build;
--- normalise into a set we own, translated through `key` (display name -> game key).
+-- A Multi dropdown hands its callback a map ({ Name = true }); a list is read too, because
+-- SetValue takes one. Normalised into a set we own, translated through `key` (display name -> game key).
 local function ticked(v, key)
 	local set = {}
 	for k, val in pairs(type(v) == "table" and v or {}) do
-		local name
-		if type(k) == "number" then
-			name = type(val) == "table" and (val.Title or val.Value) or val
-		elseif val == true then
-			name = k
-		end
+		local name = type(k) == "number" and val or (val == true and k)
 		if type(name) == "string" then
 			set[key and key[name] or name] = true
 		end
 	end
 	return set
 end
+assert(ticked({ "a", "b" }).b and ticked({ a = true, b = false }).a and not ticked({ a = true, b = false }).b, "ticked reads both shapes")
+assert(ticked({ ["Shown"] = true }, { Shown = "game" }).game, "ticked translates through key")
 local function refill(set, v, key)
 	table.clear(set)
 	for k in pairs(ticked(v, key)) do
@@ -2479,10 +2473,10 @@ local function refill(set, v, key)
 	end
 end
 -- A single dropdown: the game key for a pick, false for the "none" entry, nil for anything
--- else (a Refresh re-firing "" must not wipe a good pick). Some builds hand back the row table.
+-- else (a SetValues that dropped the pick re-fires nil; it must not wipe a good one).
 local function pick(v, key, none)
-	if type(v) == "table" then
-		v = v.Title or v.Value or v[1]
+	if v == nil then
+		return nil
 	end
 	if v == none then
 		return false
@@ -2511,7 +2505,7 @@ end
 -- The grading Units list, kept in step with your slots from Heartbeat (see syncUnits).
 local unitsDrop, unitKey, unitSig, unitsAt = nil, {}, nil, 0
 local gradeToggle
-local beltPara -- Roll section's "why is the belt stopped" row, drained like the dashboard
+local beltPara -- Roll groupbox's "why is the belt stopped" label, drained like the dashboard
 local function unitsSig(labels, key)
 	local s = {}
 	for _, l in ipairs(labels) do
@@ -2523,9 +2517,21 @@ end
 -- The Tower slots and the Traits units list: every player you own, kept in step from
 -- Heartbeat (syncAll). Tower sections are added as towers unlock.
 -- One table (Luau's 200-local limit): the rows the Heartbeat drain writes, and the lists.
-local ui = { slotDrops = {}, shown = {}, planPara = {}, NONE = "(empty)", allAt = 0 }
+local ui = { slotDrops = {}, shown = {}, planPara = {}, NONE = "(empty)", allAt = 0, sides = 0, note = "idle", stripAt = 0, last = setmetatable({}, { __mode = "k" }) }
 ui.allLabels, ui.allKey = unitLabels(allUnits())
 ui.allSig = unitsSig(ui.allLabels, ui.allKey)
+-- Labels and the status strip are RichText: a "<" in an explain() line would start a tag.
+-- Written only when the text changed, since every SetText re-measures and resizes its groupbox.
+function ui.esc(s)
+	return (tostring(s):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+function ui.setText(label, text)
+	if label and ui.last[label] ~= text then
+		ui.last[label] = text
+		label:SetText(ui.esc(text))
+	end
+end
+assert(ui.esc("a<b>&c") == "a&lt;b&gt;&amp;c", "esc")
 function ui.labelOf(guid)
 	for l, g in pairs(ui.allKey) do
 		if g == guid then
@@ -2536,36 +2542,35 @@ end
 function ui.addTower(key)
 	ui.shown[key] = true
 	local c = tower.cfg(key)
-	local sec = ui.towerTab:Section({
-		Title = ("%s (%s)"):format(tower.title(key), tostring(Floors[key].SubHeader or "")),
-		Icon = "solar:cup-star-bold",
-		Box = true,
-		BoxBorder = true,
-		Opened = false,
-	})
-	sec:Toggle({
-		Title = "Enabled",
-		Desc = "Auto tower runs the highest enabled tower your team can climb",
-		Value = c.enabled,
+	-- Collapsed groupboxes, alternating sides: the Infinity Tower box is on the left, so the first tower goes right.
+	ui.sides = ui.sides + 1
+	local add = ui.sides % 2 == 1 and ui.towerTab.AddRightGroupbox or ui.towerTab.AddLeftGroupbox
+	local box = add(ui.towerTab, ("%s (%s)"):format(tower.title(key), tostring(Floors[key].SubHeader or "")), "trophy", nil, true)
+	-- Idx "Tower_<key>_..." is skipped by the config manager (see ui.ignore): these picks have their own file.
+	box:AddToggle("Tower_" .. key .. "_On", {
+		Text = "Enabled",
+		Tooltip = "Auto tower runs the highest enabled tower your team can climb",
+		Default = c.enabled,
 		Callback = function(on)
 			c.enabled = on
 			save()
 		end,
 	})
-	sec:Toggle({
-		Title = "Auto equip best",
-		Desc = ("Your %d strongest, simulated in every order with the game's own battle maths -- the order that climbs highest goes. Off: the slots below, top to bottom"):format(TOWER_POOL),
-		Value = c.auto,
+	box:AddToggle("Tower_" .. key .. "_Auto", {
+		Text = "Auto equip best",
+		Tooltip = ("Your %d strongest, simulated in every order with the game's own battle maths -- the order that climbs highest goes. Off: the slots below, top to bottom"):format(TOWER_POOL),
+		Default = c.auto,
 		Callback = function(on)
 			c.auto = on
 			save()
 		end,
 	})
 	for i = 1, tower.slotsN do
-		local d = sec:Dropdown({
-			Title = "Slot " .. i .. (i == 1 and " (fights first)" or ""),
+		local d = box:AddDropdown("Tower_" .. key .. "_Slot" .. i, {
+			Text = "Slot " .. i .. (i == 1 and " (first)" or ""),
+			Tooltip = i == 1 and "Slot 1 fights first" or nil,
 			Values = withNone(ui.NONE, ui.allLabels),
-			Value = ui.labelOf(c.slots[i]) or ui.NONE,
+			Default = ui.labelOf(c.slots[i]) or ui.NONE,
 			Callback = function(v)
 				local g = pick(v, ui.allKey, ui.NONE)
 				if g ~= nil then
@@ -2576,11 +2581,12 @@ function ui.addTower(key)
 		})
 		table.insert(ui.slotDrops, { drop = d, key = key, i = i })
 	end
-	ui.planPara[key] = sec:Paragraph({ Title = "Plan", Desc = tower.planText(key) })
-	sec:Button({
-		Title = "Simulate",
-		Desc = "What this tower's team reaches right now",
-		Callback = function()
+	box:AddDivider("Plan")
+	ui.planPara[key] = box:AddLabel(ui.esc(tower.planText(key)), true)
+	box:AddButton({
+		Text = "Simulate",
+		Tooltip = "What this tower's team reaches right now",
+		Func = function()
 			task.spawn(function()
 				local ok = pcall(tower.plan, key)
 				tower.texts[key] = ok and tower.planText(key) or "simulation failed"
@@ -2590,32 +2596,33 @@ function ui.addTower(key)
 end
 
 do
-	local Main = Window:Tab({ Title = "Farm", Icon = "solar:home-2-bold" })
+	local Main = Window:AddTab("Farm", "house")
 
-	local Roll = Main:Section({ Title = "Roll", Icon = "solar:refresh-circle-bold", Box = true, BoxBorder = true, Opened = true })
-	Roll:Toggle({
-		Title = "Auto roll",
-		Desc = "Free rolls on the game's own cooldown; nothing is bought unless Buy matches is on",
-		Value = false,
+	local Roll = Main:AddLeftGroupbox("Roll", "refresh-cw")
+	Roll:AddToggle("AutoRoll", {
+		Text = "Auto roll",
+		Tooltip = "Free rolls on the game's own cooldown; nothing is bought unless Buy matches is on",
+		Default = false,
 		Callback = function(on)
 			roll.saving, roll.seenId, roll.stoppedOn = 0, nil, nil -- no hold outlives the belt loop
 			rollLoop.set(on)
 		end,
 	})
-	beltPara = Roll:Paragraph({ Title = "Belt", Desc = "off" })
-	Roll:Toggle({
-		Title = "Buy matches",
-		Desc = "On: buys matches (one you'll afford within a minute is held). Off: rolling STOPS on a match until you buy it",
-		Value = roll.buy,
+	Roll:AddDivider("Belt")
+	beltPara = Roll:AddLabel("off", true)
+	Roll:AddToggle("BuyMatches", {
+		Text = "Buy matches",
+		Tooltip = "On: buys matches (one you'll afford within a minute is held). Off: rolling STOPS on a match until you buy it",
+		Default = roll.buy,
 		Callback = function(on)
 			roll.buy = on
 		end,
 	})
-	Roll:Dropdown({
-		Title = "Min tier",
-		Desc = "This tier and every tier above it",
+	Roll:AddDropdown("MinTier", {
+		Text = "Min tier",
+		Tooltip = "This tier and every tier above it",
 		Values = withNone(ANY, TIERS),
-		Value = ANY,
+		Default = ANY,
 		Callback = function(v)
 			local k = pick(v, tierKey, ANY)
 			if k ~= nil then
@@ -2623,11 +2630,11 @@ do
 			end
 		end,
 	})
-	Roll:Dropdown({
-		Title = "Min variant",
-		Desc = "This variant and every rarer one. Any + Any buys nothing (except the rule below)",
+	Roll:AddDropdown("MinVariant", {
+		Text = "Min variant",
+		Tooltip = "This variant and every rarer one. Any + Any buys nothing (except the rule below)",
 		Values = withNone(ANY, VARIANTS),
-		Value = ANY,
+		Default = ANY,
 		Callback = function(v)
 			local k = pick(v, variantKey, ANY)
 			if k ~= nil then
@@ -2635,28 +2642,32 @@ do
 			end
 		end,
 	})
-	Roll:Dropdown({
-		Title = "Match",
+	Roll:AddDropdown("MatchMode", {
+		Text = "Match",
 		Values = { "Tier AND variant", "Tier OR variant" },
-		Value = "Tier AND variant",
+		Default = "Tier AND variant",
 		Callback = function(v)
-			roll.either = v == "Tier OR variant"
+			if v then
+				roll.either = v == "Tier OR variant"
+			end
 		end,
 	})
-	Roll:Toggle({
-		Title = "Also buy anything better than my weakest slot",
-		Desc = ("Even if it doesn't match the filters above: fills an empty slot, or beats your weakest by the margin; stops at %d waiting"):format(
+	Roll:AddToggle("SmartBuy", {
+		Text = "Also buy better than weakest",
+		Tooltip = ("Anything better than my weakest slot, even if it doesn't match the filters above: fills an empty slot, or beats your weakest by the margin; stops at %d waiting"):format(
 			SMART_STOCK
 		),
-		Value = roll.smart,
+		Default = roll.smart,
 		Callback = function(on)
 			roll.smart = on
 		end,
 	})
-	Roll:Input({
-		Title = "Better by at least (%)",
-		Desc = "Average pull vs your weakest player, both at your cap -- used for buying AND placing",
-		Value = tostring(MARGIN),
+	Roll:AddInput("Margin", {
+		Text = "Better by (%)",
+		Tooltip = "Better by at least this %: average pull vs your weakest player, both at your cap -- used for buying AND placing",
+		Default = tostring(MARGIN),
+		Numeric = true,
+		Finished = true,
 		Placeholder = "25",
 		Callback = function(v)
 			local n = num(v, 0)
@@ -2665,10 +2676,12 @@ do
 			end
 		end,
 	})
-	Roll:Input({
-		Title = "Max wait / price (minutes of income)",
-		Desc = "Hold an unaffordable wanted locker this long at most; a \"better\" buy may cost this much at most",
-		Value = tostring(MAX_WAIT),
+	Roll:AddInput("MaxWait", {
+		Text = "Max wait (min)",
+		Tooltip = "Max wait / price, in minutes of income: hold an unaffordable wanted locker this long at most; a \"better\" buy may cost this much at most",
+		Default = tostring(MAX_WAIT),
+		Numeric = true,
+		Finished = true,
 		Placeholder = "30",
 		Callback = function(v)
 			local n = num(v, 0)
@@ -2678,38 +2691,40 @@ do
 		end,
 	})
 
-	local Lock = Main:Section({ Title = "Lockers & players", Icon = "solar:box-bold", Box = true, BoxBorder = true, Opened = true })
-	Lock:Toggle({
-		Title = "Auto open lockers",
-		Desc = "The player lands on the same slot; then level -> Equip Best -> re-place",
-		Value = false,
+	local Lock = Main:AddRightGroupbox("Lockers & players", "box")
+	Lock:AddToggle("AutoOpen", {
+		Text = "Auto open lockers",
+		Tooltip = "The player lands on the same slot; then level -> Equip Best -> re-place",
+		Default = false,
 		Callback = function(on)
 			roster.open = on
 			rosterSync()
 		end,
 	})
-	Lock:Toggle({
-		Title = "Auto place lockers",
-		Desc = "Empty slot gets your richest locker; otherwise the richest one beating your weakest player by the margin (Roll) replaces it",
-		Value = false,
+	Lock:AddToggle("AutoPlace", {
+		Text = "Auto place lockers",
+		Tooltip = "Empty slot gets your richest locker; otherwise the richest one beating your weakest player by the margin (Roll) replaces it",
+		Default = false,
 		Callback = function(on)
 			roster.place = on
 			rosterSync()
 		end,
 	})
-	Lock:Toggle({
-		Title = "Auto level players",
-		Desc = "Players on the plot only (the remote takes the slot); cheapest $ per $/ball first",
-		Value = false,
+	Lock:AddToggle("AutoLevel", {
+		Text = "Auto level players",
+		Tooltip = "Players on the plot only (the remote takes the slot); cheapest $ per $/ball first",
+		Default = false,
 		Callback = function(on)
 			roster.level = on
 			rosterSync()
 		end,
 	})
-	Lock:Input({
-		Title = "Level cap",
-		Desc = "Stop levelling a player here",
-		Value = tostring(roster.cap),
+	Lock:AddInput("LevelCap", {
+		Text = "Level cap",
+		Tooltip = "Stop levelling a player here",
+		Default = tostring(roster.cap),
+		Numeric = true,
+		Finished = true,
 		Placeholder = "10",
 		Callback = function(v)
 			local n = num(v, 1)
@@ -2718,40 +2733,40 @@ do
 			end
 		end,
 	})
-	Lock:Toggle({
-		Title = "Auto Equip Best",
-		Desc = "A bag player better at your cap swaps onto your weakest slot (even at L1); otherwise the game's own EquipBestPlayerUnits, once each time every slotted player reaches the cap",
-		Value = false,
+	Lock:AddToggle("AutoEquip", {
+		Text = "Auto Equip Best",
+		Tooltip = "A bag player better at your cap swaps onto your weakest slot (even at L1); otherwise the game's own EquipBestPlayerUnits, once each time every slotted player reaches the cap",
+		Default = false,
 		Callback = function(on)
 			roster.equip = on
 			rosterSync()
 		end,
 	})
 
-	local Sell = Main:Section({ Title = "Sell", Icon = "solar:tag-price-bold", Box = true, BoxBorder = true, Opened = false })
-	Sell:Toggle({
-		Title = "Auto sell lockers",
-		Desc = "Unplaced lockers in the tiers below; a locker sells for what it cost",
-		Value = false,
+	local Sell = Main:AddLeftGroupbox("Sell", "tag", nil, true)
+	Sell:AddToggle("SellLockers", {
+		Text = "Auto sell lockers",
+		Tooltip = "Unplaced lockers in the tiers below; a locker sells for what it cost",
+		Default = false,
 		Callback = function(on)
 			roster.sellLockers = on
 			rosterSync()
 		end,
 	})
-	Sell:Toggle({
-		Title = "Auto sell players",
-		Desc = "Players in your bag (never one on a slot) from the tiers below",
-		Value = false,
+	Sell:AddToggle("SellPlayers", {
+		Text = "Auto sell players",
+		Tooltip = "Players in your bag (never one on a slot) from the tiers below",
+		Default = false,
 		Callback = function(on)
 			roster.sellUnits = on
 			rosterSync()
 		end,
 	})
-	Sell:Dropdown({
-		Title = "Sell tiers below",
-		Desc = "Every tier under this one is sold; this tier and up are kept. A player's tier is its locker's",
+	Sell:AddDropdown("SellBelow", {
+		Text = "Sell tiers below",
+		Tooltip = "Every tier under this one is sold; this tier and up are kept. A player's tier is its locker's",
 		Values = withNone(NOTHING, TIERS),
-		Value = NOTHING,
+		Default = NOTHING,
 		Callback = function(v)
 			local k = pick(v, tierKey, NOTHING)
 			if k ~= nil then
@@ -2759,44 +2774,48 @@ do
 			end
 		end,
 	})
-	Sell:Dropdown({
-		Title = "Never sell variants",
+	Sell:AddDropdown("KeepVariants", {
+		Text = "Keep variants",
+		Tooltip = "Never sell these variants",
 		Values = VARIANTS,
+		Default = {},
 		Multi = true,
-		AllowNone = true,
-		Value = {},
+		AllowNull = true,
 		Callback = function(v)
 			refill(sell.keep, v, variantKey)
 		end,
 	})
-	Sell:Toggle({
-		Title = "Never sell anything better than my weakest slot",
-		Value = sell.guard,
+	Sell:AddToggle("SellGuard", {
+		Text = "Keep better than weakest",
+		Tooltip = "Never sell anything better than my weakest slot",
+		Default = sell.guard,
 		Callback = function(on)
 			sell.guard = on
 		end,
 	})
 
-	local Map = Main:Section({ Title = "Crates & spawns", Icon = "solar:map-point-bold", Box = true, BoxBorder = true, Opened = false })
-	Map:Toggle({
-		Title = "Auto crates",
-		Desc = "Picks up your conveyor's pile and sells it at your sell NPC; always collects and sells polished crates",
-		Value = false,
+	local Map = Main:AddRightGroupbox("Crates & spawns", "map-pin", nil, true)
+	Map:AddToggle("AutoCrates", {
+		Text = "Auto crates",
+		Tooltip = "Picks up your conveyor's pile and sells it at your sell NPC; always collects and sells polished crates",
+		Default = false,
 		Callback = function(on)
 			crateLoop.set(on)
 		end,
 	})
-	Map:Toggle({
-		Title = "Polish crates",
-		Desc = "Every crate goes into your polisher (+30%, at its speed) instead of the NPC. Off drains what's queued",
-		Value = crate.polish,
+	Map:AddToggle("Polish", {
+		Text = "Polish crates",
+		Tooltip = "Every crate goes into your polisher (+30%, at its speed) instead of the NPC. Off drains what's queued",
+		Default = crate.polish,
 		Callback = function(on)
 			crate.polish = on
 		end,
 	})
-	Map:Input({
-		Title = "Pick up at balls",
-		Value = tostring(crate.min),
+	Map:AddInput("CrateMin", {
+		Text = "Pick up at balls",
+		Default = tostring(crate.min),
+		Numeric = true,
+		Finished = true,
 		Placeholder = tostring(CRATE_MIN),
 		Callback = function(v)
 			local n = num(v, 1)
@@ -2805,42 +2824,42 @@ do
 			end
 		end,
 	})
-	Map:Toggle({
-		Title = "Auto tokens & potions",
-		Desc = "Wakes on each spawn node's Occupied flag; variant tokens first, rarest first",
-		Value = false,
+	Map:AddToggle("AutoSpawns", {
+		Text = "Auto tokens & potions",
+		Tooltip = "Wakes on each spawn node's Occupied flag; variant tokens first, rarest first",
+		Default = false,
 		Callback = function(on)
 			spawnWatch(on)
 			spawnLoop.set(on)
 		end,
 	})
-	Map:Dropdown({
-		Title = "Collect",
+	Map:AddDropdown("SpawnKinds", {
+		Text = "Collect",
 		Values = SPAWN_KINDS,
+		Default = SPAWN_KINDS,
 		Multi = true,
-		AllowNone = true,
-		Value = SPAWN_KINDS,
+		AllowNull = true,
 		Callback = function(v)
 			refill(spawn.want, v)
 		end,
 	})
 
-	local Gr = Window:Tab({ Title = "Grades", Icon = "solar:star-bold" })
-	local GrSec = Gr:Section({ Title = "Grade reroll", Icon = "solar:star-shine-bold", Box = true, BoxBorder = true, Opened = true })
-	gradeToggle = GrSec:Toggle({
-		Title = "Auto grade",
-		Desc = "Rolls one slotted player until it reaches the stop grade, then the next. A roll REPLACES the grade -- an A can come back F",
-		Value = false,
+	local Gr = Window:AddTab("Grades", "star")
+	local GrSec = Gr:AddLeftGroupbox("Grade reroll", "star")
+	gradeToggle = GrSec:AddToggle("AutoGrade", {
+		Text = "Auto grade",
+		Tooltip = "Rolls one slotted player until it reaches the stop grade, then the next. A roll REPLACES the grade -- an A can come back F",
+		Default = false,
 		Callback = function(on)
 			grade.misses, grade.kill = 0, false
 			gradeLoop.set(on)
 		end,
 	})
-	GrSec:Dropdown({
-		Title = "Stop at grade",
-		Desc = "This grade or better is left alone",
+	GrSec:AddDropdown("GradeStop", {
+		Text = "Stop at grade",
+		Tooltip = "This grade or better is left alone",
 		Values = GRADES,
-		Value = grade.stop,
+		Default = grade.stop,
 		Callback = function(v)
 			local k = pick(v, gradeKey)
 			if k then
@@ -2848,19 +2867,19 @@ do
 			end
 		end,
 	})
-	GrSec:Dropdown({
-		Title = "Pay with",
-		Desc = "Cash is 10 drops of that player a roll, and always leaves your reserve (Upgrades tab)",
+	GrSec:AddDropdown("GradePay", {
+		Text = "Pay with",
+		Tooltip = "Cash is 10 drops of that player a roll, and always leaves your reserve (Upgrades tab)",
 		Values = PAY,
-		Value = grade.pay,
+		Default = grade.pay,
 		Callback = function(v)
 			grade.pay = pick(v, ids(PAY)) or grade.pay
 		end,
 	})
-	GrSec:Dropdown({
-		Title = "Roll which",
+	GrSec:AddDropdown("GradeWhich", {
+		Text = "Roll which",
 		Values = WHICH,
-		Value = WHICH[1],
+		Default = WHICH[1],
 		Callback = function(v)
 			local k = pick(v, ids(WHICH))
 			if k then
@@ -2871,15 +2890,16 @@ do
 	local labels
 	labels, unitKey = unitLabels()
 	unitSig = unitsSig(labels, unitKey)
-	unitsDrop = GrSec:Dropdown({
-		Title = "Units (Picked only)",
-		Desc = "Players on your slots. One that leaves its slot is unpicked -- re-pick it when it's back",
+	-- Idx "GradeUnits" is skipped by the config manager (see ui.ignore): its labels follow your slots.
+	unitsDrop = GrSec:AddDropdown("GradeUnits", {
+		Text = "Units (picked)",
+		Tooltip = "Roll which = Picked only. Players on your slots. One that leaves its slot is unpicked -- re-pick it when it's back",
 		Values = labels,
+		Default = {},
 		Multi = true,
-		AllowNone = true,
-		Value = {},
+		AllowNull = true,
 		Callback = function(v)
-			-- Only labels on the current list: a Refresh re-fires this with the old ticks.
+			-- Only labels on the current list: a SetValues that drops a tick re-fires this.
 			table.clear(grade.want)
 			for name in pairs(ticked(v)) do
 				if unitKey[name] then
@@ -2889,12 +2909,12 @@ do
 		end,
 	})
 
-	ui.towerTab = Window:Tab({ Title = "Tower", Icon = "solar:cup-star-bold" })
-	local TwSec = ui.towerTab:Section({ Title = "Infinity Tower", Icon = "solar:cup-star-bold", Box = true, BoxBorder = true, Opened = true })
-	ui.towerToggle = TwSec:Toggle({
-		Title = "Auto tower",
-		Desc = "Keeps one run going -- the highest enabled tower your team clears floor 1 of -- and starts the next as each ends. The server fights it while you farm; one run at a time is the game's rule",
-		Value = false,
+	ui.towerTab = Window:AddTab("Tower", "trophy")
+	local TwSec = ui.towerTab:AddLeftGroupbox("Infinity Tower", "trophy")
+	ui.towerToggle = TwSec:AddToggle("AutoTower", {
+		Text = "Auto tower",
+		Tooltip = "Keeps one run going -- the highest enabled tower your team clears floor 1 of -- and starts the next as each ends. The server fights it while you farm; one run at a time is the game's rule",
+		Default = false,
 		Callback = function(on)
 			tower.kill = false
 			table.clear(tower.parkUntil)
@@ -2902,19 +2922,20 @@ do
 			tower.loop.set(on)
 		end,
 	})
-	ui.towerPara = TwSec:Paragraph({ Title = "Run", Desc = "reading..." })
+	TwSec:AddDivider("Run")
+	ui.towerPara = TwSec:AddLabel("reading...", true)
 	for _, key in ipairs(tower.list) do
 		if tower.open(key) then
 			ui.addTower(key)
 		end
 	end
 
-	local Tr = Window:Tab({ Title = "Traits", Icon = "solar:magic-stick-3-bold" })
-	local TrSec = Tr:Section({ Title = "Trait reroll", Icon = "solar:magic-stick-3-bold", Box = true, BoxBorder = true, Opened = true })
-	ui.traitToggle = TrSec:Toggle({
-		Title = "Auto trait",
-		Desc = "Rolls one unit until it lands a target trait, then the next. A roll REPLACES the trait; a target trait is never rolled. 1 Trait token a roll",
-		Value = false,
+	local Tr = Window:AddTab("Traits", "sparkles")
+	local TrSec = Tr:AddLeftGroupbox("Trait reroll", "sparkles")
+	ui.traitToggle = TrSec:AddToggle("AutoTrait", {
+		Text = "Auto trait",
+		Tooltip = "Rolls one unit until it lands a target trait, then the next. A roll REPLACES the trait; a target trait is never rolled. 1 Trait token a roll",
+		Default = false,
 		Callback = function(on)
 			trait.misses, trait.kill = 0, false
 			trait.loop.set(on)
@@ -2926,13 +2947,14 @@ do
 			table.insert(wantLabels, l)
 		end
 	end
-	TrSec:Dropdown({
-		Title = "Target traits",
-		Desc = "Any one of these ends the rolling on that unit. Default: the ones the game asks before rerolling",
+	-- The trait picks below keep their own file (trait.save), so the config manager skips them (ui.ignore).
+	TrSec:AddDropdown("TraitTargets", {
+		Text = "Target traits",
+		Tooltip = "Any one of these ends the rolling on that unit. Default: the ones the game asks before rerolling",
 		Values = trait.labels,
+		Default = wantLabels,
 		Multi = true,
-		AllowNone = true,
-		Value = wantLabels,
+		AllowNull = true,
 		Callback = function(v)
 			table.clear(trait.want)
 			for name in pairs(ticked(v)) do
@@ -2943,11 +2965,11 @@ do
 			trait.save()
 		end,
 	})
-	TrSec:Dropdown({
-		Title = "Roll which",
-		Desc = "Best first: slotted players by $/ball. Tower team: the four in your current or last run, slot 1 first",
+	TrSec:AddDropdown("TraitWhich", {
+		Text = "Roll which",
+		Tooltip = "Best first: slotted players by $/ball. Tower team: the four in your current or last run, slot 1 first",
 		Values = trait.WHICH,
-		Value = trait.which,
+		Default = trait.which,
 		Callback = function(v)
 			local k = pick(v, ids(trait.WHICH))
 			if k then
@@ -2956,11 +2978,11 @@ do
 			end
 		end,
 	})
-	TrSec:Dropdown({
-		Title = "When a target lands",
-		Desc = "Next unit keeps going down the list; Stop switches Auto trait off",
+	TrSec:AddDropdown("TraitAfter", {
+		Text = "When target lands",
+		Tooltip = "Next unit keeps going down the list; Stop switches Auto trait off",
 		Values = trait.AFTER,
-		Value = trait.after,
+		Default = trait.after,
 		Callback = function(v)
 			local k = pick(v, ids(trait.AFTER))
 			if k then
@@ -2976,15 +2998,15 @@ do
 			table.insert(keep, l)
 		end
 	end
-	ui.traitUnits = TrSec:Dropdown({
-		Title = "Units (Picked only)",
-		Desc = "Every player you own",
+	ui.traitUnits = TrSec:AddDropdown("TraitUnits", {
+		Text = "Units (picked)",
+		Tooltip = "Roll which = Picked only. Every player you own",
 		Values = ui.allLabels,
+		Default = keep,
 		Multi = true,
-		AllowNone = true,
-		Value = keep,
+		AllowNull = true,
 		Callback = function(v)
-			-- Only labels on the current list: a Refresh re-fires this with the old ticks.
+			-- Only labels on the current list: a SetValues that drops a tick re-fires this.
 			table.clear(trait.picks)
 			for name in pairs(ticked(v)) do
 				if ui.allKey[name] then
@@ -2994,14 +3016,15 @@ do
 			trait.save()
 		end,
 	})
-	ui.traitPara = TrSec:Paragraph({ Title = "Tokens & pity", Desc = "reading..." })
+	TrSec:AddDivider("Tokens & pity")
+	ui.traitPara = TrSec:AddLabel("reading...", true)
 
-	local Up = Window:Tab({ Title = "Upgrades", Icon = "solar:bolt-circle-bold" })
-	local UpSec = Up:Section({ Title = "Permanent upgrades", Icon = "solar:graph-up-bold", Box = true, BoxBorder = true, Opened = true })
-	UpSec:Toggle({
-		Title = "Auto upgrades",
-		Desc = "Best payback first; see the header for how luck / open time / conveyor tier are weighed",
-		Value = false,
+	local Up = Window:AddTab("Upgrades", "trending-up")
+	local UpSec = Up:AddLeftGroupbox("Permanent upgrades", "trending-up")
+	UpSec:AddToggle("AutoUpgrades", {
+		Text = "Auto upgrades",
+		Tooltip = "Best payback first; see the header for how luck / open time / conveyor tier are weighed",
+		Default = false,
 		Callback = function(on)
 			upgLoop.set(on)
 		end,
@@ -3012,12 +3035,12 @@ do
 			table.insert(start, shown)
 		end
 	end
-	UpSec:Dropdown({
-		Title = "Which upgrades",
+	UpSec:AddDropdown("UpgWhich", {
+		Text = "Which upgrades",
 		Values = UPG_NAMES,
+		Default = start,
 		Multi = true,
-		AllowNone = true,
-		Value = start,
+		AllowNull = true,
 		Callback = function(v)
 			local set = ticked(v, upgKey)
 			for name in pairs(upgWant) do
@@ -3025,9 +3048,12 @@ do
 			end
 		end,
 	})
-	UpSec:Input({
-		Title = "Max payback (minutes)",
-		Value = tostring(MAX_PAYBACK),
+	UpSec:AddInput("MaxPayback", {
+		Text = "Max payback (min)",
+		Tooltip = "An upgrade that pays back slower than this many minutes waits",
+		Default = tostring(MAX_PAYBACK),
+		Numeric = true,
+		Finished = true,
 		Placeholder = tostring(MAX_PAYBACK),
 		Callback = function(v)
 			local n = num(v, 0.1)
@@ -3036,10 +3062,11 @@ do
 			end
 		end,
 	})
-	UpSec:Input({
-		Title = "Keep at least $",
-		Desc = "Every spender -- lockers, levels, upgrades -- leaves this much",
-		Value = "0",
+	UpSec:AddInput("Reserve", {
+		Text = "Keep at least $",
+		Tooltip = "Every spender -- lockers, levels, upgrades -- leaves this much",
+		Default = "0",
+		Finished = true,
 		Placeholder = "0",
 		Callback = function(v)
 			local n = tostring(v):gsub("[%$,%s]", "")
@@ -3047,50 +3074,53 @@ do
 			reserve = (ok and tonumber(parsed)) or tonumber(n) or reserve
 		end,
 	})
-
-	local Set = Window:Tab({ Title = "Settings", Icon = "solar:settings-bold" })
-	local Move = Set:Section({ Title = "Teleport & idle", Icon = "solar:running-bold", Box = true, BoxBorder = true, Opened = true })
-	Move:Toggle({
-		Title = "Teleport when the server wants you close",
-		Desc = "Off: remote-only; anything range-checked just fails (F9 says which)",
-		Value = move.tp,
-		Callback = function(on)
-			move.tp = on
-		end,
-	})
-	Move:Toggle({
-		Title = "Go back after a teleport",
-		Value = move.back,
-		Callback = function(on)
-			move.back = on
-		end,
-	})
-	Move:Toggle({
-		Title = "Idle at my roll station",
-		Desc = "After a teleport, park by the belt instead of where you were",
-		Value = move.park,
-		Callback = function(on)
-			move.park = on
-		end,
-	})
-	Move:Toggle({
-		Title = "Anti-AFK + rejoin",
-		Desc = "Also stops the game's own 15-minute move to a reserved server",
-		Value = true,
-		Callback = function(on)
-			afk.set(on)
-		end,
-	})
 end
 
 -- Loop threads lose the capability to write to the panel after their first yield, so they
 -- leave text in upvalues and Heartbeat (our own identity) writes it.
-local Stats = Window:Tab({ Title = "Stats", Icon = "solar:chart-bold" })
-local statsSec = Stats:Section({ Title = "Dashboard", Icon = "solar:chart-2-bold", Box = true, BoxBorder = true, Opened = true })
-local status = statsSec:Paragraph({ Title = "Status", Desc = "idle" })
-local dashRow, dashText = {}, {}
-for _, title in ipairs({ "Plot", "Session" }) do
-	dashRow[title] = statsSec:Paragraph({ Title = title, Desc = "reading..." })
+local status, dashRow, dashText = nil, {}, {}
+do
+	local Stats = Window:AddTab("Stats", "activity")
+	local statsSec = Stats:AddLeftGroupbox("Dashboard", "activity")
+	statsSec:AddDivider("Status")
+	status = statsSec:AddLabel("idle", true)
+	for _, title in ipairs({ "Plot", "Session" }) do
+		statsSec:AddDivider(title)
+		dashRow[title] = statsSec:AddLabel("reading...", true)
+	end
+
+	local Move = Stats:AddRightGroupbox("Teleport & idle", "footprints")
+	Move:AddToggle("TpWhenFar", {
+		Text = "Teleport when needed",
+		Tooltip = "Teleport when the server wants you close. Off: remote-only; anything range-checked just fails (F9 says which)",
+		Default = move.tp,
+		Callback = function(on)
+			move.tp = on
+		end,
+	})
+	Move:AddToggle("TpBack", {
+		Text = "Go back after a teleport",
+		Default = move.back,
+		Callback = function(on)
+			move.back = on
+		end,
+	})
+	Move:AddToggle("TpPark", {
+		Text = "Idle at my roll station",
+		Tooltip = "After a teleport, park by the belt instead of where you were",
+		Default = move.park,
+		Callback = function(on)
+			move.park = on
+		end,
+	})
+	Move:AddToggle("AntiAfk", {
+		Text = "Anti-AFK + rejoin",
+		Tooltip = "Also stops the game's own 15-minute move to a reserved server",
+		Default = true,
+		Callback = function(on)
+			afk.set(on)
+		end,
+	})
 end
 dashRow.Belt = beltPara
 dashRow.Tower = ui.towerPara
@@ -3120,10 +3150,10 @@ function ui.syncAll()
 			log(("tower: %s slot %d's player is gone -- slot emptied"):format(tower.title(s.key), s.i))
 		end
 		pcall(function()
-			s.drop:Refresh(withNone(ui.NONE, labels))
-			s.drop:Select(l or ui.NONE) -- writes the pick, fires nothing
+			s.drop:SetValues(withNone(ui.NONE, labels))
+			s.drop:SetValue(l or ui.NONE) -- re-fires the callback with the pick we just resolved
 		end)
-		c.slots[s.i] = g -- the Refresh re-fire may have run already
+		c.slots[s.i] = g -- a SetValues that dropped the old label re-fired nil; put ours back
 	end
 	save()
 	if ui.traitUnits then
@@ -3135,8 +3165,8 @@ function ui.syncAll()
 			end
 		end
 		pcall(function()
-			ui.traitUnits:Refresh(labels)
-			ui.traitUnits:Select(keep)
+			ui.traitUnits:SetValues(labels)
+			ui.traitUnits:SetValue(keep)
 		end)
 		table.clear(trait.picks)
 		for guid in pairs(picks) do
@@ -3145,8 +3175,8 @@ function ui.syncAll()
 	end
 end
 
--- The Units list follows your slots. Rebuilt only when the line-up changes (WindUI keeps
--- every rebuilt row's connections until Destroy), and a pick that left its slot is dropped
+-- The Units list follows your slots. Rebuilt only when the line-up changes (a dropdown that
+-- redraws under the cursor is unusable), and a pick that left its slot is dropped
 -- from the ticks AND the set, so the panel never shows less than the script will roll.
 local function syncUnits()
 	local labels, key = unitLabels()
@@ -3170,10 +3200,10 @@ local function syncUnits()
 	end
 	local want = table.clone(grade.want)
 	pcall(function()
-		unitsDrop:Refresh(labels)
-		unitsDrop:Select(keep) -- writes the ticks, fires nothing
+		unitsDrop:SetValues(labels)
+		unitsDrop:SetValue(keep) -- the ticks, re-firing the callback with them
 	end)
-	table.clear(grade.want) -- the Refresh re-fire may have run already; put ours back
+	table.clear(grade.want) -- those callbacks rebuilt the set from the ticks; put ours back
 	for guid in pairs(want) do
 		grade.want[guid] = true
 	end
@@ -3182,7 +3212,7 @@ end
 local drain = RunService.Heartbeat:Connect(function()
 	if grade.kill then
 		grade.kill = false
-		pcall(gradeToggle.Set, gradeToggle, false)
+		pcall(gradeToggle.SetValue, gradeToggle, false)
 	end
 	if unitsDrop and os.clock() - unitsAt > UNITS_GAP then
 		unitsAt = os.clock()
@@ -3190,11 +3220,11 @@ local drain = RunService.Heartbeat:Connect(function()
 	end
 	if tower.kill then
 		tower.kill = false
-		pcall(ui.towerToggle.Set, ui.towerToggle, false)
+		pcall(ui.towerToggle.SetValue, ui.towerToggle, false)
 	end
 	if trait.kill then
 		trait.kill = false
-		pcall(ui.traitToggle.Set, ui.traitToggle, false)
+		pcall(ui.traitToggle.SetValue, ui.traitToggle, false)
 	end
 	if ui.towerTab and os.clock() - ui.allAt > ALL_UNITS_GAP then
 		ui.allAt = os.clock()
@@ -3205,18 +3235,29 @@ local drain = RunService.Heartbeat:Connect(function()
 	end
 	for key, text in pairs(tower.texts) do
 		tower.texts[key] = nil
-		if ui.planPara[key] then
-			pcall(ui.planPara[key].SetDesc, ui.planPara[key], text)
-		end
+		pcall(ui.setText, ui.planPara[key], text)
 	end
 	for title, text in pairs(dashText) do
 		dashText[title] = nil
-		pcall(dashRow[title].SetDesc, dashRow[title], text)
+		pcall(ui.setText, dashRow[title], text)
 	end
 	if pending then
-		local msg = pending
-		pending = nil
-		pcall(status.SetDesc, status, msg)
+		ui.note, pending = pending, nil
+		pcall(ui.setText, status, ui.note)
+	end
+	local now = os.clock()
+	if now >= ui.stripAt then
+		ui.stripAt = now + 0.5
+		pcall(function()
+			Window:SetStatus({
+				{ "Cash", money(cash()) },
+				{ "Income", money(incomePerSec()) .. "/s" },
+				{ "Rolls", stats.rolls },
+				{ "Bought", stats.bought },
+				{ "Opened", stats.opened },
+				{ "Now", ui.esc(ui.note) },
+			})
+		end)
 	end
 end)
 
@@ -3323,11 +3364,29 @@ local function startDash()
 	end)
 end
 
--- A starting Value = true doesn't fire the callback; arm it by hand.
+-- A starting Default = true doesn't fire the callback; arm it by hand.
 afk.set(true)
 startDog()
 startDash()
 say(("ready -- %d slots, cash %s"):format(#slots(), money(cash())))
+
+Window:SetStatusAction("Unload", function()
+	Library:Unload()
+end, true)
+
+-- Last, so the autoload finds every control. Skipped: the lists that follow your line-up (their
+-- labels change with it) and the tower / trait picks, which keep their own file (SAVE_FILE).
+do
+	local ignore = { "GradeUnits", "TraitUnits", "TraitTargets", "TraitWhich", "TraitAfter" }
+	for _, key in ipairs(tower.list) do
+		table.insert(ignore, "Tower_" .. key .. "_On")
+		table.insert(ignore, "Tower_" .. key .. "_Auto")
+		for i = 1, tower.slotsN do
+			table.insert(ignore, "Tower_" .. key .. "_Slot" .. i)
+		end
+	end
+	Window:AddSettingsTab("BlueLockFarm", ignore)
+end
 
 -- close ----------------------------------------------------------------------
 local function stopAll()
@@ -3344,7 +3403,7 @@ local function stopAll()
 	pcall(drain.Disconnect, drain)
 end
 
-Window:OnDestroy(function()
+Library:OnUnload(function()
 	stopAll()
 	getgenv().blueLockFarmStop = nil
 end)
@@ -3352,7 +3411,7 @@ end)
 getgenv().blueLockFarmStop = function()
 	stopAll()
 	pcall(function()
-		Window:Destroy()
+		Library:Unload()
 	end)
 	getgenv().blueLockFarmStop = nil
 end
