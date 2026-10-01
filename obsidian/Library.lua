@@ -11014,7 +11014,9 @@ function Library:CreateWindow(WindowInfo)
     local StripH = WindowInfo.StatusBar and 36 or 0 -- FORK(zegion): everything under the title bar shifts down by this
     local StatusStrip
     local StatusLabel
+    local StatusClip
     local StatusButton
+    local StatusMarquee = { Speed = 40, Pause = 1.2 } -- px/s a long status scrolls at, seconds it rests at each end
     local RailLine -- FORK(zegion): the hairline beside an icon rail; built the first time a rail is asked for
 
     --// Old Naming \\--
@@ -11129,16 +11131,48 @@ function Library:CreateWindow(WindowInfo)
                 PaddingRight = UDim.new(0, 12),
                 Parent = StatusStrip,
             })
-            StatusLabel = New("TextLabel", {
+            -- the text sits in a clip and is as wide as it wants; when it outgrows the clip it
+            -- ping-pongs end to end instead of being cut to "...". AnchorPoint.X = Position.X.Scale
+            -- = a puts the label's left edge at a * (clip - label), so a walks 0 -> 1 with no
+            -- unit conversion between TextBounds and the UI scale.
+            StatusClip = New("Frame", {
                 BackgroundTransparency = 1,
+                ClipsDescendants = true,
                 Size = UDim2.fromScale(1, 1),
-                Text = "",
-                TextSize = 13,
-                TextTruncate = Enum.TextTruncate.AtEnd,
-                TextXAlignment = Enum.TextXAlignment.Left,
                 ZIndex = 3,
                 Parent = StatusStrip,
             })
+            StatusLabel = New("TextLabel", {
+                AutomaticSize = Enum.AutomaticSize.X,
+                BackgroundTransparency = 1,
+                Size = UDim2.fromScale(0, 1),
+                Text = "",
+                TextSize = 13,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 3,
+                Parent = StatusClip,
+            })
+
+            local Hovered, Pos, Dir, Hold = false, 0, 1, StatusMarquee.Pause
+            Library:GiveSignal(StatusClip.MouseEnter:Connect(function() Hovered = true end))
+            Library:GiveSignal(StatusClip.MouseLeave:Connect(function() Hovered = false end))
+            Library:GiveSignal(RunService.Heartbeat:Connect(function(Dt)
+                local Over = StatusLabel.AbsoluteSize.X - StatusClip.AbsoluteSize.X
+                if Over < 1 then
+                    Pos, Dir, Hold = 0, 1, StatusMarquee.Pause
+                elseif Hovered then
+                    return -- hold still while it is being read
+                elseif Hold > 0 then
+                    Hold -= Dt
+                else
+                    Pos = math.clamp(Pos + Dir * StatusMarquee.Speed / Over * Dt, 0, 1)
+                    if Pos == 0 or Pos == 1 then
+                        Dir, Hold = -Dir, StatusMarquee.Pause
+                    end
+                end
+                StatusLabel.AnchorPoint = Vector2.new(Pos, 0)
+                StatusLabel.Position = UDim2.fromScale(Pos, 0)
+            end))
             Library:MakeLine(MainFrame, {
                 Position = UDim2.fromOffset(0, 49 + StripH),
                 Size = UDim2.new(1, 0, 0, 1),
@@ -11655,7 +11689,7 @@ function Library:CreateWindow(WindowInfo)
             Library:SafeCallback(Callback)
         end)
 
-        StatusLabel.Size = UDim2.new(1, -(Width + 12), 1, 0)
+        StatusClip.Size = UDim2.new(1, -(Width + 12), 1, 0)
     end
 
     function Window:SetAlwaysOnTop(Enabled: boolean)
