@@ -52,6 +52,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Become a Brainrot                   | `99255447043899`  | `become_a_brainrot.lua`                |
 | Brainblast for Brainrot             | `102990893659741` | `brainblast_for_brainrot.lua`          |
 | Break Tape For Brainrots            | `104339804279870` | `break_tape_for_brainrots.lua`         |
+| Break and Steal Eggs                | `114326934417838` | `break_and_steal_eggs.lua`             |
 | Build a Bridge for Brainrots        | `88207898227053`  | `build_bridge_for_brainrots.lua`       |
 | Build to Kill Zombie                | `105011592530400` | `build_to_kill_zombie.lua`             |
 | Chicken Farm                        | `137233438285284` | `chicken_farm.lua`                     |
