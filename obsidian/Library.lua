@@ -1971,6 +1971,22 @@ function Library:GetTextBounds(Text: string, Font: Font, Size: number, Width: nu
     return math.ceil(Bounds.X / Scale), math.ceil(Bounds.Y / Scale)
 end
 
+-- FORK(zegion): one-line text width that never yields, for sizing a dropdown's open list.
+-- GetTextBoundsAsync can yield, and a resumed thread loses the capability to write the
+-- hidden GUI, so a SetValues from a game script's loop would die on the Menu.Size after it.
+-- GetTextSize is synchronous but wants an Enum.Font: map the scheme's family file back by
+-- name (RobotoMono.json -> Enum.Font.RobotoMono), Code when nothing matches -- a few px off
+-- at worst, which the menu's padding absorbs.
+local function TextWidthNow(Text: string, Size: number): number
+    local Family = Library.Scheme.Font and Library.Scheme.Font.Family or ""
+    local Name = Family:match("([%w]+)%.json$")
+    local Ok, EnumFont = pcall(function()
+        return Enum.Font[Name]
+    end)
+    local Bounds = TextService:GetTextSize(Text, Size, Ok and EnumFont or Enum.Font.Code, Vector2.new(1e4, 1e4))
+    return math.ceil(Bounds.X)
+end
+
 function Library:MouseIsOverFrame(Frame: GuiObject, Mouse: Vector2): boolean
     local AbsPos, AbsSize = Frame.AbsolutePosition, Frame.AbsoluteSize
     return Mouse.X >= AbsPos.X
@@ -8423,15 +8439,38 @@ do
             return ValueImage
         end
 
+        -- FORK(zegion): the open list may be wider than its 116px box, so "Polarbear Egg (96Qa)"
+        -- reads whole without widening the closed field. WantedWidth is the longest value's
+        -- text plus the row padding, measured on every unfiltered rebuild (kept while
+        -- searching, so the list doesn't jump as you type). The list grows LEFT, right
+        -- edges flush with the box -- the box sits at the row's right end, so leftwards is
+        -- where the room is -- and never past MENU_MAX_W or the screen's own edge.
+        local MENU_MAX_W = 280 -- unscaled px; past this a name truncates with "..." instead
+        local MENU_EDGE = 8 -- px kept clear of the screen's left edge
+        local WantedWidth = 0
+
+        local function MenuWidth() -- unscaled, like every other Size here
+            local Scale = Library.DPIScale
+            local Box = DisplayContainer.AbsoluteSize.X / Scale
+            local Room = (Overlay.AbsoluteSize.X - MENU_EDGE * 2) / Scale
+            return math.max(Box, math.min(WantedWidth, MENU_MAX_W, Room))
+        end
+
+        local function MenuOffset()
+            local Box = DisplayContainer.AbsoluteSize
+            local X = Box.X - MenuWidth() * Library.DPIScale + 0.5
+            -- the left edge stays on screen; MenuWidth already capped it to the screen's width
+            X = math.max(X, MENU_EDGE - DisplayContainer.AbsolutePosition.X)
+            return { X, Box.Y + 1.5 }
+        end
+
         local MenuTable
         MenuTable = Library:AddContextMenu(
             DisplayContainer,
             function()
-                return UDim2.fromOffset((DisplayContainer.AbsoluteSize.X / Library.DPIScale), 0)
+                return UDim2.fromOffset(MenuWidth(), 0)
             end,
-            function()
-                return { 0.5, DisplayContainer.AbsoluteSize.Y + 1.5 }
-            end,
+            MenuOffset,
             2,
             function(Active: boolean)
                 DisplayButton.TextTransparency = (Active and SearchBox) and 1 or 0
@@ -8454,8 +8493,12 @@ do
 
                 local MenuCorner = MenuTable and MenuTable.Corner
                 if MenuCorner then
-                    MenuCorner.TopLeftRadius = Zero
-                    MenuCorner.TopRightRadius = Zero
+                    -- FORK(zegion): a top corner that sticks out past the box is a free corner,
+                    -- so it rounds; the part under the box stays square against it
+                    local Left = MenuOffset()[1]
+                    local Right = Left + MenuWidth() * Library.DPIScale - DisplayContainer.AbsoluteSize.X
+                    MenuCorner.TopLeftRadius = Left < -1 and Half or Zero
+                    MenuCorner.TopRightRadius = Right > 1 and Half or Zero
                     MenuCorner.BottomRightRadius = Half
                     MenuCorner.BottomLeftRadius = Half
                 end
@@ -8477,8 +8520,19 @@ do
 
             MenuTable.Menu.CanvasSize = UDim2.fromOffset(0, ItemCount * ItemHeight)
 
+            -- FORK(zegion): measure the longest name, but only on an unfiltered list
+            if not (SearchBox and SearchBox.Text ~= "") then
+                local Widest, Images = 0, false
+                for _, Entry in FilteredEntries do
+                    Widest = math.max(Widest, TextWidthNow(Entry.FormattedValue, 14))
+                    Images = Images or Entry.ValueImage ~= nil
+                end
+                -- 7 + 7 row padding, 18 for a value image, 4 for the scrollbar and rounding
+                WantedWidth = Widest + 14 + (Images and 18 or 0) + 4
+            end
+
             MenuTable:SetSize(function()
-                return UDim2.fromOffset((DisplayContainer.AbsoluteSize.X / Library.DPIScale), Y)
+                return UDim2.fromOffset(MenuWidth(), Y)
             end)
         end
 
@@ -8860,6 +8914,7 @@ do
                 Text = "",
                 TextSize = 14,
                 TextTransparency = 0.5,
+                TextTruncate = Enum.TextTruncate.AtEnd, -- FORK(zegion): past MENU_MAX_W, "..." rather than a hard clip
                 TextXAlignment = Enum.TextXAlignment.Left,
                 Parent = Container,
             })

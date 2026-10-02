@@ -52,6 +52,7 @@ local LOGO_DIR = "Zegion"
 local LOGO_FILE = LOGO_DIR .. "/logo_v1.png" -- bump the suffix when logo.png changes, or the old copy is kept
 local BUBBLE = 56 -- floating button; 44 is the touch-target floor, 56 reads on a phone
 local BUBBLE_AT_X, BUBBLE_AT_Y = 0.346, 0.30 -- where its centre starts, as a fraction of the screen: a third of the way in, a bit above the middle
+local RING_PX, RING_FADE = 1.5, 0.55 -- the bubble's light rim; raise the fade if it reads heavy, lower it if it still gets lost
 local DRAG_SLOP = 8 -- px a press may wander and still count as a tap
 local MIN_BTN = 28 -- title-bar "-" button, the size of Obsidian's drag icon beside it
 local BTN_RIGHT = 46 -- its right edge's distance from the title bar's: the drag icon takes 10 + 28, then 8 of air
@@ -143,8 +144,15 @@ local function installBubble(Library, asset)
 	local round = Instance.new("UICorner")
 	round.CornerRadius = UDim.new(0, RADIUS + 6)
 	round.Parent = btn
+	-- A light rim, not OutlineColor: that one is dark-on-dark and vanished against night
+	-- scenes and black floors. On bright ground the dark fill already carries the contrast
+	-- and the rim reads as a crisp edge, so one stroke covers both. It follows the UICorner,
+	-- so it traces the bubble's shape rather than boxing it.
 	local ring = Instance.new("UIStroke")
-	ring.Color = Library.Scheme.OutlineColor
+	ring.Color = Library.Scheme.FontColor
+	ring.Transparency = RING_FADE
+	ring.Thickness = RING_PX
+	ring.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	ring.Parent = btn
 	drawMark(Library, btn, BUBBLE - 20, asset, 30)
 	btn.Parent = Library.Floats
