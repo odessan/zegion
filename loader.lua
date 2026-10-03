@@ -91,6 +91,7 @@ local GAMES = {
 	["76841016201110"] = "dream_car_collection.lua", -- Dream Car Collection
 	["114326934417838"] = "break_and_steal_eggs.lua", -- Break and Steal Eggs
 	["76943966208523"] = "clone_for_eggs.lua", -- Clone to Steal Eggs
+	["98610101874791"] = "strength_for_eggs.lua", -- +1 Strength for Eggs
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
