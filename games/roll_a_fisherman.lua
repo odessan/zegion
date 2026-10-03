@@ -15,6 +15,9 @@
      COLLECT    : every dock crate (EquipBest collects them as it goes) and every stand's
                   cash pad, touched from wherever you are
      UPGRADE    : buys each ticked upgrade the moment its next level is affordable
+     CLAIMS     : daily reward, achievements and finished quests, each the moment it's ready;
+                  Auto Rebirth (off by default -- it resets cash and spends fish) when the
+                  game's own requirement check passes. Never the Robux skip products
      SELL       : sells inventory fish below the keep rarity, after EquipBest has moved the
                   good ones onto your stands. Favorites and "% BEST" fish are never sold
 
@@ -29,6 +32,7 @@ local DELAY = {
 	sell = 10, -- inventory only fills as fast as the dock and your rod catch
 	upgrade = 1, -- gated on your cash locally, so a pass that can't afford sends nothing
 	roll = 0.8, -- floor between rolls; grows by ROLL_BACKOFF each time the server refuses
+	claim = 20, -- daily / achievements / quests / rebirth; all gated locally, so slow is fine
 }
 local EQUIP_MIN_GAP = 2 -- collect and sell also call EquipBest; never closer than this
 local ROLL_BACKOFF, ROLL_GAP_MAX = 0.5, 5
@@ -801,6 +805,83 @@ local function sellPass(alive)
 	end
 end
 
+-- claims ---------------------------------------------------------------------
+-- Free progression remotes. Each pass is gated on the game's own modules reading Data, so
+-- a pass with nothing to claim sends nothing. Never wired: SkipRebirth / ResetQuests /
+-- MutationRerolls -- those are Robux products (Rebirth.SkipProducts, Quests.Product).
+local function dailyPass()
+	local lc = Data:FindFirstChild("Daily") and Data.Daily:FindFirstChild("LastClaim")
+	-- no LastClaim row: can't tell, the server refuses a too-early claim for free
+	if lc and lib.Daily and lib.Daily:Remaining(lc.Value) > 0 then
+		return
+	end
+	local before = lc and lc.Value
+	fire("ClaimDaily")
+	if lc then
+		local t = os.clock() + 1.5
+		repeat
+			task.wait(0.1)
+		until lc.Value ~= before or os.clock() > t
+		if lc.Value ~= before then
+			say("claimed the daily reward")
+		end
+	end
+end
+
+local function achievementPass()
+	local ctl = lib.AchievementController
+	local ready = true -- ponytail: no controller to ask -> fire on the beat, server ignores an empty claim
+	if ctl and ctl.Achievements and ctl.Look then
+		ready = false
+		for _, a in ipairs(ctl.Achievements.List) do
+			if ctl:Look(a) == "Done" then
+				ready = true
+				break
+			end
+		end
+	end
+	if ready then
+		fire("AchievementClaimAll")
+	end
+end
+
+local function questPass(alive)
+	local Q = lib.Quests
+	if not Q then
+		return
+	end
+	for _, id in ipairs(Q:Ids(Data)) do
+		if not alive() then
+			return
+		end
+		local def = Q:Find(id)
+		if def and not Q:Claimed(Data, id) and Q:Progress(Data, id) >= def.Target then
+			fire(Q.ClaimEvent, id) -- Net: QuestClaim(id)
+			say("claimed quest " .. def.Name)
+			task.wait(0.5)
+		end
+	end
+end
+
+local function rebirthPass()
+	local R = lib.Rebirth
+	if not R then
+		return
+	end
+	local lvl = R:Level(Data)
+	if R:Maxed(lvl) or not R:Check(Data) then
+		return
+	end
+	fire("Rebirth")
+	local t = os.clock() + 3
+	repeat
+		task.wait(0.2)
+	until R:Level(Data) ~= lvl or os.clock() > t
+	if R:Level(Data) ~= lvl then
+		say("rebirthed -> " .. R:Level(Data))
+	end
+end
+
 -- gui ------------------------------------------------------------------------
 local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel.lua"
 local panel = loadstring(game:HttpGet(PANEL_URL))()
@@ -1054,6 +1135,35 @@ loopToggle(sellSec, {
 	end,
 })
 
+local Claims = Window:Tab({ Title = "Claims", Icon = "solar:gift-bold" })
+local claimSec = Claims:Section({ Title = "Free rewards", Icon = "solar:gift-bold", Box = true, BoxBorder = true, Opened = true })
+for _, spec in ipairs({
+	{ "Auto Daily", "Claims the daily reward the moment its cooldown ends", dailyPass },
+	{ "Auto Achievements", "Claim All whenever one is done", achievementPass },
+	{ "Auto Quests", "Claims each of today's quests once its target is met", questPass },
+}) do
+	loopToggle(claimSec, {
+		title = spec[1],
+		desc = spec[2],
+		body = spec[3],
+		delay = function()
+			return DELAY.claim
+		end,
+	})
+end
+local rebSec = Claims:Section({ Title = "Rebirth", Icon = "solar:refresh-bold", Box = true, BoxBorder = true, Opened = true })
+loopToggle(rebSec, {
+	title = "Auto Rebirth",
+	desc = "Rebirths as soon as the game says you meet the requirements. It resets your cash and spends the required fish -- leave off until you want that. Never buys the Robux skip",
+	check = function()
+		return not lib.Rebirth and "the game's Rebirth module isn't reachable" or nil
+	end,
+	body = rebirthPass,
+	delay = function()
+		return DELAY.claim
+	end,
+})
+
 local Settings = Window:Tab({ Title = "Settings", Icon = "solar:settings-bold" })
 local delaySec = Settings:Section({ Title = "Delays (seconds)", Icon = "solar:clock-circle-bold", Box = true, BoxBorder = true, Opened = true })
 for _, spec in ipairs({
@@ -1062,6 +1172,7 @@ for _, spec in ipairs({
 	{ "sell", "Auto Sell", 2 },
 	{ "upgrade", "Auto Upgrade", 0.5 },
 	{ "roll", "Auto Roll floor", 0.3 },
+	{ "claim", "Claims (daily, quests, rebirth)", 5 },
 }) do
 	local key, title, floor = spec[1], spec[2], spec[3]
 	delaySec:Input({
