@@ -63,6 +63,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Don't Steal a Bobo                  | `120135584963579` | `dont_steal_a_bobo.lua`                |
 | Drill Block for Dumpling Squishy    | `86943068337855`  | `drill_block_for_dumpling_squishy.lua` |
 | Drill Ores                          | `122572082932179` | `drill_ores.lua`                       |
+| Clone to Steal Eggs                 | `76943966208523`  | `clone_for_eggs.lua`                   |
 | Fake a Brainrot                     | `110627433764494` | `fake_a_brainrot.lua`                  |
 | Fall For Brainrots!                 | `86368783421928`  | `fall_for_brainrots.lua`               |
 | Fish an Anime!                      | `74729868188364`  | `fish_for_anime_rng.lua`               |
