@@ -4,7 +4,9 @@
                 + a bank trip) -- among the zones you tick that your pickaxe breaks in at most "Max swings".
                 Speed is not checked: ZonesConfig.RequiredPower only drives the game's "recommended speed"
                 popups and the guard chase, and the bank is a teleport. Stands beside the egg, pickaxe in hand,
-                one hit every 0.36s. Waits while you carry something, so the bank goes first.
+                one hit every 0.36s -- and when another breakable egg is within reach of a spot between them,
+                stands there and hits both on every beat (the cooldown is per egg). Waits while you carry
+                something, so the bank goes first.
      STEAL    : takes animal pickups of the rarities you tick, richest $/s first, by pressing their prompt from
                 where you stand. Anyone may take anyone's hatch (ReservedUserId is only the tutorial's,
                 AdminNotes.lua:111). Banks by teleporting home the moment the satchel is full, or when nothing
@@ -23,7 +25,8 @@
 
      Proven by probe: steal by fireproximityprompt from 40 studs (Carrying in 0.3s); bank = PivotTo your plot's
        SpawnPoint (banked 0.5s later, no snap-back, the guard chase does not matter); Index ClaimAll and
-       Equip Best from anywhere; the treadmill session starts only when standing on it.
+       Equip Best from anywhere; the treadmill session starts only when standing on it; two different eggs
+       hit in the same frame from their midpoint both take damage (4 of 4 groups, 0 rejected).
      Probed and dead (do not re-probe):
        EggHitRequest from 30 studs        refused 3 of 3 (EggHitRejected); EggConfig.HitRange 8 is enforced
        hits faster than 0.35s             0.35 landed 8/8, 0.25 4/8, 0.15 2/8, 0.05 0/8
@@ -35,13 +38,18 @@
      Some eggs refuse every hit (a Rock Egg did, 11 of 11, probably one another player is breaking): three
        refusals in a row benches that egg for 30s.
      Not wired (Robux): pickaxe / trail DevProductId buys, MergeMachine SkipEgg / SkipAll, FastSwing, DoubleCash.
-     Not wired (not asked or unprobed): Merge (irreversible, never probed), satchel / treadmill / plot upgrades.
+     Not wired (not asked or unprobed): Merge (irreversible, never probed), treadmill / plot upgrades.
+     Not wired (not in the live game): satchel upgrade. SatchelConfig names a "SatchelUpgrade" station tag, but
+       no instance carries it, no remote or client code buys it, and every player seen -- one with 11T cash --
+       is SatchelTier 1. Check: #game.CollectionService:GetTagged("SatchelUpgrade") > 0 means it shipped.
 
      RightControl opens / closes the panel. Stop: getgenv().breakStealStop() ]]
 
 -- config ---------------------------------------------------------------------
 local HIT_GAP = 0.36 -- between hits. Server HitCooldown is 0.35: 0.35 landed 8/8, 0.25 only 4/8. Raise if refusals pile up
 local HIT_STAND = 2.5 -- studs from the egg's shell to stand at. HitRange is 8 from the surface
+local CLUSTER_REACH = 6 -- a neighbour egg joins the hit when it is this close (surface) to the shared stand point. Probe 3 landed at 3.7-4.6
+local CLUSTER_MAX = 2 -- eggs hit in one frame. 2 is proven (4 of 4 groups); 3 was never found to test -- raise and watch F9 "cluster" lines
 local MAX_SWINGS = 60 -- default for the box: an egg needing more hits than this is skipped (60 x 0.36 = 22s)
 local REJECT_STRIKES = 3 -- refusals in a row on one egg and it is benched
 local BENCH = 30 -- seconds a benched egg or pickup is left alone
@@ -354,18 +362,22 @@ local function swingsFor(e)
 end
 assert(math.ceil(7 / 250) == 1 and math.ceil(1125 / 250) == 5, "swings: Zone1 eggs fall to one Diamond hit")
 
+-- a live egg in a ticked zone, not benched. The Titanic is the sniper's: Break never sinks minutes into it
+local function breakable(e)
+	local z = e:IsA("BasePart") and tonumber(e:GetAttribute("ZoneIndex"))
+	return z and zoneOn[z] and not e:GetAttribute("Titanic") and isLive(e) and (benched[e] or 0) < os.clock()
+end
+
 local function bestEgg()
 	local r = root()
 	local here = r and r.Position or Vector3.zero
 	local best, bestScore, bestDist, seen = nil, -1, math.huge, 0
 	for _, e in ipairs(CollectionService:GetTagged("BreakableEgg")) do
-		local z = e:IsA("BasePart") and tonumber(e:GetAttribute("ZoneIndex"))
-		-- the Titanic is the sniper's: Break never sinks minutes into it on its own
-		if z and zoneOn[z] and not e:GetAttribute("Titanic") and isLive(e) and (benched[e] or 0) < os.clock() then
+		if breakable(e) then
 			seen += 1
 			local n = swingsFor(e)
 			if n <= maxSwings then
-				local score = (zoneValue[z] or 1) / (n * HIT_GAP + TRIP)
+				local score = (zoneValue[tonumber(e:GetAttribute("ZoneIndex"))] or 1) / (n * HIT_GAP + TRIP)
 				local d = (e.Position - here).Magnitude
 				if score > bestScore or (score == bestScore and d < bestDist) then
 					best, bestScore, bestDist = e, score, d
@@ -374,6 +386,50 @@ local function bestEgg()
 		end
 	end
 	return best, seen
+end
+
+-- the server's own range measure (S/EggTargeting.lua:70): flat distance past the shell, then height past it
+local function surface(e, p)
+	local half = math.max(e.Size.X, e.Size.Z) / 2
+	local d = p - e.Position
+	local flat = math.max(Vector3.new(d.X, 0, d.Z).Magnitude - half, 0)
+	local up = math.max(math.abs(d.Y) - e.Size.Y / 2, 0)
+	return math.sqrt(flat * flat + up * up)
+end
+assert(surface({ Size = Vector3.new(4, 4, 4), Position = Vector3.zero }, Vector3.new(5, 0, 0)) == 3, "surface: 5 from the centre of a 4-wide egg is 3")
+
+-- The hit cooldown is per egg (probe 3: two eggs hit in one frame both took damage, 4 of 4 groups), so every
+-- breakable neighbour within reach of a shared stand point is hit on the same beat. Nearest first, while the
+-- centroid stays inside CLUSTER_REACH of every member. Returns the members (target first) and the stand point.
+local function cluster(e)
+	local group, centre = { e }, e.Position
+	local near = {}
+	for _, n in ipairs(CollectionService:GetTagged("BreakableEgg")) do
+		if n ~= e and breakable(n) and swingsFor(n) <= maxSwings and (n.Position - e.Position).Magnitude < 25 then
+			near[#near + 1] = n
+		end
+	end
+	table.sort(near, function(a, b)
+		return (a.Position - e.Position).Magnitude < (b.Position - e.Position).Magnitude
+	end)
+	for _, n in ipairs(near) do
+		if #group >= CLUSTER_MAX then
+			break
+		end
+		local sum = n.Position
+		for _, g in ipairs(group) do
+			sum += g.Position
+		end
+		local c = sum / (#group + 1)
+		local fits = surface(n, c) <= CLUSTER_REACH
+		for _, g in ipairs(group) do
+			fits = fits and surface(g, c) <= CLUSTER_REACH
+		end
+		if fits then
+			group[#group + 1], centre = n, c
+		end
+	end
+	return group, #group > 1 and centre or nil
 end
 
 local function equipPickaxe()
@@ -400,20 +456,25 @@ local function besideCF(e)
 	return CFrame.lookAt(p, e.Position)
 end
 
--- one hit: pin beside (every hit -- one hop drifts out of the 8-stud range), fire, wait out the cooldown
-local function swing(e)
+-- one beat: pin (every beat -- one hop drifts out of the 8-stud range), hit every live member, wait out the cooldown
+local function swing(group, stand)
 	local r = root()
 	if not r then
 		return false
 	end
-	r.CFrame = besideCF(e)
+	r.CFrame = stand
 	r.AssemblyLinearVelocity = Vector3.zero
-	R.EggHitRequest:FireServer(e)
-	stats.hits += 1
+	for _, e in ipairs(group) do
+		if isLive(e) then
+			R.EggHitRequest:FireServer(e)
+			stats.hits += 1
+		end
+	end
 	task.wait(HIT_GAP)
 	return true
 end
 
+local clusterLogs = 0
 local function hitEgg(e, alive)
 	step("break " .. tostring(e:GetAttribute("EggType")) .. " / equip")
 	if not equipPickaxe() then
@@ -424,10 +485,12 @@ local function hitEgg(e, alive)
 	rejected[e] = 0
 	local last = tonumber(e:GetAttribute("Health")) or math.huge
 	local deadline = os.clock() + swingsFor(e) * HIT_GAP * 1.5 + 4
-	step("break " .. tostring(e:GetAttribute("EggType")) .. " / hit")
+	local group, centre = cluster(e)
+	local stand = centre and CFrame.lookAt(centre, Vector3.new(e.Position.X, centre.Y, e.Position.Z)) or besideCF(e)
+	step("break " .. tostring(e:GetAttribute("EggType")) .. " / hit x" .. #group)
 	while alive() and isLive(e) and urgent == 0 and not carrying() and os.clock() < deadline do
 		lastBreakWork = os.clock()
-		if not swing(e) then
+		if not swing(group, stand) then
 			return
 		end
 		local h = tonumber(e:GetAttribute("Health")) or last
@@ -441,6 +504,18 @@ local function hitEgg(e, alive)
 		if not equipPickaxe() then
 			return
 		end
+	end
+	-- neighbours that fell alongside; a multi-hit one left standing is simply picked again next pass
+	local extra = 0
+	for i = 2, #group do
+		if not isLive(group[i]) then
+			extra += 1
+		end
+	end
+	stats.broken += extra
+	if #group > 1 and clusterLogs < 3 then -- the first few prove it live; after that it is noise
+		clusterLogs += 1
+		log(("cluster x%d: target %s, %d neighbour(s) broke on the same beats"):format(#group, isLive(e) and "standing" or "broke", extra))
 	end
 	if not isLive(e) then
 		stats.broken += 1
