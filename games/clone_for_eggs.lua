@@ -21,6 +21,9 @@
      TREADMILL: buys the best treadmill you can afford (cash only) and equips it.
                                                                     UNPROVEN: that the tool changes the raw train rate
 
+     Learned live: with Auto Clone Farm on, a manual pickup on a base one of your clones is walking to was refused
+     again and again; with clones off Steal ran clean. Steal now skips clone-targeted bases (still to confirm with both on).
+
      Probed and dead (do not re-probe):
        PickupEgg from far away   refused (reply false) at 5000 studs, accepted 2 studs from the egg
        Index claim               no remote exists
@@ -32,7 +35,9 @@
 -- config ---------------------------------------------------------------------
 local SETTLE_START = 0.25 -- after teleporting next to an egg, wait this long before PickupEgg. Adapts: a refusal that a retry fixes raises it
 local SETTLE_MIN = 0.2 -- ...and a clean run lowers it toward this. Probed: 0.05s was refused, 0.15s accepted
-local ZONE_STRIKES = 2 -- this many refusals in a row in one zone and that zone is parked (Cave eggs were refused twice in the probe, the other zones were not)
+local ZONE_STRIKES = 3 -- this many refusals in a row in one zone and that zone is parked (Cave eggs were refused in the probe, the other zones were not)
+local CHASE_MAX = 20 -- a chase whose Ended event never arrived stops blocking its base after this long
+local BASE_BENCH = 8 -- after a refusal the whole base is left alone this long: its boss may be busy with a clone, and the next-best egg is usually on the same base
 local ZONE_PARK = 300 -- ...for this long, then it gets another two tries
 local SETTLE_MAX = 0.6 -- the cap. Raise if pickups keep being refused right after the teleport
 local BANK_WAIT = 4 -- the stolen egg must show up in the bag inside this after the teleport to the spawn
@@ -40,6 +45,7 @@ local STEAL_GAP = 0.1 -- between steals
 local STEAL_FAILS = 6 -- this many refusals in a row and stealing pauses for STEAL_PAUSE
 local STEAL_PAUSE = 10
 local HEN_BENCH = 30 -- an egg the server refused is not tried again for this long (taken, or not ours to take)
+local HEN_BENCH_MAX = 600 -- ...a hen refused again and again doubles its wait up to this
 local TAKEN_BENCH = 5 -- an egg another player just took (EggTaken) is skipped for this long
 local BAG_MAX = 100 -- stealing pauses at this many eggs in the bag (the box in the panel changes it)
 local PLACE_GAP = 0.3 -- between PlaceEgg calls
@@ -403,7 +409,32 @@ end
 local settle = SETTLE_START
 local stealFails, stealPausedUntil = 0, 0
 local zoneStrikes, zoneParked = {}, {} -- refusals in a row per zone / when its park ends
-local mutChecks = 0
+local mutChecks, mutChecksOdd = 0, 0
+local chasing = {} -- base id -> deadline while its boss is chasing someone (BossChaseStarted .. Ended)
+-- Bases one of YOUR clones is walking to (CloneController replica, Clones[id].targetBaseId). A manual pickup on
+-- such a base was refused over and over for the same whale egg in a live run; UNPROVEN that this is why.
+local cloneTargets, cloneTargetsAt = {}, 0
+local function cloneTargeted(base)
+	local now = os.clock()
+	if now - cloneTargetsAt > 0.5 then
+		cloneTargetsAt = now
+		table.clear(cloneTargets)
+		local cc = controller("CloneController")
+		local okD, d = pcall(function()
+			return cc and cc:GetData()
+		end)
+		for _, c in pairs(okD and d and d.Clones or {}) do
+			if type(c) == "table" and c.targetBaseId then
+				cloneTargets[c.targetBaseId] = true
+			end
+		end
+	end
+	return cloneTargets[base] == true
+end
+local henFails = {} -- hen key -> refusals so far; each one doubles its bench
+local function isChasing(base)
+	return (chasing[base] or 0) > os.clock()
+end
 
 local function henKey(base, idx)
 	return "hen:" .. tostring(base) .. ":" .. tostring(idx)
@@ -425,7 +456,7 @@ local function bestHen()
 	local best
 	for _, h in ipairs(CollectionService:GetTagged("SpawnedBaseEgg")) do
 		local typ, base, idx = h:GetAttribute("EggType"), h:GetAttribute("BaseId"), h:GetAttribute("Placeholder")
-		if typ and base and idx and eggOn[typ] and h:IsDescendantOf(workspace) and not h:GetAttribute("EggHidden") and not benched(henKey(base, idx)) and not zoneIsParked(typ) then
+		if typ and base and idx and eggOn[typ] and h:IsDescendantOf(workspace) and not h:GetAttribute("EggHidden") and not benched(henKey(base, idx)) and not benched("base:" .. tostring(base)) and not isChasing(base) and not cloneTargeted(base) and not zoneIsParked(typ) then
 			local mut = henMutation(h)
 			if mutOn[mut] or not (MutationConfig and MutationConfig[mut]) then -- a mutation the dropdown does not know is stolen, not skipped
 				local tier, multi = tierOf(typ), mutMulti(mut)
@@ -480,7 +511,10 @@ local function stealOnce()
 		end
 		if not clean and refusalLogs < 8 then
 			refusalLogs += 1
-			log("pickup refused:", h.typ, "tier", h.tier, "carried", carriedEggs(), "InSpawn", player:GetAttribute("InSpawn"), "Chased", player:GetAttribute("Chased"), "settle", settle)
+			log("pickup refused:", h.typ, "tier", h.tier, h.base, "base chasing", isChasing(h.base), "carried", carriedEggs(), "Chased", player:GetAttribute("Chased"), "settle", settle)
+		end
+		if not clean then
+			bench("base:" .. tostring(h.base), BASE_BENCH)
 		end
 		local zk = zoneKey(h.typ)
 		if clean then
@@ -494,7 +528,9 @@ local function stealOnce()
 				say("steal", ("%s refused, skipped for %dm"):format(zk, ZONE_PARK // 60))
 			end
 		end
-		bench(key, HEN_BENCH) -- ours now, or not takeable: either way not this one again
+		-- ours now, or not takeable: either way not this one again. A hen that keeps refusing waits longer each time.
+		henFails[key] = clean and 0 or (henFails[key] or 0) + 1
+		bench(key, clean and HEN_BENCH or math.min(HEN_BENCH_MAX, HEN_BENCH * 2 ^ (henFails[key] - 1)))
 		local bankAt, onGround = bankCF(sp)
 		tp(bankAt) -- the spawn volume is what banks it; do not stay by the boss
 		if clean and onGround then
@@ -523,11 +559,16 @@ local function stealOnce()
 				stats.stolen += 1
 				local label = h.mut ~= "NORMAL" and (" " .. h.mut) or ""
 				say("steal", ("took %s%s (tier %d)"):format(EGGS[h.typ] and EGGS[h.typ].name or h.typ, label, h.tier))
-				if mutChecks < 3 then
-					-- UNPROVEN: the base attribute is the egg's mutation. Compare it with the bag entry's own field.
+				local odd = h.mut ~= "NORMAL"
+				if (odd and mutChecksOdd < 3) or (not odd and mutChecks < 2) then
+					-- The bag entry leaves mutation nil for a Normal egg (probed), so only a mutated one proves the link.
 					for id, e in pairs(bagEggs()) do
 						if not before[id] then
-							mutChecks += 1
+							if odd then
+								mutChecksOdd += 1
+							else
+								mutChecks += 1
+							end
 							log("mutation check: base said", h.mut, "- bag egg says", e.innerEntity and e.innerEntity.mutation)
 						end
 					end
@@ -1203,13 +1244,23 @@ end))
 
 -- the game's own taken-egg notice: skip a hen another player just emptied
 do
-	local ev = Services:FindFirstChild("AreaService") and Services.AreaService:FindFirstChild("RE")
-	ev = ev and ev:FindFirstChild("EggTaken")
-	if ev and ev:IsA("RemoteEvent") then
-		table.insert(conns, ev.OnClientEvent:Connect(function(base, idx)
-			bench(henKey(base, idx), TAKEN_BENCH)
-		end))
+	local re = Services:FindFirstChild("AreaService") and Services.AreaService:FindFirstChild("RE")
+	local function hook(name, fn)
+		local ev = re and re:FindFirstChild(name)
+		if ev and ev:IsA("RemoteEvent") then
+			table.insert(conns, ev.OnClientEvent:Connect(fn))
+		end
 	end
+	hook("EggTaken", function(base, idx)
+		bench(henKey(base, idx), TAKEN_BENCH)
+	end)
+	-- a boss mid-chase (a clone of yours or someone else's) may refuse pickups on its base
+	hook("BossChaseStarted", function(base)
+		chasing[base] = os.clock() + CHASE_MAX
+	end)
+	hook("BossChaseEnded", function(base)
+		chasing[base] = nil
+	end)
 end
 
 -- close ----------------------------------------------------------------------
