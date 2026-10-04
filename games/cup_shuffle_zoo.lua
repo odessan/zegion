@@ -1,13 +1,23 @@
---[[ Cup Shuffle Zoo -- roll, buy, place, hatch, upgrade (79226825467411)
+--[[ Cup Shuffle Zoo -- roll, buy, place, hatch, upgrade, feed the Chomper (79226825467411)
 
      BUY     : the dealer's cup game with no cup game. Rolls the dealer's egg (Select, free, ~0.3s each)
-               until it is one you ticked, at a price within your budget, then Play -> StartShuffle ->
-               PickCup on the right cup and the egg lands in your hands. About 0.3s per egg and nothing
-               walks. The right cup is worked out from the shuffle the server sends (the six shuffles
-               are fixed swaps, probed 8 of 8). Eggs of tier 1 and 2 win on any cup. The dealer's pick
-               stays put between rounds, so once it rolls what you want it just keeps buying it.
+               until it is one you ticked and you can pay for it (no budget cap: it buys until the cash is
+               gone), then Play -> StartShuffle -> PickCup on the right cup and the egg lands in your hands.
+               About 0.3s per egg and nothing walks. The right cup is worked out from the shuffle the
+               server sends (the six shuffles are fixed swaps, probed 8 of 8). Eggs of tier 1 and 2 win on
+               any cup. The dealer's pick stays put between rounds, so once it rolls what you want it just
+               keeps buying it. While Place is on it steps out of the dealer now and then (the server
+               refuses PlaceEgg inside the cup game) so free slots get filled.
                Needs getconnections: it mutes the game's own cup controller, which would otherwise
                play the animation and restart the game itself after every reveal.
+     INFESTED: "Infested eggs only" makes BUY wait for the dealer's offer to carry the Infested flag (player
+               attr OfferInfested, 4% of rolls, probed 10 of 250). Those eggs are food for the Chomper and are
+               never placed. Buying pauses at INFESTED_KEEP held, since the dealer repeats the same offer.
+     FEED    : the Chomper event. FeedChomper takes no arguments, needs an Infested egg HELD, and is accepted
+               from across the map (probed at 221 studs); the server paces it at ~2.4s. 10 feeds fill the bar
+               and pay out a tree egg (7 in 163s). Mutes the feed / payout cutscene.
+     CLAIM   : own all three trees (cut / ruined / haunted, from hatching tree eggs, 6 min) and the Chomper
+               animal (Spirit) can be claimed. Fires ClaimChomperEvent when the event status says Have >= Need.
      PLACE   : puts held eggs on free ground of your plot, best tier first.
      HATCH   : OpenEgg the moment an egg's timer is up (earlier is refused). Mutes the hatch cutscene.
      EQUIP   : the game's own Equip Best button (EquipBestAnimals). Fired when your animal count or slot
@@ -21,6 +31,7 @@
        OpenEgg before HatchAt         refused silently at 5s, 3s and 1s left
        Select back to back            dropped; 0.2s apart all answered
        cup tracking via LOCATIONS     the cups never move on the client; the animation is cosmetic
+       FeedChomper without the egg held   refused ("Hold an Infested egg, then press E to feed it")
      Not wired (Robux): SkipEgg (ShopConfig.SkipProducts), Claim All, offline x10, pass-only cups/dealers.
      Not wired (not asked): Base upgrade (+1 animal slot), the free claims (daily, playtime, quests, index).
 
@@ -30,12 +41,10 @@
 local ROLL_GAP = 0.3 -- between Selects. 0.2 was answered, back to back is dropped. Raise if rolls time out
 local REPLY_WAIT = 1.5 -- a Select / StartShuffle / PickCup reply must land inside this
 local PLAY_WAIT = 1.5 -- Play must flip Game.CanSkip inside this
-local HOLD_MAX = 4 -- eggs in hand before buying pauses so Place can drain them
-local YIELD_EVERY = 4 -- while buying toward a deep hoard, step out of the dealer this often so Place can fill free slots
+local YIELD_EVERY = 4 -- buying has no cap, so step out of the dealer this often and let Place fill free slots (the server refuses PlaceEgg while you are in the cup game)
 local YIELD_MAX = 3 -- ...and stay out at most this long
 local EGG_ARRIVE = 1 -- after a win, wait up to this long for the egg Tool to show up in your hands
-local HOLD_RESUME = 1 -- buying resumes when this few are left in hand. While it is paused the dealer is left (ExitGame): the server refuses PlaceEgg while you are in the cup game
-local MAX_PRICE_PCT = 25 -- an egg may cost at most this % of your cash (the box in the panel changes it)
+local INFESTED_KEEP = 25 -- Infested-only buying pauses at this many held: the dealer keeps the same offer, so it would otherwise buy ~3 a second while the Chomper eats one per EatTime
 local STALE_ROLLS = 60 -- this many rejects in a row and the strip says why nothing is being bought
 local PLACE_GAP = 0.3 -- between PlaceEgg calls
 local PLACE_CONFIRM = 1.5 -- the egg must show up in Plot.Eggs inside this
@@ -81,13 +90,14 @@ end
 
 -- game -----------------------------------------------------------------------
 local Remotes = ReplicatedStorage:WaitForChild("Remotes", 15)
-local ok, EggsConfig, UpgradesConfig, DealersConfig, CupsConfig, Mutations, AnimalsConfig = pcall(function()
+local ok, EggsConfig, UpgradesConfig, DealersConfig, CupsConfig, Mutations, AnimalsConfig, InfestedBug = pcall(function()
 	return require(ReplicatedStorage.Configs.EggsConfig),
 		require(ReplicatedStorage.Configs.UpgradesConfig),
 		require(ReplicatedStorage.Configs.DealersConfig),
 		require(ReplicatedStorage.Assets.CupSkins.Cups),
 		require(ReplicatedStorage.Shared.WeightSystem.Mutations),
-		require(ReplicatedStorage.Configs.AnimalsConfig)
+		require(ReplicatedStorage.Configs.AnimalsConfig),
+		require(ReplicatedStorage.Shared.Util.InfestedBug) -- the game's own "is this Tool Infested" test
 end)
 if not Remotes or not ok then
 	warn("[cupzoo] the game's modules did not load:", EggsConfig)
@@ -155,19 +165,24 @@ local function myBase()
 			return b
 		end
 	end
+	return nil
 end
 
--- Every egg Tool in the Backpack or in hand; the Tool's name is the egg id.
-local function eggTools()
+-- Every egg Tool in the Backpack or in hand; the Tool's name is the egg id. An Infested egg is food for
+-- the Chomper, not for the plot, so Place and its rank never see it (infestedTools has them).
+local function eggTools(infested)
 	local out = {}
 	for _, holder in ipairs({ player.Backpack, player.Character }) do
 		for _, t in ipairs(holder and holder:GetChildren() or {}) do
-			if t:IsA("Tool") and EggsConfig.Get(t.Name) then
+			if t:IsA("Tool") and EggsConfig.Get(t.Name) and (InfestedBug.OnTool(t) == true) == (infested == true) then
 				out[#out + 1] = t
 			end
 		end
 	end
 	return out
+end
+local function infestedTools()
+	return eggTools(true)
 end
 
 local mutIndex = {}
@@ -208,11 +223,11 @@ end
 
 -- state read by the loops -----------------------------------------------------
 local eggOn, mutOn = {}, {}
-local maxPct = MAX_PRICE_PCT
-local stats = { rolls = 0, bought = 0, lost = 0, hatched = 0, upgrades = 0, sold = 0 }
+local infestedOnly = false -- Auto Buy rolls until the dealer's offer is Infested (the Chomper's food)
+local stats = { rolls = 0, bought = 0, lost = 0, hatched = 0, upgrades = 0, sold = 0, fed = 0, trees = 0 }
 
 local function heldCount()
-	return #eggTools()
+	return #eggTools() + #infestedTools()
 end
 
 -- buy -------------------------------------------------------------------------
@@ -220,7 +235,6 @@ local buyCon
 local genBuy = 0
 local inGame = false
 local placeOn = false -- the place loop is running (set by setPlace)
-local holdMax = HOLD_MAX -- the box in the panel changes it
 local buyOn = false -- the buy loop is running (set by setBuy; Place waits for it to leave the dealer)
 local sel = { n = 0, animal = nil, price = 0, mut = "Normal" }
 local shuf = { n = 0, seq = nil }
@@ -240,12 +254,21 @@ local function seedSelection()
 	sel.mut = Game.Mutation.Value ~= "" and Game.Mutation.Value or "Normal"
 end
 
+local function offerInfested()
+	return player:GetAttribute("OfferInfested") == true
+end
+
+-- No budget guard: buy every ticked egg until the cash is gone. Only an egg we cannot pay for is skipped,
+-- because StartShuffle on it is refused and costs a round trip.
 local function wanted()
 	local cfg = sel.animal and EggsConfig.Get(sel.animal)
 	if not cfg or not eggOn[cfg.id] or not mutOn[Mutations.Name(sel.mut)] then
 		return false
 	end
-	return cfg.price <= money.Value * maxPct / 100
+	if infestedOnly and not offerInfested() then
+		return false
+	end
+	return cfg.price <= money.Value
 end
 
 local function ensurePlay()
@@ -279,42 +302,38 @@ end
 
 local function buyLoop(mine)
 	local rejects = 0
-	local full = false -- hysteresis: pause at holdMax, resume a few eggs below it
 	local lastYield = os.clock()
 	while genBuy == mine do
 		local held = heldCount()
-		local resume = math.max(HOLD_RESUME, holdMax - 3)
-		if held >= holdMax then
-			full = true
-		elseif held <= resume then
-			full = false
-		end
-		-- PlaceEgg is refused while we sit in the dealer, so a deep hoard would leave free slots empty
-		-- until the hoard is bought. Step out now and then and let Place fill them.
-		if not full and placeOn and held > 0 and os.clock() - lastYield > YIELD_EVERY and plotHasRoom() then
+		-- PlaceEgg is refused while we sit in the dealer, and buying has no cap, so free slots would stay
+		-- empty for as long as the cash lasts. Step out now and then and let Place fill them.
+		if placeOn and #eggTools() > 0 and os.clock() - lastYield > YIELD_EVERY and plotHasRoom() then
 			leaveDealer()
 			local dl = os.clock() + YIELD_MAX
-			while genBuy == mine and plotHasRoom() and heldCount() > 0 and os.clock() < dl do
+			while genBuy == mine and plotHasRoom() and #eggTools() > 0 and os.clock() < dl do
 				task.wait(0.2)
 			end
 			lastYield = os.clock()
 		end
-		if full then
-			leaveDealer() -- lets PlaceEgg through
-			say(("paused: %d eggs held (resumes at %d), Place / Hatch must drain them"):format(held, resume), true, "buy")
-			task.wait(0.4)
+		if infestedOnly and #infestedTools() >= INFESTED_KEEP then
+			leaveDealer() -- lets PlaceEgg through while the Chomper eats its way down
+			say(("%d Infested eggs held, buying resumes when Feed has eaten some"):format(#infestedTools()), true, "buy")
+			task.wait(0.5)
 		elseif not ensurePlay() then
 			say("Play did not open the dealer", false, "buy")
 			task.wait(1)
 		elseif not wanted() then
 			-- reroll: free, one Select per ROLL_GAP
+			if infestedOnly and offerInfested() then
+				warn("[cupzoo] infested offer skipped:", sel.animal, "mut", sel.mut, "price", sel.price, "ticked egg", eggOn[sel.animal] == true, "ticked mut", mutOn[Mutations.Name(sel.mut)] == true, "cash", money.Value)
+			end
 			local n0 = sel.n
 			GHS:FireServer("Select", { SpeedMultiplier = 2, StartTime = tick() })
 			stats.rolls += 1
 			rejects += 1
 			waitN(sel, n0, REPLY_WAIT)
 			if rejects >= STALE_ROLLS then
-				say(("%d rolls, none ticked and within %d%% of cash -- tick more eggs or raise the box"):format(rejects, maxPct), false, "buy")
+				say(("%d rolls, none ticked%s and affordable (cash %s) -- tick more eggs"):format(rejects, infestedOnly and " + Infested" or "", fmt(money.Value)), false, "buy")
 				rejects = 0
 			else
 				say(("rolling: %s %s"):format(tostring(sel.animal), sel.price and fmt(sel.price) or "?"), true, "buy") -- 3 a second: strip only
@@ -383,8 +402,8 @@ local function setBuy(on)
 		for _ in pairs(eggOn) do
 			ticks += 1
 		end
-		log(("buy on: %d eggs held (pauses at %d), dealer shows %s at %s, cash %s, budget %s%% of cash, %d egg types ticked"):format(
-			heldCount(), holdMax, tostring(sel.animal), fmt(sel.price or 0), fmt(money.Value), tostring(maxPct), ticks))
+		log(("buy on: %d eggs held, dealer shows %s at %s, cash %s, infested only %s, %d egg types ticked"):format(
+			heldCount(), tostring(sel.animal), fmt(sel.price or 0), fmt(money.Value), tostring(infestedOnly), ticks))
 		task.spawn(function()
 			local good, err = pcall(buyLoop, mine)
 			if not good then
@@ -439,6 +458,7 @@ local function freeSpot(base)
 			return w
 		end
 	end
+	return nil
 end
 
 -- best first: higher tier, then the better mutation (a Gold egg hatches a Gold animal)
@@ -836,6 +856,131 @@ local function setUpgrade(on)
 	end
 end
 
+-- chomper ---------------------------------------------------------------------
+-- Feed the Chomper Infested eggs: 10 feeds fill its bar and the server pays out a tree egg. Own all three
+-- trees (cut / ruined / haunted, from tree eggs) and ClaimChomperEvent gives the Chomper animal.
+-- The prompt's 16 studs are a client gate: the remote takes no arguments and was accepted from 221 studs
+-- away (probed). The server wants the egg HELD ("Hold an Infested egg, then press E to feed it") and paces
+-- feeds at ChomperConfig.EatTime, so the loop waits that long after each one.
+local FEED_CONFIRM = 2 -- a feed must take an Infested egg off you inside this
+local EQUIP_WAIT = 0.15 -- after EquipTool, before the feed
+local CLAIM_EVERY = 5 -- how often the event status is read
+local FeedChomper = Remotes:WaitForChild("FeedChomper")
+local ChomperPayout = Remotes:WaitForChild("ChomperPayout")
+local ClaimChomper = Remotes:WaitForChild("ClaimChomperEvent")
+local GetChomperStatus = Remotes:WaitForChild("GetChomperEventStatus")
+local okCfg, ChomperCfg = pcall(require, ReplicatedStorage.Configs.ChomperConfig)
+local feedGap = (okCfg and ChomperCfg.EatTime or 2.05) + 0.1
+local genFeed, genClaim = 0, 0
+local payoutCon
+
+local function feedLoop(mine)
+	local misses = 0
+	while genFeed == mine do
+		local tool = infestedTools()[1]
+		if not tool then
+			say("no Infested egg held", true, "chomp")
+			task.wait(0.5)
+		else
+			local char = player.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if hum and tool.Parent ~= char then
+				pcall(hum.EquipTool, hum, tool)
+				task.wait(EQUIP_WAIT)
+			end
+			local left, before = #infestedTools(), player:GetAttribute("ChomperFill") or 0
+			FeedChomper:FireServer()
+			local dl = os.clock() + FEED_CONFIRM
+			while genFeed == mine and os.clock() < dl and #infestedTools() >= left do
+				task.wait()
+			end
+			if #infestedTools() < left then
+				misses = 0
+				stats.fed += 1
+				say(("fed %d (bar %d%%), %d Infested left"):format(stats.fed, math.floor((player:GetAttribute("ChomperFill") or 0) * 100 + 0.5), #infestedTools()), true, "chomp")
+				task.wait(feedGap)
+			else
+				misses += 1
+				warn("[cupzoo] feed not taken:", tool.Name, "fill", before, "last notice:", lastNote, os.clock() - lastNoteAt < 3 and "(fresh)" or "(old)")
+				task.wait(math.min(5, feedGap * (1 + misses)))
+			end
+		end
+	end
+end
+
+local function setFeed(on)
+	genFeed += 1
+	if payoutCon then
+		payoutCon:Disconnect()
+		payoutCon = nil
+	end
+	if on then
+		-- the game's own listeners play the throw / spit cutscene and a reveal card on every feed and payout.
+		-- Mute BEFORE connecting ours; they only draw, nothing is sent back to the server.
+		mute(FeedChomper)
+		mute(ChomperPayout)
+		payoutCon = ChomperPayout.OnClientEvent:Connect(function(id)
+			stats.trees += 1
+			log("Chomper paid out", tostring(id), "(" .. stats.trees .. " this run)")
+		end)
+		log("feed on:", #infestedTools(), "Infested eggs held, bar", player:GetAttribute("ChomperFill"))
+		local mine = genFeed
+		task.spawn(function()
+			local good, err = pcall(feedLoop, mine)
+			if not good then
+				warn("[cupzoo] feed loop died:", err)
+			end
+		end)
+	else
+		unmute(FeedChomper)
+		unmute(ChomperPayout)
+	end
+end
+
+-- {Need, Have, Claimed}; the reply may or may not carry a leading true, so take the first table
+local function chomperStatus()
+	local box
+	task.spawn(function()
+		local good, a, b = pcall(GetChomperStatus.InvokeServer, GetChomperStatus)
+		box = good and (type(a) == "table" and a or type(b) == "table" and b) or false
+	end)
+	local dl = os.clock() + REPLY_WAIT * 2
+	while box == nil and os.clock() < dl do
+		task.wait()
+	end
+	return box or nil
+end
+
+local function claimLoop(mine)
+	local tries = 0
+	while genClaim == mine do
+		local st = chomperStatus()
+		if st then
+			say(("trees %s/%s%s"):format(tostring(st.Have), tostring(st.Need), st.Claimed and ", claimed" or ""), true, "chomp")
+			if not st.Claimed and (st.Have or 0) >= (st.Need or 1) then
+				tries += 1
+				-- ponytail: no client script calls this, so the argument shape is a guess (none). Log what comes back.
+				ClaimChomper:FireServer()
+				task.wait(2)
+				local after = chomperStatus()
+				log("ClaimChomperEvent fired, status after:", after and after.Claimed, "last notice:", lastNote)
+				if tries >= 3 and not (after and after.Claimed) then
+					warn("[cupzoo] claim not taken after 3 tries -- needs a look at the arguments")
+					return
+				end
+			end
+		end
+		task.wait(CLAIM_EVERY)
+	end
+end
+
+local function setClaim(on)
+	genClaim += 1
+	if on then
+		task.spawn(claimLoop, genClaim)
+	end
+end
+
 -- gui ------------------------------------------------------------------------
 local PANEL_URL = "https://raw.githubusercontent.com/odessan/Zegion/main/panel_obsidian.lua"
 local panel = loadstring(game:HttpGet(PANEL_URL))()
@@ -849,6 +994,7 @@ local Buy = Tab:AddLeftGroupbox("Eggs", "egg")
 local Zoo = Tab:AddLeftGroupbox("Animals", "paw-print")
 local Hands = Tab:AddRightGroupbox("Plot", "layout-grid")
 local Up = Tab:AddRightGroupbox("Upgrades", "trending-up")
+local Chomp = Tab:AddRightGroupbox("Chomper event", "bug")
 
 local obtainable = EggsConfig.Obtainable()
 local eggValues, eggByLabel, eggDefault = {}, {}, {}
@@ -906,29 +1052,12 @@ Buy:AddDropdown("Mutations", {
 		end
 	end,
 })
-Buy:AddInput("MaxPct", {
-	Text = "Max egg price (% of cash)",
-	Tooltip = "An egg dearer than this share of your current cash is rerolled, not bought. Higher dealers can roll eggs you cannot pay for",
-	Default = tostring(MAX_PRICE_PCT),
-	Numeric = true,
-	Finished = true,
-	Placeholder = "25",
-	Callback = function(v)
-		local n = tonumber(v)
-		maxPct = (n and n > 0) and math.min(n, 100) or MAX_PRICE_PCT -- an empty or 0 box means the default, not "buy nothing"
-	end,
-})
-
-Buy:AddInput("HoldMax", {
-	Text = "Eggs to keep in hand",
-	Tooltip = "Buying pauses at this many held eggs and resumes 3 below. Low (4) buys only what the plot can use. High hoards eggs and Place always takes the best one in your hands, but every egg bought and not placed is cash spent early: the plot hatches only about one egg per hatch-time / slots",
-	Default = tostring(HOLD_MAX),
-	Numeric = true,
-	Finished = true,
-	Placeholder = "4",
-	Callback = function(v)
-		local n = tonumber(v)
-		holdMax = (n and n >= 1) and math.floor(n) or HOLD_MAX
+Buy:AddToggle("InfestedOnly", {
+	Text = "Infested eggs only (Chomper food)",
+	Tooltip = "Rerolls until the dealer's offer carries the Infested flag (about 4% of rolls) on a ticked egg, then buys it. Infested eggs are kept for the Chomper, never placed. Tick only cheap eggs: a pricey Infested egg is just as good food",
+	Default = false,
+	Callback = function(state)
+		infestedOnly = state
 	end,
 })
 Hands:AddToggle("Place", {
@@ -975,6 +1104,19 @@ Up:AddToggle("Upgrade", {
 	Callback = setUpgrade,
 })
 
+Chomp:AddToggle("Feed", {
+	Text = "Auto Feed Chomper",
+	Tooltip = "Feeds the Infested eggs you hold to the Chomper from wherever you stand: 10 feeds = one tree egg. Turn on Infested eggs only above to buy them. Mutes the feed / payout cutscene while on",
+	Default = false,
+	Callback = setFeed,
+})
+Chomp:AddToggle("Claim", {
+	Text = "Auto Claim Chomper",
+	Tooltip = "Claims the Chomper animal the moment you own all three trees (cut, ruined, haunted). Tree eggs come from feeding, and Auto Place + Auto Hatch turn them into trees",
+	Default = false,
+	Callback = setClaim,
+})
+
 local function eggStatus()
 	local base = myBase()
 	local eggs = base and base:FindFirstChild("Eggs")
@@ -982,7 +1124,7 @@ local function eggStatus()
 end
 
 local conns = {}
-local note, buyNote = "idle", "off"
+local note, buyNote, chompNote = "idle", "off", "off"
 local nextStrip = 0
 table.insert(conns, RunService.Heartbeat:Connect(function()
 	if pending.now then
@@ -991,19 +1133,24 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
 	if pending.buy then
 		buyNote, pending.buy = pending.buy, nil
 	end
+	if pending.chomp then
+		chompNote, pending.chomp = pending.chomp, nil
+	end
 	local now = os.clock()
 	if now < nextStrip then
 		return
 	end
 	nextStrip = now + 0.5
-	Window:SetStatus({
+	pcall(Window.SetStatus, Window, { -- ponytail: thrown "lacking capability Plugin" when loaded through the bridge; silence, not fix
 		{ "Cash", fmt(money.Value) },
 		{ "Eggs", eggStatus() },
 		{ "Bought", stats.bought .. (stats.lost > 0 and (" (" .. stats.lost .. " lost)") or "") },
 		{ "Rolls", stats.rolls },
 		{ "Opened", stats.hatched },
 		{ "Sold", stats.sold },
+		{ "Fed", stats.fed .. " (" .. stats.trees .. " tree eggs)" },
 		{ "Buy", buyNote },
+		{ "Chomper", chompNote },
 		{ "Now", note },
 	})
 end))
@@ -1031,6 +1178,8 @@ local function stopAll()
 	setEquip(false)
 	setSell(false)
 	setUpgrade(false)
+	setFeed(false) -- hands the feed / payout cutscene back
+	setClaim(false)
 	noteCon:Disconnect()
 	for _, c in ipairs(conns) do
 		c:Disconnect()
