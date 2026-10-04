@@ -71,6 +71,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Fish an Anime!                      | `74729868188364`  | `fish_for_anime_rng.lua`               |
 | Jump for SCP                        | `123724279728430` | `jump_for_scp.lua`                     |
 | Jump To Steal Soccer Players        | `133294838637122` | `jump_for_soccer_players.lua`          |
+| My Anime Mine                       | `79389059854988`  | `my_anime_mine.lua`                    |
 | My Dancing Animals!                 | `102602309625870` | `dancing_animals.lua`                  |
 | My Seafood Stand!                   | `72896199592423`  | `my_seafood_stand.lua`                 |
 | Power Blast Lucky Block             | `119822977170203` | `power_blast_lucky_block.lua`          |
