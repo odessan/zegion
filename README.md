@@ -77,6 +77,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Pull a Lucky Block                  | `80861715191104`  | `pull_a_lucky_block.lua`               |
 | Pull a Lucky Fish                   | `112781315318195` | `pull_a_lucky_fish.lua`                |
 | Pull an Egg                         | `70640255604878`  | `pull_an_egg.lua`                      |
+| Rope an Animal                      | `140067658687251` | `rope_an_animal.lua`                   |
 | Run For Brainrots!                  | `94702395375549`  | `run_for_brainrots.lua`                |
 | Run For Soccer Players              | `140417239274110` | `run_for_soccer_players.lua`           |
 | Save Animals! (was Steal an Animal) | `123822115505881` | `steal_an_animal.lua`                  |

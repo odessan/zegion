@@ -94,6 +94,7 @@ local GAMES = {
 	["98610101874791"] = "strength_for_eggs.lua", -- +1 Strength for Eggs
 	["91034536684382"] = "destroy_a_vault.lua", -- Destroy a Vault (also called Build a Vault)
 	["107164765081465"] = "steal_a_verity.lua", -- Steal A Verity!
+	["140067658687251"] = "rope_an_animal.lua", -- Rope an Animal
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
