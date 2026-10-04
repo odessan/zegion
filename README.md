@@ -58,6 +58,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Chicken Farm                        | `137233438285284` | `chicken_farm.lua`                     |
 | Cup Shuffle Zoo                     | `79226825467411`  | `cup_shuffle_zoo.lua`                  |
 | Build a Pyramid                     | `123720558354386` | `build_a_pyramid.lua`                  |
+| Destroy a Vault                     | `91034536684382`  | `destroy_a_vault.lua`                  |
 | Dig Into Secrets                    | `119409763193569` | `dig_into_secrets.lua`                 |
 | Dream Car Collection                | `76841016201110`  | `dream_car_collection.lua`             |
 | Don't Steal a Bobo                  | `120135584963579` | `dont_steal_a_bobo.lua`                |
