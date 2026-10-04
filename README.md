@@ -84,6 +84,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Steal a Chicken Egg                 | `76503495566299`  | `steal_a_chicken_egg.lua`              |
 | Steal a Fish Egg                    | `99183404085821`  | `steal_a_fish_egg.lua`                 |
 | Steal a Seed                        | `122216176958450` | `steal_a_seed.lua`                     |
+| Steal A Verity!                     | `107164765081465` | `steal_a_verity.lua`                   |
 | Sniper Arena                        | `119259569670784` | `sniper_arena.lua`                     |
 | Split Sea for Animals               | `88047783411976`  | `split_sea_for_animals.lua`            |
 | Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`                   |
