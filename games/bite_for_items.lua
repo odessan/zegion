@@ -8,6 +8,8 @@
                strength (a bite hits for your BiteStrength and spills over into the next wall); type a
                number in "Max room" to cap it. Hops are verified and retried (the server reverts about one
                in three), and nothing walks.
+     SELL    : "Auto Sell" (on by default). Off = the farm clears and loots only, then waits with a full bag; sell by hand
+               (selling resets the walls, so the next run clears again).
      BITE    : fires Bite at the server's cooldown (~7/s) from wherever you stand. Every bite adds the
                equipped bite's strength to BiteStrength, which is also the damage of the next bite.
      BUY     : BuyBite for the best cash bite you can afford (accepted from anywhere, auto-equips), then
@@ -469,12 +471,18 @@ end
 
 -- farm -----------------------------------------------------------------------
 local maxRoom, budget = 0, BUDGET_DEFAULT
+local sellOn = true -- Auto Sell: off = clear and loot only, the bag is kept (Default = true does not fire the callback, so it is set here)
 
 local function farmRun(alive)
 	local rt = getRoute()
 	if not rt then
 		say("no route from the server, retrying")
 		task.wait(2)
+		return
+	end
+	if not sellOn and carried() >= capacity() then
+		say(("bag full (%d/%d), Auto Sell is off"):format(carried(), capacity()))
+		task.wait(1) -- nothing more can be picked up and nothing sells: do not clear walls for loot we cannot take
 		return
 	end
 	local rooms = rt.rooms
@@ -546,7 +554,10 @@ local function farmRun(alive)
 		end
 	end
 	local tLoot = os.clock()
-	if alive() and carried() > 0 then
+	if alive() and carried() > 0 and not sellOn then
+		say(("looted %d, bag %d/%d, Auto Sell is off"):format(picked, carried(), capacity()))
+		task.wait(1)
+	elseif alive() and carried() > 0 then
 		local c0 = stats.earned
 		if not sell(alive) then
 			task.wait(1) -- a failed sell must not spin: the bag is still full and the next run would just come back here
@@ -789,14 +800,23 @@ local Spend = Tab:AddLeftGroupbox("Spend", "coins")
 local Free = Tab:AddRightGroupbox("Free stuff", "gift")
 
 Farm:AddToggle("Farm", {
-	Text = "Auto Farm (clear, loot, sell)",
-	Tooltip = "Breaks the walls of every room before the target room, hops to the loot behind them, fills the bag and sells at the stand. Walls grow back when you sell, so each run clears again. Nothing walks",
+	Text = "Auto Farm (clear + loot)",
+	Tooltip = "Breaks the walls of every room before the target room and hops to the loot behind them until the bag is full. With Auto Sell on it then sells at the stand (walls grow back when you sell, so each run clears again). Nothing walks",
 	Default = false,
 	Callback = function(state)
 		setFarm(state)
 		if not state then
 			say("farm off")
 		end
+	end,
+})
+Farm:AddToggle("Sell", {
+	Text = "Auto Sell",
+	Tooltip = "On: the farm sells the bag at the stand after each loot trip. Off: it clears and loots only, then waits with a full bag so you can sell by hand (selling resets the walls)",
+	Default = true,
+	Callback = function(state)
+		sellOn = state
+		say(state and "Auto Sell on" or "Auto Sell off: farm will clear and loot only")
 	end,
 })
 Farm:AddToggle("Bite", {
