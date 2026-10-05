@@ -240,7 +240,19 @@ end)
 
 -- world ----------------------------------------------------------------------
 local route -- { start, rooms = { { room, position } } } from the server, the same one the game's AutoPlay walks
+local routeWorld -- the world `route` (and `sellPos`) were read in: a portal trip leaves both pointing at the old world's rooms and lobby
+local sellPos
+local function worldCheck()
+	local w = player:GetAttribute("CurrentWorld")
+	if w ~= routeWorld then
+		if routeWorld ~= nil then
+			log(("world %s -> %s: route and sell stand dropped"):format(tostring(routeWorld), tostring(w)))
+		end
+		routeWorld, route, sellPos = w, nil, nil
+	end
+end
 local function getRoute()
+	worldCheck()
 	if route then
 		return route
 	end
@@ -413,20 +425,29 @@ end
 
 -- The stand is in the lobby, so it streams out while the farm is deep in the rooms: remember where it was,
 -- and when we have never seen it, take the game's own trip back to the lobby so it streams in.
-local sellPos
 local function scanSellStand()
+	local r = root()
+	local best, bestD = nil, math.huge
 	for _, d in ipairs(workspace:GetDescendants()) do
 		if d:IsA("ProximityPrompt") and d.ActionText == "Sell Items" then
 			local part = d:FindFirstAncestorWhichIsA("BasePart")
 			if part then
-				sellPos = part.Position + Vector3.new(0, 3, 5)
-				return true
+				-- nearest to us: another world's lobby may still be streamed in
+				local dist = r and (part.Position - r.Position).Magnitude or 0
+				if dist < bestD then
+					best, bestD = part, dist
+				end
 			end
 		end
+	end
+	if best then
+		sellPos = best.Position + Vector3.new(0, 3, 5)
+		return true
 	end
 	return false
 end
 local function sellSpot()
+	worldCheck()
 	if not sellPos and not scanSellStand() then
 		step("sell / back to the lobby to find the stand")
 		pcall(R.AutoPlayTeleport.FireServer, R.AutoPlayTeleport)
