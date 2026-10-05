@@ -8,8 +8,10 @@
                strength (a bite hits for your BiteStrength and spills over into the next wall); type a
                number in "Max room" to cap it. Hops are verified and retried (the server reverts about one
                in three), and nothing walks.
-     SELL    : "Auto Sell" (on by default). Off = the farm clears and loots only, then waits with a full bag; sell by hand
-               (selling resets the walls, so the next run clears again).
+     SELL    : "Auto Sell" (on by default). Off = the farm never sells: when the bag is full it hops into the lobby, which
+               banks what you carry (the game flags it Banked and stops counting it against the carry cap; probed:
+               no remote, no sale), and goes again. Banked loot stays yours and sells later, by hand or by switching
+               Auto Sell on. Banking resets the walls like a sale does, so every lap clears again.
      BITE    : fires Bite at the server's cooldown (~7/s) from wherever you stand. Every bite adds the
                equipped bite's strength to BiteStrength, which is also the damage of the next bite.
      BUY     : BuyBite for the best cash bite you can afford (accepted from anywhere, auto-equips), then
@@ -37,6 +39,7 @@ local PICK_GAP = 0.15 -- between presses
 local ITEM_STRIKES = 2 -- an item that did not come after this many tries is skipped for the run
 local SELL_CONFIRM = 2.5 -- the bag must empty inside this after SellItems
 local SELL_TRIES = 3
+local BANK_CONFIRM = 3 -- the bag must read empty (everything Banked) inside this after the hop into the lobby
 local BUDGET_DEFAULT = 45 -- seconds of wall clearing a run may spend. Raise for deeper (richer) rooms, lower for quicker laps
 local HOP_COST = 0.55 -- planning only: one hop and its settle
 local UPGRADE_EVERY = 2
@@ -347,18 +350,27 @@ local function roomOf(inst)
 	return nil
 end
 
-local function carried() -- loot Tools in hand and bag, stacks counted
+-- Loot Tools in hand and bag, stacks counted. A Tool the server has flagged Banked (it does that the moment you enter the
+-- lobby: the "Items secured!" event) no longer counts against the carry cap, which is what the game's own bag HUD shows;
+-- it is still yours and still sells. So: carried() = what fills the bag, holding() = everything you own.
+local function lootCount(unbankedOnly)
 	local total = 0
 	for _, holder in ipairs({ player.Backpack, player.Character }) do
 		if holder then
 			for _, t in ipairs(holder:GetChildren()) do
-				if t:IsA("Tool") and t:GetAttribute("Rarity") ~= nil then
+				if t:IsA("Tool") and t:GetAttribute("Rarity") ~= nil and not (unbankedOnly and t:GetAttribute("Banked")) then
 					total += math.max(1, t:GetAttribute("Count") or 1)
 				end
 			end
 		end
 	end
 	return total
+end
+local function carried()
+	return lootCount(true)
+end
+local function holding()
+	return lootCount(false)
 end
 
 local function capacity()
@@ -450,23 +462,48 @@ local function sell(alive)
 		step("sell / fire")
 		pcall(R.SellItems.FireServer, R.SellItems)
 		local t0 = os.clock()
-		while alive() and carried() > 0 and os.clock() - t0 < SELL_CONFIRM do
+		while alive() and holding() > 0 and os.clock() - t0 < SELL_CONFIRM do
 			task.wait(0.1)
 		end
-		if carried() == 0 then
+		if holding() == 0 then
 			break
 		end
 	end
 	task.wait(0.2)
 	local got = cash.Value - c0
 	stats.earned += math.max(0, got)
-	if carried() == 0 then
+	if holding() == 0 then
 		first("first-sale", "+" .. fmt(math.max(0, got)))
 		return true
 	end
 	local r = root()
-	log("sell failed: still carrying", carried(), "distance to stand", r and math.floor((r.Position - spot).Magnitude))
+	log("sell failed: still holding", holding(), "distance to stand", r and math.floor((r.Position - spot).Magnitude))
 	return false
+end
+
+-- Bank without selling: any hop into the lobby makes the server flag what you carry Banked (probed: no remote, no sale), which
+-- empties the bag for the next lap. It also resets the walls, exactly like a sale does, so the next lap clears again.
+local function bank(alive)
+	local spot = sellSpot() -- a known lobby point: the Sell stand's front
+	if not spot then
+		say("no lobby spot found")
+		return nil
+	end
+	local n = carried()
+	step("bank / hop")
+	if not hop(spot, alive) then
+		return nil
+	end
+	local t0 = os.clock()
+	while alive() and carried() > 0 and os.clock() - t0 < BANK_CONFIRM do
+		task.wait(0.1)
+	end
+	if carried() > 0 then
+		log("bank failed: still unbanked", carried())
+		return nil
+	end
+	first("first-bank", n, "items secured")
+	return n
 end
 
 -- farm -----------------------------------------------------------------------
@@ -480,18 +517,13 @@ local function farmRun(alive)
 		task.wait(2)
 		return
 	end
-	if not sellOn and carried() >= capacity() then
-		say(("bag full (%d/%d), Auto Sell is off"):format(carried(), capacity()))
-		task.wait(1) -- nothing more can be picked up and nothing sells: do not clear walls for loot we cannot take
-		return
-	end
 	local rooms = rt.rooms
 	local hps = {}
 	for i, r in ipairs(rooms) do
 		hps[i] = roomHP(r.room)
 	end
 	local target = planTarget(hps, math.max(1, strengthStat.Value), budget, maxRoom > 0 and maxRoom or nil)
-	say(("run: clear %d, loot room %d (str %s)"):format(target - 1, rooms[target].room, fmt(strengthStat.Value)))
+	say(("run: clear %d, loot room %d (str %s)"):format(target - 1, rooms[target].room, fmt(strengthStat.Value)), true) -- strip only: the console gets the run summary, and an idle loop would alternate two lines forever
 	local reach = 1
 	local t0, picked = os.clock(), 0
 	-- A bite spills into the next walls, and standing on the lobby side of room 1 undoes the other rooms, so
@@ -554,10 +586,25 @@ local function farmRun(alive)
 		end
 	end
 	local tLoot = os.clock()
-	if alive() and carried() > 0 and not sellOn then
-		say(("looted %d, bag %d/%d, Auto Sell is off"):format(picked, carried(), capacity()))
-		task.wait(1)
-	elseif alive() and carried() > 0 then
+	if alive() and not sellOn then
+		if carried() >= capacity() then
+			-- bag full: bank it (a hop into the lobby), which also resets the walls, and the next lap goes again
+			local n = bank(alive)
+			if n then
+				stats.runs += 1
+				log(("run %d: reached room %d, clear %.0fs, loot %.0fs (%d items), banked %d (stored %d), hops lost %d"):format(
+					stats.runs, lastRoom, tClear - t0, tLoot - tClear, picked, n, holding(), stats.reverts
+				))
+			else
+				task.wait(1)
+			end
+		else
+			-- nothing left to take and the bag is not full: wait for loot to respawn. Walls stay broken, so the next lap is free.
+			step("wait: bag " .. carried() .. "/" .. capacity() .. ", nothing reachable to loot")
+			say(("bag %d/%d, nothing reachable to loot, waiting (Auto Sell is off)"):format(carried(), capacity()))
+			task.wait(1)
+		end
+	elseif alive() and holding() > 0 then
 		local c0 = stats.earned
 		if not sell(alive) then
 			task.wait(1) -- a failed sell must not spin: the bag is still full and the next run would just come back here
@@ -779,7 +826,7 @@ local dead = false
 task.spawn(function()
 	while not dead do
 		task.wait(5)
-		if (farmOn or inRun) and os.clock() - markAt > STUCK_AFTER then
+		if (farmOn or inRun) and mark:sub(1, 5) ~= "wait:" and os.clock() - markAt > STUCK_AFTER then
 			warn(("[bite] stuck %ds at: %s"):format(os.clock() - markAt, mark))
 			markAt = os.clock()
 		end
@@ -812,7 +859,7 @@ Farm:AddToggle("Farm", {
 })
 Farm:AddToggle("Sell", {
 	Text = "Auto Sell",
-	Tooltip = "On: the farm sells the bag at the stand after each loot trip. Off: it clears and loots only, then waits with a full bag so you can sell by hand (selling resets the walls)",
+	Tooltip = "On: the farm sells at the stand after each loot trip. Off: it never sells; when the bag is full it hops into the lobby to bank it (the game then stops counting it against your carry space) and goes again. Banked loot stays yours to sell later",
 	Default = true,
 	Callback = function(state)
 		sellOn = state
@@ -909,7 +956,7 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
 		{ "Cash", fmt(cash.Value) },
 		{ "Strength", fmt(strengthStat.Value) },
 		{ "Bite", tostring(player:GetAttribute("EquippedBite") or "-") },
-		{ "Bag", ("%d/%d"):format(carried(), capacity()) },
+		{ "Bag", ("%d/%d (+%d banked)"):format(carried(), capacity(), holding() - carried()) },
 		{ "Runs", stats.runs },
 		{ "Sold", fmt(stats.earned) },
 		{ "Hops lost", stats.reverts },
