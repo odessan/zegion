@@ -50,6 +50,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Backflip for Eggs                   | `88611017452341`  | `backflip_for_eggs.lua`                |
 | Be Flash For Brainrots!             | `136066387156306` | `flash_for_brainrots.lua`              |
 | Become a Brainrot                   | `99255447043899`  | `become_a_brainrot.lua`                |
+| Bite for Items                      | `124731807130219` | `bite_for_items.lua`                   |
 | Brainblast for Brainrot             | `102990893659741` | `brainblast_for_brainrot.lua`          |
 | Break Tape For Brainrots            | `104339804279870` | `break_tape_for_brainrots.lua`         |
 | Break and Steal Eggs                | `114326934417838` | `break_and_steal_eggs.lua`             |
