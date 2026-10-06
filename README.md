@@ -89,6 +89,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Steal a Seed                        | `122216176958450` | `steal_a_seed.lua`                     |
 | Steal A Verity!                     | `107164765081465` | `steal_a_verity.lua`                   |
 | Sniper Arena                        | `119259569670784` | `sniper_arena.lua`                     |
+| Assassins Leveling                  | `120731410233153` | `assassins_leveling.lua`               |
 | Split Sea for Animals               | `88047783411976`  | `split_sea_for_animals.lua`            |
 | Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`                   |
 | Loot to Forge                       | `118805555015549` | `loot_to_forge.lua`                    |
