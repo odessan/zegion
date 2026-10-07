@@ -98,6 +98,7 @@ local GAMES = {
 	["79389059854988"] = "my_anime_mine.lua", -- My Anime Mine
 	["124731807130219"] = "bite_for_items.lua", -- Bite for Items
 	["120731410233153"] = "assassins_leveling.lua", -- Assassins Leveling
+	["82132121666307"] = "drop_a_fruit.lua", -- Drop a Fruit
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
