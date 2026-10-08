@@ -92,6 +92,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Slash per Click                     | `101558013317432` | `slash_per_click.lua`                  |
 | Assassins Leveling                  | `120731410233153` | `assassins_leveling.lua`               |
 | Snow Shoveling Adventure            | `101893542756730` | `snow_shoveling_adventure.lua`         |
+| Sword Loot                          | `93239606899307`  | `sword_loot.lua`                       |
 | Split Sea for Animals               | `88047783411976`  | `split_sea_for_animals.lua`            |
 | Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`                   |
 | Loot to Forge                       | `118805555015549` | `loot_to_forge.lua`                    |

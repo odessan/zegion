@@ -100,6 +100,7 @@ local GAMES = {
 	["120731410233153"] = "assassins_leveling.lua", -- Assassins Leveling
 	["82132121666307"] = "drop_a_fruit.lua", -- Drop a Fruit
 	["101893542756730"] = "snow_shoveling_adventure.lua", -- Snow Shoveling Adventure
+	["93239606899307"] = "sword_loot.lua", -- Sword Loot
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
