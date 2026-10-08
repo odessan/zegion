@@ -62,7 +62,6 @@ local GAMES = {
 	["86943068337855"] = "drill_block_for_dumpling_squishy.lua", -- Drill Block for Dumpling Squishy
 	["122572082932179"] = "drill_ores.lua", -- Drill Ores
 	["112781315318195"] = "pull_a_lucky_fish.lua", -- Pull a Lucky Fish
-	["70640255604878"] = "pull_an_egg.lua", -- Pull an Egg
 	["120135584963579"] = "dont_steal_a_bobo.lua", -- Don't Steal a Bobo
 	["76503495566299"] = "steal_a_chicken_egg.lua", -- Steal a Chicken Egg
 	["99183404085821"] = "steal_a_fish_egg.lua", -- Steal a Fish Egg
@@ -97,8 +96,10 @@ local GAMES = {
 	["140067658687251"] = "rope_an_animal.lua", -- Rope an Animal
 	["79389059854988"] = "my_anime_mine.lua", -- My Anime Mine
 	["124731807130219"] = "bite_for_items.lua", -- Bite for Items
+	["101558013317432"] = "slash_per_click.lua", -- Slash per Click
 	["120731410233153"] = "assassins_leveling.lua", -- Assassins Leveling
 	["82132121666307"] = "drop_a_fruit.lua", -- Drop a Fruit
+	["101893542756730"] = "snow_shoveling_adventure.lua", -- Snow Shoveling Adventure
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.

@@ -79,7 +79,6 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Power Blast Lucky Block             | `119822977170203` | `power_blast_lucky_block.lua`          |
 | Pull a Lucky Block                  | `80861715191104`  | `pull_a_lucky_block.lua`               |
 | Pull a Lucky Fish                   | `112781315318195` | `pull_a_lucky_fish.lua`                |
-| Pull an Egg                         | `70640255604878`  | `pull_an_egg.lua`                      |
 | Rope an Animal                      | `140067658687251` | `rope_an_animal.lua`                   |
 | Run For Brainrots!                  | `94702395375549`  | `run_for_brainrots.lua`                |
 | Run For Soccer Players              | `140417239274110` | `run_for_soccer_players.lua`           |
@@ -90,7 +89,9 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Steal a Seed                        | `122216176958450` | `steal_a_seed.lua`                     |
 | Steal A Verity!                     | `107164765081465` | `steal_a_verity.lua`                   |
 | Sniper Arena                        | `119259569670784` | `sniper_arena.lua`                     |
+| Slash per Click                     | `101558013317432` | `slash_per_click.lua`                  |
 | Assassins Leveling                  | `120731410233153` | `assassins_leveling.lua`               |
+| Snow Shoveling Adventure            | `101893542756730` | `snow_shoveling_adventure.lua`         |
 | Split Sea for Animals               | `88047783411976`  | `split_sea_for_animals.lua`            |
 | Blue Lock Farm                      | `132767904294856` | `blue_lock_farm.lua`                   |
 | Loot to Forge                       | `118805555015549` | `loot_to_forge.lua`                    |
