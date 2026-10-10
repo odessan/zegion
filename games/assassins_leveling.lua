@@ -22,6 +22,11 @@
      REBIRTH : Rebirth the moment the level meets RebirthMeta. Probed: Strength drops (297M -> 12M) and the level with it;
                Wins, blades and auras stay; MultRebirth +1 and the zone row after it opens.
 
+     World 4 (stages 49-63) exists but the server stopped crediting Limpio at stage 52 with 1.4e19 Strength (51, recommended
+     1.1e21, was credited; 52, 1.7e21, was not; 20s lingering changed nothing). A run that hops the whole lane and ends short of
+     the last stage parks that world until Strength doubles and runs the world below (World 3: +22.8B in 7s). The Strength
+     rule itself is a guess: the server side is not visible.
+
      Probed and dead: Limpio or WinPadToque fired from the lobby or from afar (silent); standing on a win pad without the
      stage clears (silent, 80s); Click above 5/s (no gain). Not wired (Robux): the x2 win pads, Aura_BuyRobux, the skip
      products, Offline x2.
@@ -124,8 +129,18 @@ end
 local function worldNow()
 	return attr("Mundo", 1)
 end
+-- A world whose run stalled short of its last stage (the server stopped taking Limpio: World 4 at stage 52 with 1.4e19
+-- Strength) is left alone until Strength has grown by WORLD_RETRY, and the run goes to the next world down.
+local WORLD_RETRY = 2
+local worldCap = {} -- [world] = Strength it stalled at
 local function topWorld()
-	return math.min(attr("MundoMax", 1), #Mundos.LISTA)
+	local fuerza = attr("Fuerza", 0)
+	for w = math.min(attr("MundoMax", 1), #Mundos.LISTA), 2, -1 do
+		if not (worldCap[w] and fuerza < worldCap[w] * WORLD_RETRY) then
+			return w
+		end
+	end
+	return 1
 end
 
 -- state ----------------------------------------------------------------------
@@ -388,7 +403,12 @@ local function winRun(w, alive)
 		first("run paid", "world", w, "stage", top, "hops", hops, "wins", got)
 		return true
 	end
-	log("run not paid", why, "world", w, "hops", hops, "limpio", player:GetAttribute("LimpioHasta"))
+	local lim = attr("LimpioHasta", 0)
+	log("run not paid", why, "world", w, "hops", hops, "limpio", lim)
+	if why == "timeout" and w > 1 and lim < top then -- hopped the whole lane and the server stopped crediting stages
+		worldCap[w] = attr("Fuerza", 0)
+		say(("world %d stalls at stage %d: running world %d until Strength doubles"):format(w, lim + 1, topWorld()))
+	end
 	backToHub(w, alive)
 	return false, why
 end

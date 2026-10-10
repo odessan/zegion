@@ -21,6 +21,11 @@
      TREADMILL: buys the best treadmill you can afford (cash only) and equips it.
                                                                     UNPROVEN: that the tool changes the raw train rate
 
+     MUTE BOSS: the game's AreaController runs each boss chase on YOUR client (BossConfig speed vs your MovementSpeed,
+               x2.5 when you are slower) and reports the catch with BossCaught. A Cave boss (Balrog King, 410) out-runs
+               you, so its simulated chase sometimes touches you before the egg banks ("It took its egg back"). The toggle
+               mutes that listener while on. UNPROVEN: that the server has no catch fallback of its own.
+
      Learned live: with Auto Clone Farm on, a manual pickup on a base one of your clones is walking to was refused
      again and again; with clones off Steal ran clean. Steal now skips clone-targeted bases (still to confirm with both on).
 
@@ -40,11 +45,12 @@ local CHASE_MAX = 20 -- a chase whose Ended event never arrived stops blocking i
 local BASE_BENCH = 8 -- after a refusal the whole base is left alone this long: its boss may be busy with a clone, and the next-best egg is usually on the same base
 local ZONE_PARK = 300 -- ...for this long, then it gets another two tries
 local SETTLE_MAX = 0.6 -- the cap. Raise if pickups keep being refused right after the teleport
-local BANK_WAIT = 4 -- the stolen egg must show up in the bag inside this after the teleport to the spawn
+local STREAM_WAIT = 1.5 -- after teleporting to a hen, wait this long for its parts to stream in before aiming at it. Raise if refusals show "parts streamed false"
+local BANK_WAIT = 4 --the stolen egg must show up in the bag inside this after the teleport to the spawn
 local STEAL_GAP = 0.1 -- between steals
 local STEAL_FAILS = 6 -- this many refusals in a row and stealing pauses for STEAL_PAUSE
 local STEAL_PAUSE = 10
-local HEN_BENCH = 30 -- an egg the server refused is not tried again for this long (taken, or not ours to take)
+local HEN_BENCH = 120 -- an egg we took, or the server refused, is not tried again for this long. 30 was too short: the emptied hens came back off the bench and were refused, which parked the whole zone
 local HEN_BENCH_MAX = 600 -- ...a hen refused again and again doubles its wait up to this
 local TAKEN_BENCH = 5 -- an egg another player just took (EggTaken) is skipped for this long
 local BAG_MAX = 100 -- stealing pauses at this many eggs in the bag (the box in the panel changes it)
@@ -411,6 +417,7 @@ local stealFails, stealPausedUntil = 0, 0
 local zoneStrikes, zoneParked = {}, {} -- refusals in a row per zone / when its park ends
 local mutChecks, mutChecksOdd = 0, 0
 local chasing = {} -- base id -> deadline while its boss is chasing someone (BossChaseStarted .. Ended)
+local chaseStartedAt, timingLogs = {}, 0 -- base id -> clock of its last BossChaseStarted; steals timed so far (see the "timing:" line)
 -- Bases one of YOUR clones is walking to (CloneController replica, Clones[id].targetBaseId). A manual pickup on
 -- such a base was refused over and over for the same whale egg in a live run; UNPROVEN that this is why.
 local cloneTargets, cloneTargetsAt = {}, 0
@@ -432,6 +439,19 @@ local function cloneTargeted(base)
 	return cloneTargets[base] == true
 end
 local henFails = {} -- hen key -> refusals so far; each one doubles its bench
+local tookHen, lastSteal = {}, 0 -- hen keys we emptied (a refusal there is a stale hen, not a locked zone) / clock of the last clean steal
+-- Live run: emptied hens were refused again 80-110s later while still drawn on the base with their egg, and the
+-- server's reply carries no reason. So an emptied hen stays benched until its attributes CHANGE (the game putting a
+-- new egg there) instead of until a timer runs out. tookSig: false = baseline not read yet, string = the baseline.
+local tookSig, attrLogs = {}, 0
+local function attrSig(m)
+	local parts = {}
+	for k, v in pairs(m:GetAttributes()) do
+		parts[#parts + 1] = k .. "=" .. tostring(v)
+	end
+	table.sort(parts)
+	return table.concat(parts, " ")
+end
 local function isChasing(base)
 	return (chasing[base] or 0) > os.clock()
 end
@@ -456,6 +476,17 @@ local function bestHen()
 	local best
 	for _, h in ipairs(CollectionService:GetTagged("SpawnedBaseEgg")) do
 		local typ, base, idx = h:GetAttribute("EggType"), h:GetAttribute("BaseId"), h:GetAttribute("Placeholder")
+		local tk = base and idx and tookSig[henKey(base, idx)]
+		if tk ~= nil then
+			local key, sig = henKey(base, idx), attrSig(h)
+			if tk == false then
+				tookSig[key] = sig -- first look after the take: this is what an emptied hen looks like
+			elseif sig ~= tk then
+				log("hen changed since we took it, eligible again:", key, "was", tk, "now", sig)
+				tookSig[key], tookHen[key], henFails[key] = nil, nil, 0
+				benchUntil[key] = nil
+			end
+		end
 		if typ and base and idx and eggOn[typ] and h:IsDescendantOf(workspace) and not h:GetAttribute("EggHidden") and not benched(henKey(base, idx)) and not benched("base:" .. tostring(base)) and not isChasing(base) and not cloneTargeted(base) and not zoneIsParked(typ) then
 			local mut = henMutation(h)
 			if mutOn[mut] or not (MutationConfig and MutationConfig[mut]) then -- a mutation the dropdown does not know is stolen, not skipped
@@ -468,6 +499,110 @@ local function bestHen()
 		end
 	end
 	return best
+end
+
+local function distTo(m) -- studs from your root to the model's pivot, for the refusal log
+	local c = player.Character
+	local r = c and c:FindFirstChild("HumanoidRootPart")
+	return r and math.floor((r.Position - m:GetPivot().Position).Magnitude) or "?"
+end
+
+-- The hop into the spawn can be undone by the server, which leaves you beside the boss: "You were too slow to escape
+-- <boss>! It took its egg back." Timing showed the hop itself takes ~0ms and the chase starts at the pickup, so the
+-- only intermittent thing left is the hop not sticking. Called from every wait while banking: puts you back within a poll.
+local pinLogs = 0
+local function holdSpot(cf)
+	local c = player.Character
+	local r = c and c:FindFirstChild("HumanoidRootPart")
+	local off = r and (r.Position - cf.Position).Magnitude
+	if off and off > 8 then
+		if pinLogs < 6 then
+			pinLogs += 1
+			log(("the hop into the spawn did not stick (%d studs off), putting you back"):format(off))
+		end
+		tp(cf)
+	end
+end
+
+-- PROBE: the first steal after an idle stretch loses its egg ("took its egg back") while the ones chained after it bank,
+-- with identical timing. This prints the state at the moment the bag is checked, for the first 3 banked steals and the
+-- first 6 lost ones, so the two can be compared. Remove once the cause is known.
+local snapOk, snapBad = 0, 0
+-- PROBE: every server->client event around a steal on one clock, printed with the bank probe. Mute was ON and a Cave
+-- egg was still taken back, so either the controller is not really muted or the server decides on its own.
+local traceBuf, traceT0 = {}, 0
+local function trace(msg)
+	if #traceBuf < 40 and os.clock() - traceT0 < 8 then
+		traceBuf[#traceBuf + 1] = ("+%dms %s"):format((os.clock() - traceT0) * 1000, msg)
+	end
+end
+local function brief(...)
+	local parts = {}
+	for i = 1, select("#", ...) do
+		local v = select(i, ...)
+		parts[i] = type(v) == "table" and "table" or tostring(v)
+	end
+	return table.concat(parts, ", ")
+end
+local function bankSnap(sp, bankAt, onGround, idle)
+	local c = player.Character
+	local r = c and c:FindFirstChild("HumanoidRootPart")
+	local hum = c and c:FindFirstChildOfClass("Humanoid")
+	return ("Speed stat %s, WalkSpeed %s, inside spawn volume %s, %s studs from the bank spot, onGround %s, carried %d, idle before %ss, humanoid %s, velocity %s, player attrs [%s]"):format(
+		fmt(D().Speed or 0),
+		hum and tostring(hum.WalkSpeed) or "?",
+		tostring(r and insideBox(sp, r.Position)),
+		r and tostring(math.floor((r.Position - bankAt.Position).Magnitude)) or "?",
+		tostring(onGround),
+		carriedEggs(),
+		tostring(idle),
+		hum and hum:GetState().Name or "?",
+		r and tostring(math.floor(r.AssemblyLinearVelocity.Magnitude)) or "?",
+		attrSig(player)
+	)
+end
+
+-- boss chase -----------------------------------------------------------------
+-- The game's AreaController runs every boss chase as a CLIENT simulation: the boss walks at BossConfig.GetChaseSpeed
+-- (a boss faster than your MovementSpeed runs 2.5x) and when it touches you the client REPORTS it with BossCaught. A
+-- Cave boss (Balrog King, 410) beats your speed, so its simulated chase sometimes touches you before the server banks
+-- the egg: "You were too slow to escape ... It took its egg back". Muting AreaController's BossChaseStarted listener
+-- means the boss never chases, so nothing is ever reported. UNPROVEN: that the server has no fallback of its own.
+-- Restored from stopAll; a boss never started from here stays asleep on screen, nothing else changes.
+local mutedChase = {}
+local function setBossMute(on)
+	if not on then
+		for _, c in ipairs(mutedChase) do
+			pcall(function()
+				c:Enable()
+			end)
+		end
+		table.clear(mutedChase)
+		return true
+	end
+	local re = Services:FindFirstChild("AreaService") and Services.AreaService:FindFirstChild("RE")
+	local ev = re and re:FindFirstChild("BossChaseStarted")
+	if not (ev and getconnections) then
+		return false, "BossChaseStarted or getconnections is not available here"
+	end
+	local okG, list = pcall(function()
+		return getconnections(ev.OnClientEvent)
+	end)
+	for _, c in ipairs(okG and list or {}) do
+		local okS, scr = pcall(function()
+			return getfenv(c.Function).script
+		end)
+		-- by script name, never "all listeners": ours (below) is on the same event
+		if okS and typeof(scr) == "Instance" and scr.Name == "AreaController" and pcall(function()
+			c:Disable()
+		end) then
+			mutedChase[#mutedChase + 1] = c
+		end
+	end
+	if #mutedChase == 0 then
+		return false, "the game's AreaController listener was not found"
+	end
+	return true
 end
 
 local function stealOnce()
@@ -485,6 +620,7 @@ local function stealOnce()
 	local result = "fail"
 	local ran = claim(function()
 		local key = henKey(h.base, h.idx)
+		local idle = lastSteal > 0 and math.floor(os.clock() - lastSteal) or "never" -- seconds since the previous clean steal
 		local pos = h.m:GetPivot().Position
 		if carriedEggs() > 0 then
 			-- a carried egg that never banked refuses every later pickup (MaxPickup 1): bank it first
@@ -495,13 +631,30 @@ local function stealOnce()
 			end, BANK_WAIT)
 		end
 		tp(CFrame.new(pos + Vector3.new(0, 3, 0)))
+		-- A hen far from you replicates as a bare Model: its pivot is where the importer left it, not where the egg
+		-- is, and the pickup is range-checked. Wait for the parts to stream in, then aim again at the real spot.
+		local tArrive, tPick, retried = os.clock(), 0, false
+		traceT0 = tArrive
+		table.clear(traceBuf)
+		local gotParts = h.m:FindFirstChildWhichIsA("BasePart", true) ~= nil
+		if not gotParts then
+			gotParts = waitFor(function()
+				return h.m:FindFirstChildWhichIsA("BasePart", true) ~= nil
+			end, STREAM_WAIT)
+		end
+		local real = h.m:GetPivot().Position
+		if (real - pos).Magnitude > 3 then
+			pos = real
+			tp(CFrame.new(pos + Vector3.new(0, 3, 0)))
+		end
 		task.wait(math.max(settle, pingSec() * 3))
-		local replied, got = invoke("AreaService", "PickupEgg", h.base, h.idx)
+		local replied, got, why = invoke("AreaService", "PickupEgg", h.base, h.idx)
 		local clean = replied and got == true
 		if not clean then
 			-- refused: stale / taken egg, or the server had not seen us arrive yet. Once more, slower.
+			retried = true
 			task.wait(0.3)
-			replied, got = invoke("AreaService", "PickupEgg", h.base, h.idx)
+			replied, got, why = invoke("AreaService", "PickupEgg", h.base, h.idx)
 			if replied and got == true then
 				settle = math.min(SETTLE_MAX, settle + 0.1)
 				clean = true
@@ -509,9 +662,22 @@ local function stealOnce()
 		else
 			settle = math.max(SETTLE_MIN, settle * 0.95)
 		end
+		tPick = os.clock()
+		trace("pickup answered, clean = " .. tostring(clean))
+		if clean then
+			local baseModel = h.m.Parent
+			task.delay(1.2, function() -- is the boss actually chasing? the controller turns its highlight on in "Chasing"
+				local hl = baseModel and baseModel:FindFirstChild("ChaseHighlight", true)
+				trace("boss ChaseHighlight.Enabled = " .. tostring(hl and hl.Enabled))
+			end)
+		end
+		if clean and attrLogs < 3 then
+			attrLogs += 1
+			log("hen attrs at take:", attrSig(h.m)) -- compare with the refusal line's "hen attrs" to see what an emptied hen looks like
+		end
 		if not clean and refusalLogs < 8 then
 			refusalLogs += 1
-			log("pickup refused:", h.typ, "tier", h.tier, h.base, "base chasing", isChasing(h.base), "carried", carriedEggs(), "Chased", player:GetAttribute("Chased"), "settle", settle)
+			log("pickup refused:", h.typ, "tier", h.tier, h.base, "replied", replied, "got", got, "why", why, "stale hen", tookHen[key] == true, "since last steal", lastSteal > 0 and math.floor(os.clock() - lastSteal) or "never", "parts streamed", gotParts, "dist", distTo(h.m), "hen attrs", attrSig(h.m), "when emptied", tookSig[key], "base chasing", isChasing(h.base), "carried", carriedEggs(), "Chased", player:GetAttribute("Chased"), "settle", settle)
 		end
 		if not clean then
 			bench("base:" .. tostring(h.base), BASE_BENCH)
@@ -519,6 +685,11 @@ local function stealOnce()
 		local zk = zoneKey(h.typ)
 		if clean then
 			zoneStrikes[zk] = 0
+			tookHen[key] = true
+			tookSig[key] = false
+			lastSteal = os.clock()
+		elseif tookHen[key] then
+			-- a hen we already emptied refuses by definition: bench it (below), do not blame the zone
 		else
 			zoneStrikes[zk] = (zoneStrikes[zk] or 0) + 1
 			if zoneStrikes[zk] >= ZONE_STRIKES then
@@ -533,11 +704,21 @@ local function stealOnce()
 		bench(key, clean and HEN_BENCH or math.min(HEN_BENCH_MAX, HEN_BENCH * 2 ^ (henFails[key] - 1)))
 		local bankAt, onGround = bankCF(sp)
 		tp(bankAt) -- the spawn volume is what banks it; do not stay by the boss
+		if clean and timingLogs < 8 then
+			-- "You were too slow to escape <boss>! It took its egg back." is a clock somewhere; this says which leg eats it
+			timingLogs += 1
+			local cs = chaseStartedAt[h.base]
+			log(("timing: arrive->pickup %dms%s, pickup->in the spawn %dms, boss chase began %s"):format(
+				(tPick - tArrive) * 1000, retried and " (after a refused first try)" or "", (os.clock() - tPick) * 1000,
+				cs and ("%dms after arrival"):format((cs - tArrive) * 1000) or "no event"))
+		end
 		if clean and onGround then
 			waitFor(function()
+				holdSpot(bankAt)
 				return carriedEggs() > 0
 			end, 0.5) -- let the carried model appear before asking whether it is gone
 			if not waitFor(function()
+				holdSpot(bankAt)
 				return carriedEggs() == 0
 			end, 1.5) then
 				groundBank = false
@@ -547,6 +728,7 @@ local function stealOnce()
 		end
 		if clean then
 			local gained = waitFor(function()
+				holdSpot(bankAt)
 				for id in pairs(bagEggs()) do
 					if not before[id] then
 						return true
@@ -554,6 +736,15 @@ local function stealOnce()
 				end
 				return false
 			end, BANK_WAIT)
+			if (gained and snapOk < 3) or (not gained and snapBad < 6) then
+				if gained then
+					snapOk += 1
+				else
+					snapBad += 1
+				end
+				log("bank probe " .. (gained and "ok" or "LOST") .. ":", "boss mute listeners", #mutedChase, "|", bankSnap(sp, bankAt, onGround, idle))
+				log("events around this steal (ms after arriving):\n" .. table.concat(traceBuf, "\n"))
+			end
 			if gained then
 				result = "ok"
 				stats.stolen += 1
@@ -576,6 +767,9 @@ local function stealOnce()
 			else
 				result = "unbanked"
 				say("steal", "took an egg but the bag did not gain it")
+				-- the boss put the egg back on its hen: that hen is takeable again, not "emptied by us"
+				tookHen[key], tookSig[key], henFails[key] = nil, nil, 0
+				bench(key, BASE_BENCH)
 			end
 		end
 		if not onGround then
@@ -1066,6 +1260,33 @@ for _, cfg in ipairs(eggList) do
 end
 
 addToggle(Eggs, "Steal", "Auto Steal Egg", "Teleports to the best ticked egg on any base, takes it and teleports into the spawn volume to bank it. The boss never gets to chase you. Training keeps running", stealLoop)
+local muteBoss
+muteBoss = Eggs:AddToggle("MuteBoss", {
+	Text = "Mute boss chase (experimental)",
+	Tooltip = "Stops the game's client from chasing you after a steal, so a boss faster than you (Balrog King in the Cave) cannot take the egg back. On by default: with it on, Cave eggs banked 3 of 3. If the bag stops gaining, turn it off",
+	Default = true,
+	Callback = function(state)
+		local okM, why = setBossMute(state)
+		if state and not okM then
+			log(why)
+			pcall(function()
+				muteBoss:SetValue(false) -- re-enters with false, which restores nothing and is idempotent
+			end)
+		end
+	end,
+})
+-- Default does not fire the callback, so a toggle that starts on is armed by hand
+do
+	local okM, why = setBossMute(true)
+	if okM then
+		log("boss chase muted (" .. #mutedChase .. " listener)")
+	else
+		log("boss chase NOT muted:", why)
+		pcall(function()
+			muteBoss:SetValue(false)
+		end)
+	end
+end
 Eggs:AddDropdown("StealEggs", {
 	Text = "Eggs to steal",
 	Tooltip = "Rarest first. Untick the cheap ones to leave them to your clones. All are ticked to start with",
@@ -1257,15 +1478,30 @@ do
 	-- a boss mid-chase (a clone of yours or someone else's) may refuse pickups on its base
 	hook("BossChaseStarted", function(base)
 		chasing[base] = os.clock() + CHASE_MAX
+		chaseStartedAt[base] = os.clock()
 	end)
 	hook("BossChaseEnded", function(base)
 		chasing[base] = nil
 	end)
 end
 
+-- PROBE: feed the trace from every server->client event of the services that talk about eggs, bosses and notices
+for _, svcName in ipairs({ "AreaService", "NotificationService", "SoundService" }) do
+	local svc = Services:FindFirstChild(svcName)
+	local folder = svc and svc:FindFirstChild("RE")
+	for _, ev in ipairs(folder and folder:GetChildren() or {}) do
+		if ev:IsA("RemoteEvent") and ev.Name ~= "BaseSpawned" and ev.Name ~= "BaseRemoved" then
+			table.insert(conns, ev.OnClientEvent:Connect(function(...)
+				trace(svcName .. "." .. ev.Name .. " (" .. brief(...) .. ")")
+			end))
+		end
+	end
+end
+
 -- close ----------------------------------------------------------------------
 local function stopAll()
 	stripOn = false
+	setBossMute(false) -- the game's own boss controller must not stay muted after we leave
 	for _, l in ipairs({ stealLoop, placeLoop, hatchLoop, equipLoop, cloneLoop, trainLoop, upgradeLoop, toolLoop }) do
 		if l.on then
 			l.set(false) -- clones restore the old target, training stops
