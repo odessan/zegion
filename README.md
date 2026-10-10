@@ -63,6 +63,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Dig Into Secrets                    | `119409763193569` | `dig_into_secrets.lua`                 |
 | Dream Car Collection                | `76841016201110`  | `dream_car_collection.lua`             |
 | Don't Steal a Bobo                  | `120135584963579` | `dont_steal_a_bobo.lua`                |
+| Don't Steal My Egg                  | `135675416428111` | `dont_steal_my_egg.lua`                |
 | Drill Block for Dumpling Squishy    | `86943068337855`  | `drill_block_for_dumpling_squishy.lua` |
 | Drill Ores                          | `122572082932179` | `drill_ores.lua`                       |
 | Drop a Fruit                        | `82132121666307`  | `drop_a_fruit.lua`                     |
