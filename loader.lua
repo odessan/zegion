@@ -104,6 +104,7 @@ local GAMES = {
 	["106053668011557"] = "sword_to_loot.lua", -- Sword to Loot
 	["113220849219354"] = "swordwave_legend.lua", -- Swordwave Legend
 	["135675416428111"] = "dont_steal_my_egg.lua", -- Don't Steal My Egg
+	["70577084454790"] = "ghost_catcher.lua", -- Ghost Catcher
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.

@@ -64,6 +64,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Dream Car Collection                | `76841016201110`  | `dream_car_collection.lua`             |
 | Don't Steal a Bobo                  | `120135584963579` | `dont_steal_a_bobo.lua`                |
 | Don't Steal My Egg                  | `135675416428111` | `dont_steal_my_egg.lua`                |
+| Ghost Catcher                       | `70577084454790`  | `ghost_catcher.lua`                    |
 | Drill Block for Dumpling Squishy    | `86943068337855`  | `drill_block_for_dumpling_squishy.lua` |
 | Drill Ores                          | `122572082932179` | `drill_ores.lua`                       |
 | Drop a Fruit                        | `82132121666307`  | `drop_a_fruit.lua`                     |
