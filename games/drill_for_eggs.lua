@@ -69,6 +69,7 @@ local WALL_SETTLE = 0.4 -- after the TP onto a wall, how long the server needs t
 local WALL_TRIES = 4 -- Wall Broken fires per visit
 local WALL_WAIT = 0.8 -- how long one fire may take to show in BrokenWalls
 local WALL_RETRY = 20 -- a wall that would not break is left alone this long
+local EQUIP_EVERY = 1 -- Auto Equip Best looks at the inventory this often (equipBest itself is throttled by EQUIP_GAP)
 local SELL_EVERY = 1
 local SELL_GAP = 0.2
 local REBIRTH_EVERY = 3
@@ -224,7 +225,7 @@ end
 local running = true
 local conns = {}
 local want = {
-	farm = false, place = false, hatch = false, sell = false, gate = false,
+	farm = false, place = false, hatch = false, sell = false, gate = false, equip = false,
 	train = false, drill = false, trainUp = false, pen = false, walls = false, rebirth = false,
 }
 local zoneOn, rarityOn = {}, {}
@@ -921,6 +922,14 @@ end)
 loop("hatch", HATCH_EVERY, function()
 	return want.hatch
 end, hatchPass)
+loop("equip", EQUIP_EVERY, function()
+	return want.equip
+end, function()
+	local d = data()
+	if d and inventoryAnimals(d) > 0 then
+		equipBest()
+	end
+end)
 loop("sell", SELL_EVERY, function()
 	return want.sell
 end, sellPass)
@@ -1037,6 +1046,7 @@ toggle(Eggs, "Hatch", "Auto Hatch Eggs", "Opens every egg of yours the moment it
 toggle(Eggs, "Sell", "Sell Overflow Animals", "With the pen full a hatched animal lands in your inventory: Equip Best puts the strongest on the plot, then the weaker ones are sold", "sell")
 toggle(Eggs, "Gate", "Pause Trips When Pen Full", "Skips egg trips while animals plus growing eggs fill every slot, so no trip ends in overflow", "gate")
 
+toggle(Grow, "Equip", "Auto Equip Best", "Whenever an animal sits in your inventory, the game's Equip Best puts the strongest animals on the plot. Works on its own, with or without Auto Hatch and Sell", "equip")
 toggle(Grow, "Train", "Auto Train", "Fires clicks at ~9/s and parks you in your plot's training zone when no egg trip needs you (x the AutoTrainer tier there)", "train")
 toggle(Grow, "Drill", "Auto Upgrade Drill", "Buys the best drill you can pay for in cash: stronger clicks, and it raises the cap of every other upgrade", "drill")
 toggle(Grow, "TrainUp", "Auto Upgrade Train", "Free AutoTrainer ore tiers and WalkSpeed levels, up to the drill cap", "trainUp")
