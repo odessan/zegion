@@ -67,6 +67,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Ghost Catcher                       | `70577084454790`  | `ghost_catcher.lua`                    |
 | Drill for Eggs                      | `120656419209274` | `drill_for_eggs.lua`                   |
 | Killstreak                          | `108448382032231` | `killstreak.lua`                       |
+| Warrior Evolution                   | `96124247562170`  | `warrior_evolution.lua`                |
 | Drill Block for Dumpling Squishy    | `86943068337855`  | `drill_block_for_dumpling_squishy.lua` |
 | Drill Ores                          | `122572082932179` | `drill_ores.lua`                       |
 | Drop a Fruit                        | `82132121666307`  | `drop_a_fruit.lua`                     |
