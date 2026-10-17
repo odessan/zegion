@@ -108,6 +108,7 @@ local GAMES = {
 	["120656419209274"] = "drill_for_eggs.lua", -- Drill for Eggs
 	["108448382032231"] = "killstreak.lua", -- Killstreak
 	["96124247562170"] = "warrior_evolution.lua", -- Warrior Evolution
+	["110432290690507"] = "hike_for_eggs.lua", -- Hike for Eggs
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
