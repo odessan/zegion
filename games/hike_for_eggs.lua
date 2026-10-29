@@ -19,6 +19,8 @@
                 walks home (the egg banks as a Tool the moment you cross the pen line). A direct EggGrab starts no
                 guardian chase: the chase belongs to the game's own prompt handler, which never ran, so nothing
                 ever sends Caught. Probed at stage 4 (walk 7s there, 6.5s back, Secured).
+     RENDER   : optional. The game's client builds an egg model only within 600 studs of you; this builds and shows
+                all 136 (34 stages x 4) through the game's own buildEgg, so the upper stages exist from the base.
      PLACE    : Place "Egg" at a free spot of your pen floor, from the belt (probed: HatchingEggs 0 -> 1).
      HATCH    : OpenEgg(id) the moment the egg's timer is up, from wherever you are (the "Growing eggs" panel's Open
                 button; probed at z = -503 mid-steal-trip). Bare "Hatch" fired from the belt was ignored.
@@ -35,9 +37,14 @@
        Hatch fired from the belt                  ignored
      Not wired (Robux): InstantHatch, GrowAll, SkipRebirth, Offline4x, Robux twins of upgrades, PortableTreadmill.
      Not wired (not asked): trails, group claim, codes, the Magnet upgrade (pickup reach, no use here).
-     Movement: walk only (Humanoid:MoveTo at the game's own speed, ~75 studs/s). Hops of 5-30 studs held when probed,
-                but a walk is faster than a short hop chain and the dossier rates teleports KICK-WEIGHTED.
+     Movement: walks by default (Humanoid:MoveTo at the game's own speed, ~75 studs/s). The optional "Teleport to eggs"
+                toggle hops out (830 studs held, no egg in hand) and glides the carried egg home at 140 studs/s: a hop
+                of 207+ studs with the egg in hand is answered with EggEvent Dropped, 92 held. Dossier rates teleports
+                KICK-WEIGHTED; user said yes to the test 2026-10-18, nothing above 830 studs was tried.
      Egg stages above 24 sit on a second trail (x 250 -> 2300) the walk does not know the route to: EGG_STAGE_CEIL.
+                Teleport lifts it (a hop needs no route). PlaceVersion 580 (2026-10-28): 57 stages, rarities up to
+                Exalted; after a hop EggGrab says false for a few seconds (0.35s, 2.4s) and true at ~6s, so a teleport
+                trip retries for GRAB_TP_WAIT. Live: 8 of 8 Empyrean/Primordial eggs banked from stages 38-47, 11-31s a trip.
 
      RightControl opens / closes the panel (so does the Zegion logo).
      Stop: getgenv().hikeEggsStop() ]]
@@ -58,6 +65,7 @@ local STUCK_AFTER = 4 -- no progress for this long on a walk leg = stuck, the le
 local GRAB_DWELL = 0.35 -- after SwimStage matches, before EggGrab. The server reads where it thinks we are; raise if grabs say false
 local GRAB_TRIES = 3
 local GRAB_GAP = 0.4
+local GRAB_TP_WAIT = 8 -- after a hop the server refuses EggGrab for a few seconds (false at 0.35s and 2.4s, true at ~6s; v580)
 local BANK_WAIT = 4 -- after reaching the belt, CarryRarity must clear inside this
 local EGG_BENCH = 25 -- an egg the server refused sits out this long
 local PLACE_EVERY = 0.7
@@ -173,6 +181,7 @@ for i, name in ipairs(Config.RarityNames) do
 	RANK[name] = i
 end
 
+local conns = {} -- every connection the script holds; disconnected in stopAll
 local stats = { clicks = 0, stolen = 0, lost = 0, placed = 0, hatched = 0, poles = 0, ups = 0, quests = 0, boosts = 0, rebirths = 0, camps = 0 }
 
 -- breadcrumbs: every loop marks its step, a watchdog names the one that stopped moving
@@ -637,6 +646,7 @@ assert(unlockedStage(1) == 1 and unlockedStage(0) == 0 and unlockedStage(9) == 2
 
 local wantRarity = {} -- ticked rarity names (own copy; the dropdown's table is mutated in place)
 local maxStageBox = 0 -- 0 = auto (every unlocked stage up to the ceiling)
+local tpEggs = false -- the Teleport toggle; a hop needs no route, so it lifts EGG_STAGE_CEIL
 
 local function weakestPlacedRank(st)
 	local w
@@ -676,6 +686,20 @@ local function eggTools()
 	return out
 end
 
+local STAGE_RETRY_LEVELS = 15 -- a refused stage is tried again after this many Levels, or after a rebirth
+local stageParked -- { stage, rb, level } of the lowest stage the server refused
+local function stageIsParked(stage, st)
+	local p = stageParked
+	if not p then
+		return false
+	end
+	if (st.Rebirths or 0) ~= p.rb or (st.Level or 0) >= p.level + STAGE_RETRY_LEVELS then
+		stageParked = nil
+		return false
+	end
+	return stage >= p.stage
+end
+
 -- Best egg: the highest ticked rarity of an unlocked, live, untaken egg, nearest stage on a tie.
 local function pickEgg(st)
 	local eggs, cycle, live = nestEggs()
@@ -683,7 +707,7 @@ local function pickEgg(st)
 		return nil, "nests reset"
 	end
 	local ceil = maxStageBox > 0 and maxStageBox or math.huge
-	local maxStage = math.min(unlockedStage(st.Level or 1), EGG_STAGE_CEIL, ceil)
+	local maxStage = math.min(unlockedStage(st.Level or 1), tpEggs and math.huge or EGG_STAGE_CEIL, ceil)
 	local floorRank = penFull(st) and (weakestPlacedRank(st) or 0) or 0
 	local best
 	for _, e in ipairs(eggs) do
@@ -692,13 +716,111 @@ local function pickEgg(st)
 		local rarity = bonus and (RANK[bonus] or 0) > (RANK[e.rarity] or 0) and bonus or e.rarity
 		local rk = RANK[rarity] or 0
 		local taken = NestEggs and NestEggs:GetAttribute(e.id .. "_Taken") == true
-		if e.stage <= maxStage and wantRarity[rarity] and rk > floorRank and not taken and not benched("egg" .. e.id .. "@" .. cycle) then
+		if e.stage <= maxStage and not stageIsParked(e.stage, st) and wantRarity[rarity] and rk > floorRank and not taken and not benched("egg" .. e.id .. "@" .. cycle) then
 			if not best or rk > best.rk or (rk == best.rk and e.stage < best.e.stage) then
 				best = { e = e, rk = rk, rarity = rarity }
 			end
 		end
 	end
 	return best and best.e, maxStage, best and best.rarity
+end
+
+-- eggs: teleport legs ----------------------------------------------------------
+-- Probed 2026-10-18 on request: with no egg in hand a CFrame hop of 830 studs is kept (stage 7, 5 of 5 trips clean at
+-- 92 / 207 / 314 / 430 / 700 / 830). A hop of 207+ studs WITH an egg in hand is answered with EggEvent "Dropped" (the egg
+-- goes back to the nest), 92 held. A smooth glide of the carried egg at 100 and 140 studs/s banks (Config.HikeMaxSpeed
+-- is 153), 6 of 6. So: one hop out, a 140 studs/s glide home. Stage 7 takes ~9s instead of ~22s on foot.
+local TP_HOP_MAX = 800 -- studs per hop out (830 held); longer legs are cut into hops this long
+local TP_HOP_GAP = 0.35 -- after a hop, the position must still be there (a pull-back shows inside this)
+local TP_REVERT = 15 -- studs off the written spot after the gap = the hop was undone
+local TP_CARRY_SPEED = 140 -- studs/s of the carried-egg glide; backs off x0.85 on every Dropped, floor is walking speed
+local TP_CARRY_MIN = 80
+local tpHopMax, tpCarry = TP_HOP_MAX, TP_CARRY_SPEED
+local lastEggEvent = { nil, 0 } -- kind, clock of the last EggEvent the server sent
+table.insert(conns, Remotes.EggEvent.OnClientEvent:Connect(function(kind)
+	lastEggEvent = { kind, os.clock() }
+end))
+
+local function hopTo(pos, stopped)
+	local r = root()
+	if not r then
+		return false, "dead"
+	end
+	local start = r.Position
+	local n = math.max(1, math.ceil(flat(start, pos) / tpHopMax))
+	for i = 1, n do
+		if stopped and stopped() then
+			return false, "stopped"
+		end
+		local r2 = root()
+		if not r2 then
+			return false, "dead"
+		end
+		-- a middle hop lands 40 studs up (the ground under a straight line from the hub to a high stage is not
+		-- the line), the last one exactly on the egg; the revert check is horizontal because the body falls after a hop
+		local p = start:Lerp(pos, i / n) + Vector3.new(0, i < n and 40 or 3, 0)
+		r2.CFrame = CFrame.new(p) * (r2.CFrame - r2.CFrame.Position)
+		r2.AssemblyLinearVelocity = Vector3.zero
+		task.wait(TP_HOP_GAP)
+		r2 = root()
+		if not r2 or flat(r2.Position, p) > TP_REVERT then
+			tpHopMax = math.max(60, tpHopMax * 0.6)
+			first("hop-reverted", i, "of", n, "hop max now", tpHopMax)
+			return false, "reverted"
+		end
+	end
+	return true
+end
+
+-- back to the belt without an egg: hops, then a settle on the belt (the train loop would walk it, 40s from stage 16)
+local function tpHome()
+	local b = beltPos()
+	if tpEggs and b then
+		hopTo(b)
+	end
+end
+
+-- Keeps the character jumping while an egg is carried home (asked for by the user). Visual with a glide, which writes
+-- the position itself; on a walk it is the real jump input.
+local jumpHome = true
+local function jumpWhile(active)
+	task.spawn(function()
+		while active() do
+			local h = hum()
+			if h then
+				h:ChangeState(Enum.HumanoidStateType.Jumping)
+			end
+			task.wait(0.35)
+		end
+	end)
+end
+
+-- a smooth per-Heartbeat glide: the server sees a continuous speed under its cap instead of one big jump
+local function glideTo(pos, speed, maxS)
+	local t0, last, pulled = os.clock(), nil, 0
+	while os.clock() - t0 < maxS do
+		local dt = RunService.Heartbeat:Wait()
+		local r = root()
+		if not r then
+			return false, "dead"
+		end
+		local cur = r.Position
+		if last then
+			pulled = (cur - last).Magnitude > 10 and pulled + 1 or 0
+			if pulled >= 3 then
+				return false, "pulled"
+			end
+		end
+		local d = pos - cur
+		if d.Magnitude < 4 then
+			return true
+		end
+		local nxt = cur + d.Unit * math.min(d.Magnitude, speed * dt)
+		r.CFrame = CFrame.new(nxt) * (r.CFrame - r.CFrame.Position)
+		r.AssemblyLinearVelocity = Vector3.zero
+		last = nxt
+	end
+	return false, "timeout"
 end
 
 -- eggs: steal ------------------------------------------------------------------
@@ -708,7 +830,12 @@ end
 
 makeLoop("steal", 0.4, function(on)
 	local st = state()
-	if busy or next(waiting) ~= nil or not st or not alive() or #eggTools() >= EGG_BACKLOG then
+	if busy or next(waiting) ~= nil or not st or not alive() then
+		return
+	end
+	-- the backlog only waits for Auto place to drain it; with place off the bag is where the eggs are meant to go
+	if loops.place.on and #eggTools() >= EGG_BACKLOG then
+		say("waiting for " .. #eggTools() .. " eggs to be placed")
 		return
 	end
 	local e, info, rarity = pickEgg(st)
@@ -724,9 +851,27 @@ makeLoop("steal", 0.4, function(on)
 		step("steal", "walk " .. e.id)
 		say(("egg %s %s (stage %d)"):format(e.id, rarity, e.stage))
 		local t0 = os.clock()
-		local okW, why = navTo(e.pos, 4, WALK_CAP, function()
-			return not on()
-		end)
+		local okW, why
+		if tpEggs then
+			-- a revert shrinks tpHopMax, so the next try from where we were left uses shorter hops
+			for _ = 1, 3 do
+				okW, why = hopTo(e.pos, function()
+					return not on()
+				end)
+				if why ~= "reverted" then
+					break
+				end
+			end
+			if not okW and why == "reverted" then
+				okW, why = navTo(e.pos, 4, WALK_CAP, function()
+					return not on()
+				end) -- the walk takes over from wherever the hop left us
+			end
+		else
+			okW, why = navTo(e.pos, 4, WALK_CAP, function()
+				return not on()
+			end)
+		end
 		if not okW then
 			if why ~= "stopped" then
 				bench[key] = os.clock() + EGG_BENCH
@@ -743,7 +888,9 @@ makeLoop("steal", 0.4, function(on)
 		task.wait(GRAB_DWELL)
 		step("steal", "grab " .. e.id)
 		local got = false
-		for try = 1, GRAB_TRIES do
+		local g0, try = os.clock(), 0
+		while try < GRAB_TRIES or (tpEggs and os.clock() - g0 < GRAB_TP_WAIT) do
+			try += 1
 			if not on() then
 				return
 			end
@@ -761,12 +908,33 @@ makeLoop("steal", 0.4, function(on)
 		if not got then
 			bench[key] = os.clock() + EGG_BENCH
 			stats.lost += 1
+			-- the server refuses a stage you are not allowed into (stage 18 at Level 216, stage 16 taken): park it
+			-- and everything above it until the Level has grown or a rebirth happened
+			if not (NestEggs and NestEggs:GetAttribute(e.id .. "_Taken") == true) then -- not just beaten to it
+				stageParked = { stage = e.stage, rb = st.Rebirths or 0, level = st.Level or 0 }
+				log(("stage %d refused (level %d): parked until level %d or a rebirth"):format(e.stage, st.Level or 0, (st.Level or 0) + STAGE_RETRY_LEVELS))
+			end
+			tpHome()
 			return
 		end
 		step("steal", "home " .. e.id)
-		goHome(function()
-			return false -- an egg in hand is carried home even if the toggle goes off
-		end)
+		if jumpHome then
+			jumpWhile(carrying)
+		end
+		local b = beltPos()
+		if tpEggs and b then
+			local okG, whyG = glideTo(b, tpCarry, WALK_CAP)
+			if not okG then
+				first("glide-failed", e.id, whyG, "speed", tpCarry)
+				goHome(function()
+					return false
+				end)
+			end
+		else
+			goHome(function()
+				return false -- an egg in hand is carried home even if the toggle goes off
+			end)
+		end
 		local b0 = os.clock()
 		while carrying() and os.clock() - b0 < BANK_WAIT do
 			task.wait(0.1)
@@ -774,11 +942,91 @@ makeLoop("steal", 0.4, function(on)
 		if carrying() then
 			stats.lost += 1
 			first("bank-failed", e.id, root() and root().Position)
+		elseif lastEggEvent[1] == "Dropped" and os.clock() - lastEggEvent[2] < BANK_WAIT + 3 then
+			stats.lost += 1
+			if tpEggs then
+				tpCarry = math.max(TP_CARRY_MIN, tpCarry * 0.85)
+			end
+			log(("dropped %s on the way home (carry glide now %d studs/s)"):format(e.id, tpCarry))
 		else
 			stats.stolen += 1
-			log(("banked %s %s stage %d: %.1fs walk out, %.1fs total"):format(e.id, rarity, e.stage, tWalk, os.clock() - t0))
+			log(("banked %s %s stage %d: %.1fs out, %.1fs total%s"):format(e.id, rarity, e.stage, tWalk, os.clock() - t0, tpEggs and " (teleport)" or ""))
 		end
 	end)
+end)
+
+-- eggs: render all -------------------------------------------------------------
+-- The game's own client builds and shows an egg model only within 600 studs of you (SwimNestsClient, a local cull,
+-- not Roblox streaming), so from the base nothing above stage ~2 exists as an Instance. Its records are tables of
+-- ours to reach through getgc: build the far ones with the game's own buildEgg and park them in LocalNests.Eggs.
+-- Each record's `shown` is set to false: the game re-parents a model only when its idea of "shown" changes, so a
+-- shown = true record is culled again within 0.1s (probed: 25 left of 136), a false one holds (134).
+local RENDER_BUILDS = 6 -- buildEgg calls per pass; the game itself allows 2 per tick
+local nestRecs, nestBuild
+local function nestRecords()
+	if nestRecs then
+		return nestRecs, nestBuild
+	end
+	if not getgc then
+		return nil
+	end
+	-- the records first: a getgc(false) call earlier in the same chunk made the getgc(true) scan come back empty (probed)
+	local recs = {}
+	for _, t in ipairs(getgc(true)) do
+		if type(t) == "table" and type(rawget(t, "id")) == "string" and rawget(t, "id"):match("^Egg_%d+_%d+$") then
+			recs[#recs + 1] = t
+		end
+	end
+	local build
+	for _, f in ipairs(getgc()) do
+		if type(f) == "function" and islclosure and islclosure(f) then
+			local okI, info = pcall(debug.getinfo, f)
+			if okI and info.name == "buildEgg" and tostring(info.source):find("SwimNestsClient") then
+				build = f
+				break
+			end
+		end
+	end
+	if #recs > 0 and build then
+		nestRecs, nestBuild = recs, build
+	end
+	return nestRecs, nestBuild
+end
+
+makeLoop("render", 0.5, function()
+	local recs, build = nestRecords()
+	if not recs then
+		first("render-unavailable", getgc ~= nil)
+		return
+	end
+	local nests = workspace:FindFirstChild("LocalNests")
+	local folder = nests and nests:FindFirstChild("Eggs")
+	if not folder or not NestEggs or not NestConfig.live(NestConfig.now()) then
+		return -- the 10s blackout between cycles: the game hides every egg itself
+	end
+	local builds = 0
+	for _, r in ipairs(recs) do
+		local taken = NestEggs:GetAttribute(r.takenKey) == true
+		if not r.kind then
+			r.kind = NestEggs:GetAttribute(r.speciesKey) or r.rarity
+		end
+		if r.kind and r.built ~= r.kind and builds < RENDER_BUILDS and not taken then
+			builds += 1
+			local okB, err = pcall(build, r)
+			if not okB then
+				first("render-build-failed", r.id, err)
+			end
+		end
+		local model = r.model
+		if model then
+			local want = not taken and folder or nil
+			if model.Parent ~= want then
+				model.Parent = want
+			end
+			r.shown = false
+		end
+	end
+	first("render", #recs, "eggs, now", #folder:GetChildren(), "in LocalNests.Eggs")
 end)
 
 -- eggs: place ------------------------------------------------------------------
@@ -1148,6 +1396,24 @@ Eggs:AddInput("MaxStage", {
 		maxStageBox = math.max(0, math.floor(tonumber(text) or 0))
 	end,
 })
+toggle(Eggs, "Render", "Render every nest egg", "The game only builds an egg within 600 studs of you, so from the base the upper stages are empty. This builds and shows all 34 stages (visual only: you still have to be close to take one). Not part of Everything", "render")
+table.remove(masters)
+Eggs:AddToggle("Teleport", {
+	Text = "Teleport to eggs",
+	Tooltip = "Hops to the egg (up to 800 studs a hop) and glides the carried egg home at ~140 studs/s: stage 7 in ~9s instead of ~22s on foot. A big jump with an egg in hand makes the server drop it, hence the glide. Kick-weighted game: off by default, not part of Everything. Falls back to walking if a hop is undone",
+	Default = false,
+	Callback = function(state)
+		tpEggs = state
+	end,
+})
+Eggs:AddToggle("JumpHome", {
+	Text = "Jump while running home",
+	Tooltip = "Keeps jumping while a stolen egg is carried back to the pen",
+	Default = true,
+	Callback = function(state)
+		jumpHome = state
+	end,
+})
 toggle(Eggs, "Place", "Auto place eggs", "Puts the egg in your hand on a free spot of your pen floor", "place")
 toggle(Eggs, "Hatch", "Auto hatch", "Walks to a finished egg and presses its prompt", "hatch")
 toggle(Eggs, "Equip", "Auto equip best pets", "EquipBestPets whenever a pet sits unplaced", "equip")
@@ -1174,7 +1440,6 @@ Extra:AddToggle("All", {
 	end,
 })
 
-local conns = {}
 local VirtualUser = game:GetService("VirtualUser")
 table.insert(conns, player.Idled:Connect(function()
 	pcall(function()
@@ -1223,6 +1488,9 @@ Window:AddSettingsTab("HikeForEggs", { "All" })
 local function stopAll()
 	for _, L in pairs(loops) do
 		L.set(false)
+	end
+	for _, r in ipairs(nestRecs or {}) do
+		r.shown = nil -- the game re-derives every egg's parent on its next tick
 	end
 	watching = false
 	for _, c in ipairs(conns) do
