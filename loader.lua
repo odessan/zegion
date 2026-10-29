@@ -110,6 +110,7 @@ local GAMES = {
 	["96124247562170"] = "warrior_evolution.lua", -- Warrior Evolution
 	["110432290690507"] = "hike_for_eggs.lua", -- Hike for Eggs
 	["126826719421373"] = "rescue_a_fish.lua", -- Rescue a Fish
+	["120219252362013"] = "give_food_for_animals.lua", -- Give Food for Animals
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
