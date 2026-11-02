@@ -113,6 +113,7 @@ local GAMES = {
 	["120219252362013"] = "give_food_for_animals.lua", -- Give Food for Animals
 	["72858262610964"] = "tap_simulator.lua", -- Tap Simulator
 	["113742027864370"] = "cut_a_rock.lua", -- Cut a Rock
+	["97289366402005"] = "fake_an_egg.lua", -- Fake an Egg
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.

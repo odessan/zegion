@@ -65,6 +65,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Dream Car Collection                | `76841016201110`  | `dream_car_collection.lua`             |
 | Don't Steal a Bobo                  | `120135584963579` | `dont_steal_a_bobo.lua`                |
 | Don't Steal My Egg                  | `135675416428111` | `dont_steal_my_egg.lua`                |
+| Fake an Egg                         | `97289366402005`  | `fake_an_egg.lua`                      |
 | Ghost Catcher                       | `70577084454790`  | `ghost_catcher.lua`                    |
 | Drill for Eggs                      | `120656419209274` | `drill_for_eggs.lua`                   |
 | Killstreak                          | `108448382032231` | `killstreak.lua`                       |
