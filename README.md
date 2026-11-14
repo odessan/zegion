@@ -114,6 +114,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Tap Simulator                       | `72858262610964`  | `tap_simulator.lua`                    |
 | Build an Ant Empire                 | `78490532994307`  | `build_an_ant_empire.lua`              |
 | Anime Dice                          | `113290951185459` | `anime_dice.lua`                       |
+| Anime Farm                          | `81833593897486`  | `anime_farm.lua`                       |
 | +1 TNT Mining                       | `101304595834078` | `plus_one_tnt_mining.lua`              |
 | Ride a Pet                          | `124216119978534` | `ride_a_pet.lua`                       |
 | Roll a Fisherman                    | `90920025162454`  | `roll_a_fisherman.lua`                 |
