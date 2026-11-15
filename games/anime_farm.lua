@@ -43,6 +43,10 @@
                Cursed + 5 Transcendent; or a BluetoothPotion). Refused silently, nothing spent. So a TRIP: unplace,
                hop there, roll up to ROLL_BATCH, hop back, place on the same dropper (the slot is held meanwhile).
                Live: DEAki F -> A in 10 token rolls, ~3.5s of travel a trip, unit back on its dropper.
+               Stands on the ground just outside the stall on the side it came from (13 from the hitbox centre,
+               in range); the centre itself is the awning. Twins (two fresh TIHange) made the trip take the wrong
+               one off and give up every few seconds: it now rolls the twin. A removal the mirror confirmed late
+               left the unit in the backpack: it now waits 3s more. Neither branch has been staged live.
      TRAIT   : RerollPlayerUnitTrait(guid, currentTrait), Trait tokens only, same stop-at-target rule, same v15
                gate and trip at the TraitsHitbox (~145 studs). Live: MAHimmel FortuneI -> FortuneIII in 16.
                A roll replaces, so running out of tokens mid-chase can leave a unit worse than it started.
@@ -100,7 +104,8 @@ local GRADE_GAP = 0.8 -- fallback roll gap; the real one is GradeService.GetRero
 local HOP_MAX = 40 -- studs per hop (Z.moves 2026-11-14: 40 held, 80 reverted); a revert drops it to 60% and walks the rest
 local HOP_GAP = 0.35 -- after a hop the position must still be there; a pull-back shows inside this
 local WALK_TIMEOUT = 40 -- a walk (after a hop was undone) gives up after this
-local STAND_IN = 8 -- studs from the station's hitbox to stop at; the server allows GradeService.ROLL_RANGE (25)
+local STAND_IN = 4 -- studs from the spot in front of the stall to stop at; the server allows GradeService.ROLL_RANGE (25) from its centre
+local STAND_OFF = 2 -- studs outside the stall's hitbox edge to stand (the spot is 13 from its centre)
 local ARRIVE_SETTLE = 0.5 -- after arriving, before the first roll: the server has to see you there
 local ROLL_BATCH = 30 -- rolls per trip before going home to put the unit back (bounds how long its slot sits empty)
 local ROLL_DUD = 4 -- this many rolls in a row that spend nothing = the server is refusing; go home
@@ -622,8 +627,9 @@ local function bestSpare()
 end
 
 -- RemovePlayerUnitFromDropper(part) -> the guid that came off. The dropper carries no guid and the data no
--- dropper, so it is whichever placed unit turned unequipped.
-local function unplace(d)
+-- dropper, so it is whichever placed unit turned unequipped, `want` first: another loop taking a unit off in
+-- the same instant must not be read as ours.
+local function unplace(d, want)
 	local before = {}
 	for guid, u in pairs(data().PlayerUnits or {}) do
 		if u.Equipped then
@@ -637,6 +643,10 @@ local function unplace(d)
 			return false
 		end
 		local units = data().PlayerUnits or {}
+		if want and before[want] and not (units[want] and units[want].Equipped) then
+			off = want
+			return true
+		end
 		for guid in pairs(before) do
 			if not (units[guid] and units[guid].Equipped) then
 				off = guid
@@ -998,6 +1008,21 @@ local function dropperOf(u)
 	return nil
 end
 
+-- The ground just outside a stall, on the side you come from. The hitbox is an invisible 22x22x16 box around the
+-- whole stall, so its centre + a hop's lift stood you on the awning (roof y 15.4, ground 3.5).
+local function standSpot(st, from)
+	local dir = Vector3.new(from.X - st.Position.X, 0, from.Z - st.Position.Z)
+	dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(0, 0, 1)
+	local p = st.Position + dir * (math.max(st.Size.X, st.Size.Z) / 2 + STAND_OFF)
+	local rp = RaycastParams.new()
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.FilterDescendantsInstances = { player.Character }
+	rp.RespectCanCollide = true
+	local top = st.Position.Y + st.Size.Y / 2
+	local hit = workspace:Raycast(Vector3.new(p.X, top, p.Z), Vector3.new(0, -top - 50, 0), rp)
+	return Vector3.new(p.X, hit and hit.Position.Y or p.Y, p.Z) -- travel() adds the 3-stud lift
+end
+
 -- spec = { slot, tag, spent() -> number that drops when a roll is paid, blocked(u) -> reason or nil, roll(guid, u) }
 local function trip(spec, guid, alive)
 	local u = (data().PlayerUnits or {})[guid]
@@ -1012,11 +1037,31 @@ local function trip(spec, guid, alive)
 	local home = r.Position
 	moving, away[guid] = true, d
 	step(spec.slot, "unplace " .. u.PlayerUnitName)
-	local off = unplace(d)
+	local off = unplace(d, guid)
+	-- The slot emptied but the data mirror had not shown our unit unequipped inside CONFIRM: it is ours, just late.
+	-- Giving up here left it in the backpack with nothing holding its slot (live, 2026-11-15: TIHange, slot empty).
+	if
+		not off
+		and d:GetAttribute("Type") == nil
+		and waitFor(function()
+			local x = (data().PlayerUnits or {})[guid]
+			return x ~= nil and not x.Equipped
+		end, 3)
+	then
+		off = guid
+	end
+	-- Two fresh units from the same box (TIHange x2: same variant, L1, no grade, no trait) are twins on the plot,
+	-- so dropperOf can hand back the other one's slot. That twin IS this unit in every way a roll cares about:
+	-- roll it. Before this, the trip put it back and warned, and picked the same pair every few seconds.
+	local twin = off and off ~= guid and (data().PlayerUnits or {})[off]
+	if twin and twin.PlayerUnitName == u.PlayerUnitName and twin.Variant == u.Variant and twin.Level == u.Level and twin.Grade == u.Grade and twin.Trait == u.Trait then
+		away[guid], away[off] = nil, d
+		guid, u = off, twin
+	end
 	if off ~= guid then
 		away[guid] = nil
 		if off then
-			place(d, off) -- the match took a twin; put it back
+			place(d, off) -- someone else's unit came off this slot; put it back
 		end
 		moving = false
 		say(spec.slot, "WARN could not take " .. u.PlayerUnitName .. " off its slot")
@@ -1025,7 +1070,7 @@ local function trip(spec, guid, alive)
 	end
 	local good, err = pcall(function()
 		step(spec.slot, "travel")
-		if not (GS.CanReachRollStation(player, spec.tag) or travel(st.Position, STAND_IN)) then
+		if not (GS.CanReachRollStation(player, spec.tag) or travel(standSpot(st, home), STAND_IN)) then
 			say(spec.slot, "WARN could not reach the " .. spec.tag)
 			return
 		end
