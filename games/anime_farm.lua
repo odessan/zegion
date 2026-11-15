@@ -1,6 +1,6 @@
 --[[ Anime Farm -- sell crates, level units, roll + buy + place + open boxes, upgrades, grades, rewards (81833593897486)
-     PlaceVersion 14. Nothing here moves the character: every remote below was accepted from 55-74 studs away
-     (the plot is ~120 studs across), so the script stands wherever you leave it.
+     PlaceVersion 15. Only Grade and Trait move the character (v15 made both rolls need you at the stand); every
+     other remote below was accepted from 55-74 studs away (the plot is ~120 studs across).
 
      SELL    : PickupCrateBox(CollectPart) takes every pending ball as one crate Tool (889 balls = 27.3M in one go),
                then SellCrate(crate InventoryKey) pays it out, 0.1s later, from 55 studs off the sell NPC.
@@ -16,8 +16,13 @@
                price). It is placed on a free slot (the weakest unit is removed to the backpack when there is none)
                with PlaceBoxOnDropper(part, box, variant), and OpenBoxOnDropper(part) (InvokeServer -> unit name,
                variant) the moment BoxService.IsBoxReady says so. The unit lands on that dropper.
-     EQUIP   : the game's own EquipBestPlayerUnits: one call refills and re-sorts every slot best-first, boxes
-               left alone (client gate 3s).
+     EQUIP   : RemovePlayerUnitFromDropper(part) + PlacePlayerUnitOnDropper(part, guid), our own rule. A free slot
+               gets the best backpack unit at equal level (L1 drop); a full plot swaps the weakest placed unit
+               (drop now) for it when its L1 drop is higher (strict, so no ping-pong) and judge() says the levelling
+               pays back. NOT the game's EquipBestPlayerUnits: that ranks by drop now, so a fresh L1 Unbound GRYuno
+               (1.57M, 20x at equal level) stayed in the backpack behind a L36 NIKakashi (4.04M), and it would put
+               Kakashi straight back over Yuno after our swap. Live: Kakashi-over-Yuno swapped back in 2s, stayed.
+               Droppers carry no guid and the data no dropper: unplace() reads which guid turned unequipped.
      UPGRADES: PurchaseUpgrade(name) from anywhere. Crate Cash and Base Expansion are ranked by payback with the
                level-ups; Conveyor Luck / Open Time / Luck have no income formula, so they count as +X% income
                (OTHER_VALUE). Walk Speed is never bought: nothing here walks.
@@ -32,7 +37,15 @@
                so it rolls the best placed unit only until it reaches the target, then moves to the next one.
                Pays with tokens (BestOf 2), cash (~10 x level-1 drop scaled by level, 993K at L21; capped at a %
                of cash per roll) or tokens then cash.
-     TRAIT   : RerollPlayerUnitTrait(guid, currentTrait), Trait tokens only, same stop-at-target rule.
+               v15 gate (client GUI and server): the unit must be OFF the plot and you within GradeService.
+               ROLL_RANGE 25 of the GradingHitbox part (Workspace.Systems.Interactables.Grading, ~105 studs from the
+               plot), unless you own Bluetooth (Mad Scientist craft: 10 BluetoothPotion + 100 of each token +
+               Cursed + 5 Transcendent; or a BluetoothPotion). Refused silently, nothing spent. So a TRIP: unplace,
+               hop there, roll up to ROLL_BATCH, hop back, place on the same dropper (the slot is held meanwhile).
+               Live: DEAki F -> A in 10 token rolls, ~3.5s of travel a trip, unit back on its dropper.
+     TRAIT   : RerollPlayerUnitTrait(guid, currentTrait), Trait tokens only, same stop-at-target rule, same v15
+               gate and trip at the TraitsHitbox (~145 studs). Live: MAHimmel FortuneI -> FortuneIII in 16.
+               A roll replaces, so running out of tokens mid-chase can leave a unit worse than it started.
      TOWER   : StartInfinityTowerBattle(tower, 4 guids) + SetInfinityTowerAutoBattle(tower, true); the server's
                Auto restarts each run. Units keep producing while they fight. Floors roll Trait/Grade tokens,
                cash, potions. The next tower needs floor 250 (locked start returns nil).
@@ -50,10 +63,16 @@
        PlaceBoxOnDropper keeping the box      no: the count drops by one like it should
        buy -> level -> sell to the merchant   unit sells for 20 drops, box for 35%: only Slayer/Pirate net a
                                               profit and the best case is ~290K per 41s slot, << the farm
-     Movement (Z.moves 2026-11-14): hops kept to 40 studs, 80 reverted; glide pulled back at 30 studs/s.
        StartInfinityTowerBattle on a locked tower   returns nil (Pirate Island with Distant Castle best 214)
+       Grade / trait roll on a placed unit, or from the plot   refused silently since v15 (see GRADE)
+       ClaimPlaytimeReward(4) / (5) while Claimable   nothing happens (2026-11-15, v15 tiered rewards; the game's
+                                              own button sends the same call); 1-3 claimed fine. Unresolved
+     Movement (Z.moves 2026-11-14): hops kept to 40 studs, 80 reverted; glide pulled back at 30 studs/s. One 40
+       hop undone 2026-11-15, so travel() drops to 60% per revert and walks the rest.
      Live test 2026-11-14: every toggle on, 4 min: 0 refusals, 38 crates, income 1.12M/s -> 2.87M/s; started
        once with an emptied slot (Equip Best refilled it, junk boxes stayed held).
+     Live test 2026-11-15 (v15): every toggle on, 3 min, started with a slot emptied by hand: 0 WARN, slot refilled
+       in 2s, 25 crates, grade and trait trips until both token pools ran out, every unit back on the plot.
      Not wired (Robux): SkipBoxOnDropper / Skip All (dev products SkipTimers / SkipAllTimers), AutoConveyor pass,
        BoxPurchaseProductId. Not wired (out of reach / unprobed): Crate Polisher (1.5e14 + 11 expansions),
        obby bonus, collectables, item rain, potions (UseItem), variant tokens, codes.
@@ -76,8 +95,15 @@ local BOX_MARGIN = 1.25 -- a box's expected L1 drop must beat the weakest placed
 local BOX_SHARE_DEFAULT = 50 -- % of cash one box may cost
 local BOX_INV_CAP = 95 -- stop buying at this many boxes held (the game's cap is 100)
 local OPEN_WAIT = 6 -- OpenBoxOnDropper is an InvokeServer; give up on it after this
-local EQUIP_GAP = 3.2 -- the game's own button refuses faster than 3s
-local GRADE_GAP = 0.8 -- the client cooldown is 0.75s (x0.75 with a token)
+local EQUIP_GAP = 3.2 -- between two unit swaps, so the level loop and the box loop see each one land
+local GRADE_GAP = 0.8 -- fallback roll gap; the real one is GradeService.GetRerollCooldown (0.75s, x0.75 with a token)
+local HOP_MAX = 40 -- studs per hop (Z.moves 2026-11-14: 40 held, 80 reverted); a revert drops it to 60% and walks the rest
+local HOP_GAP = 0.35 -- after a hop the position must still be there; a pull-back shows inside this
+local WALK_TIMEOUT = 40 -- a walk (after a hop was undone) gives up after this
+local STAND_IN = 8 -- studs from the station's hitbox to stop at; the server allows GradeService.ROLL_RANGE (25)
+local ARRIVE_SETTLE = 0.5 -- after arriving, before the first roll: the server has to see you there
+local ROLL_BATCH = 30 -- rolls per trip before going home to put the unit back (bounds how long its slot sits empty)
+local ROLL_DUD = 4 -- this many rolls in a row that spend nothing = the server is refusing; go home
 local GRADE_SHARE = 10 -- % of cash one cash grade roll may cost
 local CLAIM_EVERY = 20
 local AFK_BEAT = 60 -- an F15 key event this often resets the game's 900s AntiAfk rejoin
@@ -164,6 +190,78 @@ end
 assert(ticked({ "a" }).a and ticked({ b = true }).b and not ticked({ c = false }).c, "ticked")
 
 -- world ----------------------------------------------------------------------
+local CollectionService = game:GetService("CollectionService")
+
+local function root()
+	local c = player.Character
+	local h = c and c:FindFirstChildOfClass("Humanoid")
+	if not (h and h.Health > 0) then
+		return nil
+	end
+	return c:FindFirstChild("HumanoidRootPart"), h
+end
+local function flat(a, b)
+	return Vector2.new(a.X - b.X, a.Z - b.Z).Magnitude
+end
+
+-- Hops of hopMax studs, each judged, then Humanoid:MoveTo re-issued every second. No whole-distance jump (80
+-- reverted, every trip here is 100+) and no glide (pulled back at 30 studs/s, slower than a hop chain).
+local hopMax = HOP_MAX
+local function travel(pos, tol)
+	local r = root()
+	if not r then
+		return false
+	end
+	local start = r.Position
+	local n = math.ceil(flat(start, pos) / hopMax)
+	for i = 1, n do
+		r = root()
+		if not r then
+			return false
+		end
+		local p = start:Lerp(pos, i / n) + Vector3.new(0, 3, 0)
+		r.CFrame = CFrame.new(p) * r.CFrame.Rotation
+		r.AssemblyLinearVelocity = Vector3.zero
+		task.wait(HOP_GAP)
+		r = root()
+		if not r then
+			return false
+		end
+		if flat(r.Position, p) > 10 then
+			hopMax = math.max(15, math.floor(hopMax * 0.6))
+			log(("a %d-stud hop was undone; hops are %d studs now, walking the rest"):format(math.floor(flat(start, pos) / n), hopMax))
+			break
+		end
+	end
+	local t0 = os.clock()
+	while true do
+		local r2, h = root()
+		if not r2 then
+			return false
+		end
+		if flat(r2.Position, pos) <= tol then
+			return true
+		end
+		if os.clock() - t0 > WALK_TIMEOUT then
+			return false
+		end
+		h:MoveTo(pos)
+		task.wait(1)
+	end
+end
+
+-- guid -> dropper of a unit off its slot on a roll trip: the slot is held for it, so neither the box loop nor
+-- the equip pass fills it while it is away
+local away = {}
+local function isHeld(d)
+	for _, p in pairs(away) do
+		if p == d then
+			return true
+		end
+	end
+	return false
+end
+
 local function plot()
 	local pm = workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("PlotModels")
 	local p = pm and pm:FindFirstChild(player.Name)
@@ -229,7 +327,9 @@ local function slotState()
 	for _, d in ipairs(droppers()) do
 		local t = d:GetAttribute("Type")
 		if t == nil then
-			free = free or d
+			if not isHeld(d) then
+				free = free or d
+			end
 		elseif t == "Box" then
 			boxes += 1
 		elseif t == "PlayerUnit" then
@@ -490,36 +590,71 @@ end
 local boxOn, variantOn = {}, {}
 local boxShare = BOX_SHARE_DEFAULT
 local buying, placing, opening, equipping = false, false, false, false
-local lastEquip = -math.huge
 
-local function equipBest(why)
-	if os.clock() - lastEquip < EQUIP_GAP then
-		return false
-	end
-	lastEquip = os.clock()
-	R("EquipBestPlayerUnits"):FireServer()
-	log("equip best (" .. why .. ")")
-	return true
+-- A unit's L1 drop at its grade and trait, and its drop now
+local function unitBase(u)
+	local q = {
+		PlayerUnitName = u.PlayerUnitName,
+		PlayerUnitVariant = u.Variant,
+		PlayerUnitLevel = 1,
+		PlayerUnitGrade = u.Grade,
+		PlayerUnitTrait = u.Trait,
+	}
+	local base = PUS.GetPlayerUnitCashPerDrop(player, q)
+	q.PlayerUnitLevel = u.Level or 1
+	return base, PUS.GetPlayerUnitCashPerDrop(player, q)
 end
 
--- the best unit sitting in the backpack, by level-1 drop
+-- The best backpack unit AT EQUAL LEVEL (its L1 drop, which is the ratio between two units at any level), with
+-- its drop now. Ranking by the drop now kept a L36 Unbound NIKakashi (4.04M) over a fresh Unbound GRYuno (1.57M
+-- at L1, 20x Kakashi at equal level) in the backpack (live, 2026-11-15).
 local function bestSpare()
-	local best, bv = nil, 0
+	local best, bb, bv, bu
 	for guid, u in pairs(data().PlayerUnits or {}) do
-		if not u.Equipped then
-			local v = PUS.GetPlayerUnitCashPerDrop(player, {
-				PlayerUnitName = u.PlayerUnitName,
-				PlayerUnitVariant = u.Variant,
-				PlayerUnitLevel = u.Level or 1,
-				PlayerUnitGrade = u.Grade,
-				PlayerUnitTrait = u.Trait,
-			})
-			if v > bv then
-				best, bv = guid, v
+		if not u.Equipped and not away[guid] then
+			local base, now = unitBase(u)
+			if not bb or base > bb then
+				best, bb, bv, bu = guid, base, now, u
 			end
 		end
 	end
-	return best, bv
+	return best, bv or 0, bb or 0, bu
+end
+
+-- RemovePlayerUnitFromDropper(part) -> the guid that came off. The dropper carries no guid and the data no
+-- dropper, so it is whichever placed unit turned unequipped.
+local function unplace(d)
+	local before = {}
+	for guid, u in pairs(data().PlayerUnits or {}) do
+		if u.Equipped then
+			before[guid] = true
+		end
+	end
+	R("RemovePlayerUnitFromDropper"):FireServer(d)
+	local off
+	waitFor(function()
+		if d:GetAttribute("Type") ~= nil then
+			return false
+		end
+		local units = data().PlayerUnits or {}
+		for guid in pairs(before) do
+			if not (units[guid] and units[guid].Equipped) then
+				off = guid
+				return true
+			end
+		end
+		return false
+	end, CONFIRM)
+	return off
+end
+
+-- PlacePlayerUnitOnDropper(part, guid), probed 2026-11-15: puts that exact backpack unit on that dropper
+local function place(d, guid)
+	R("PlacePlayerUnitOnDropper"):FireServer(d, guid)
+	return waitFor(function()
+		local u = (data().PlayerUnits or {})[guid]
+		return d:GetAttribute("Type") == "PlayerUnit" and u and u.Equipped and true or false
+	end, CONFIRM)
 end
 
 -- boxes held, best value first: { name, variant, value }
@@ -569,7 +704,8 @@ local buyRule = "Pays back" -- or "Beats now"
 -- Weigh a new unit of level-1 drop `base` (a box's expected one, or a real unit) against what it would push out:
 -- the weakest placed unit, or with a free slot the best backpack unit (Equip Best would put that there).
 -- Returns verdict, a one-line reason, and the numbers for the side-by-side.
-local function judge(base, grade, price, openSecs)
+-- `fromLevel` is the new unit's level when it is a levelled backpack unit (a box's unit lands at 1).
+local function judge(base, grade, price, openSecs, fromLevel)
 	local free, weakest, weakVal = slotState()
 	local inc, incLevel, incName
 	if free then
@@ -588,10 +724,12 @@ local function judge(base, grade, price, openSecs)
 	end
 	r.incName, r.incLevel, r.incNow = incName, incLevel, inc
 	r.incBase = inc / LEVEL_STEP ^ (incLevel - 1)
-	r.newAtLevel = base * LEVEL_STEP ^ (incLevel - 1)
+	fromLevel = fromLevel or 1
+	local atLevel = math.max(incLevel, fromLevel)
+	r.newAtLevel = base * LEVEL_STEP ^ (atLevel - 1)
 	r.newAt50 = base * LEVEL_STEP ^ (MAX_LEVEL - 1)
 	r.incAt50 = r.incBase * LEVEL_STEP ^ (MAX_LEVEL - 1)
-	r.catchUp = catchUp(base, grade, incLevel)
+	r.catchUp = catchUp(base, grade, atLevel) - catchUp(base, grade, fromLevel)
 	r.lost = inc / 4 * (openSecs or 0) -- what the slot does not earn while the box opens
 	local gain = (r.newAtLevel - inc) / 4
 	r.payback = gain > 0 and (price + r.catchUp + r.lost) / gain or math.huge
@@ -642,10 +780,6 @@ local function openReady()
 				if got then
 					stats.opened += 1
 					say("box", ("opened %s %s -> %s %s"):format(variant, name, tostring(gotVariant), tostring(got)))
-					if equipping then
-						task.wait(0.5)
-						equipBest("opened a box")
-					end
 				else
 					say("box", "WARN open refused: " .. name)
 				end
@@ -745,6 +879,54 @@ local function rollAndBuy()
 	end)
 end
 
+-- Equip: one placement per pass, by our own rule, never the game's EquipBestPlayerUnits, which re-sorts every slot
+-- by the drop NOW and would put a levelled weak unit straight back over a fresh strong one. A free slot gets the
+-- best backpack unit at equal level. Full: that unit replaces the weakest placed one (lowest drop now) when it is
+-- better at equal level (its L1 drop is higher: a strict order, so two units can never swap back and forth) AND
+-- judge() says the levelling it needs pays back inside Max payback. The level loop then levels it first, since
+-- a low level is the cheapest payback.
+local lastSwap = -math.huge
+local function equipPass()
+	if os.clock() - lastSwap < EQUIP_GAP then
+		return
+	end
+	local spare, _, base, u = bestSpare()
+	if not spare then
+		return
+	end
+	local free, weakest = slotState()
+	local target, off, why = free, nil, "free slot"
+	if not target then
+		if not weakest or base <= dropOf(weakest, 1) then
+			return
+		end
+		local verdict, reason = judge(base, u.Grade, 0, 0, u.Level or 1)
+		if verdict ~= "Replace" then
+			say("equip", ("keep %s over %s L%d: %s"):format(tostring(weakest:GetAttribute("PlayerUnitName")), u.PlayerUnitName, u.Level or 1, reason), true)
+			return
+		end
+		lastSwap = os.clock()
+		why = reason
+		step("box", "swap out " .. tostring(weakest:GetAttribute("PlayerUnitName")))
+		off = unplace(weakest)
+		if not off then
+			say("equip", "WARN remove refused: " .. tostring(weakest:GetAttribute("PlayerUnitName")))
+			return
+		end
+		target = weakest
+	end
+	lastSwap = os.clock()
+	step("box", "place " .. u.PlayerUnitName)
+	if place(target, spare) then
+		say("equip", ("placed %s %s L%d (%s)"):format(tostring(u.Variant), u.PlayerUnitName, u.Level or 1, why))
+	else
+		say("equip", "WARN place refused: " .. u.PlayerUnitName)
+		if off then
+			place(target, off) -- never leave the slot empty over a refused swap
+		end
+	end
+end
+
 local function boxBody(alive)
 	if opening then
 		openReady()
@@ -753,11 +935,7 @@ local function boxBody(alive)
 		placeBest()
 	end
 	if equipping and alive() then
-		local free, _, weakVal = slotState()
-		local spare, sv = bestSpare()
-		if spare and (free or sv > weakVal) then
-			equipBest("a spare unit beats a placed one")
-		end
+		equipPass()
 	end
 	if buying and alive() then
 		rollAndBuy()
@@ -790,7 +968,162 @@ local gradeTarget = "A"
 local gradePay = "Tokens only" -- "Cash only" / "Tokens, then cash"
 local gradeShare = GRADE_SHARE
 
+-- roll trips -------------------------------------------------------------------
+-- PlaceVersion 15 (2026-11-15) gates both rolls twice, in the client GUI and on the server alike: the unit must be
+-- OFF the plot ("This unit is placed on your plot!") and you must stand within GradeService.ROLL_RANGE (25) of the
+-- station's tagged hitbox (GradingHitbox / TraitsHitbox), unless you own Bluetooth (Mad Scientist craft, or a
+-- BluetoothPotion). Both refusals are silent: no notification and nothing spent. Probed: placed unit at the
+-- stand refused, backpack unit 105 studs off refused, backpack unit at the stand rolled (token 56 -> 55, F -> D).
+-- So a trip takes the unit off its dropper (the slot is held for it), goes to the station, rolls a batch, comes
+-- back and puts it on the same dropper. Grade and Trait both drive the character, so one trip at a time.
+local GS = require(RS.Shared.Services.GradeService)
+local TS = require(RS.Shared.Services.TraitService)
+local moving = false
+
+-- the dropper a unit sits on: the data has no dropper and the dropper no guid, so match what both carry. A twin
+-- (same name, variant, level, grade, trait) is caught by unplace() handing back the other guid.
+local function dropperOf(u)
+	for _, d in ipairs(droppers()) do
+		if
+			d:GetAttribute("Type") == "PlayerUnit"
+			and d:GetAttribute("PlayerUnitName") == u.PlayerUnitName
+			and d:GetAttribute("PlayerUnitVariant") == u.Variant
+			and (d:GetAttribute("PlayerUnitLevel") or 1) == (u.Level or 1)
+			and d:GetAttribute("PlayerUnitGrade") == u.Grade
+			and d:GetAttribute("PlayerUnitTrait") == u.Trait
+		then
+			return d
+		end
+	end
+	return nil
+end
+
+-- spec = { slot, tag, spent() -> number that drops when a roll is paid, blocked(u) -> reason or nil, roll(guid, u) }
+local function trip(spec, guid, alive)
+	local u = (data().PlayerUnits or {})[guid]
+	local d = u and u.Equipped and dropperOf(u)
+	local st = CollectionService:GetTagged(spec.tag)[1]
+	local r = root()
+	if not (d and st and r) then
+		say(spec.slot, ("WARN no %s"):format(not d and "dropper for " .. tostring(u and u.PlayerUnitName) or not st and spec.tag or "character"))
+		task.wait(3)
+		return
+	end
+	local home = r.Position
+	moving, away[guid] = true, d
+	step(spec.slot, "unplace " .. u.PlayerUnitName)
+	local off = unplace(d)
+	if off ~= guid then
+		away[guid] = nil
+		if off then
+			place(d, off) -- the match took a twin; put it back
+		end
+		moving = false
+		say(spec.slot, "WARN could not take " .. u.PlayerUnitName .. " off its slot")
+		task.wait(3)
+		return
+	end
+	local good, err = pcall(function()
+		step(spec.slot, "travel")
+		if not (GS.CanReachRollStation(player, spec.tag) or travel(st.Position, STAND_IN)) then
+			say(spec.slot, "WARN could not reach the " .. spec.tag)
+			return
+		end
+		task.wait(ARRIVE_SETTLE)
+		local n, duds = 0, 0
+		while alive() and n < ROLL_BATCH and duds < ROLL_DUD do
+			local cur = data().PlayerUnits[guid]
+			local why = cur and spec.blocked(cur)
+			if not cur or why then
+				say(spec.slot, why or "unit gone")
+				return
+			end
+			local before = spec.spent()
+			step(spec.slot, "roll " .. cur.PlayerUnitName)
+			spec.roll(guid, cur)
+			n += 1
+			duds = waitFor(function()
+				return spec.spent() < before
+			end, 1) and 0 or duds + 1
+		end
+		if duds >= ROLL_DUD then
+			say(spec.slot, ("WARN %d rolls in a row spent nothing: the server is refusing"):format(duds))
+		end
+	end)
+	-- every path comes home and puts the unit back, a thrown error included
+	step(spec.slot, "home")
+	travel(home, 4)
+	step(spec.slot, "place back")
+	local back = place(d, guid)
+	if not back then
+		back = place(d, guid) -- one retry: the first can land while the walk home is still settling
+	end
+	if not back then
+		say(spec.slot, "WARN could not put " .. u.PlayerUnitName .. " back (Auto Equip will)")
+	end
+	away[guid], moving = nil, false
+	if not good then
+		error(err, 0)
+	end
+end
+
+local function rollGap(useToken)
+	local good, cd = pcall(GS.GetRerollCooldown, player, useToken)
+	return (good and tonumber(cd) or GRADE_GAP) + 0.05
+end
+
+local gradeSpec
+gradeSpec = {
+	slot = "grade",
+	tag = GS.HITBOX_TAG or "GradingHitbox",
+	spent = function()
+		local d = data()
+		return (d.Tokens and d.Tokens.Grade or 0) + (gradeSpec.cash and cash() or 0)
+	end,
+	blocked = function(u)
+		if gradeMult(u.Grade) >= gradeMult(gradeTarget) then
+			return ("%s reached %s"):format(u.PlayerUnitName, tostring(u.Grade))
+		end
+		local tokens = data().Tokens and data().Tokens.Grade or 0
+		gradeSpec.cash = not (gradePay ~= "Cash only" and tokens > 0)
+		if not gradeSpec.cash then
+			return nil
+		elseif gradePay == "Tokens only" then
+			return "out of grade tokens"
+		end
+		local cost = PUS.GetGradeRerollCost(player, {
+			PlayerUnitName = u.PlayerUnitName,
+			PlayerUnitVariant = u.Variant,
+			PlayerUnitLevel = u.Level,
+			PlayerUnitTrait = u.Trait,
+		})
+		if cost > cash() * gradeShare / 100 then
+			return ("a cash roll costs %s, over %d%% of cash"):format(fmt(cost), gradeShare)
+		end
+		return nil
+	end,
+	roll = function(guid, u)
+		local before, useToken = u.Grade, not gradeSpec.cash
+		if useToken then
+			R("NewRerollPlayerUnitGrade"):FireServer(guid, true, before)
+		else
+			withWallet(function()
+				R("NewRerollPlayerUnitGrade"):FireServer(guid, false, before)
+				task.wait(0.3) -- long enough for the charge to land in the cash mirror; the cooldown waits outside the lock
+			end)
+		end
+		task.wait(rollGap(useToken))
+		local now = (data().PlayerUnits or {})[guid]
+		stats.graded += 1
+		say("grade", ("%s %s: %s -> %s (%s)"):format(tostring(u.Variant), u.PlayerUnitName, tostring(before or "F"), tostring(now and now.Grade or "F"), useToken and "token" or "cash"))
+	end,
+}
+
 local function gradeBody(alive)
+	if moving then
+		task.wait(1)
+		return
+	end
 	local d = data()
 	local target = gradeMult(gradeTarget)
 	-- placed units, best level-1 drop without their grade first
@@ -813,46 +1146,21 @@ local function gradeBody(alive)
 		task.wait(5)
 		return
 	end
-	local tokens = d.Tokens and d.Tokens.Grade or 0
-	local useToken = gradePay ~= "Cash only" and tokens > 0
-	if not useToken then
-		local cost = PUS.GetGradeRerollCost(player, {
-			PlayerUnitName = pu.PlayerUnitName,
-			PlayerUnitVariant = pu.Variant,
-			PlayerUnitLevel = pu.Level,
-			PlayerUnitTrait = pu.Trait,
-		})
-		if gradePay == "Tokens only" then
-			say("grade", ("%s is %s; no grade tokens"):format(pu.PlayerUnitName, tostring(pu.Grade or "F")))
-			task.wait(3)
-			return
-		elseif cost > cash() * gradeShare / 100 then
-			say("grade", ("%s is %s; a cash roll costs %s, over %d%% of cash"):format(pu.PlayerUnitName, tostring(pu.Grade or "F"), fmt(cost), gradeShare))
-			task.wait(3)
-			return
-		end
+	-- checked here as well as in the trip, so an unaffordable roll never costs a walk
+	local why = gradeSpec.blocked(pu)
+	if why then
+		say("grade", ("%s is %s; %s"):format(pu.PlayerUnitName, tostring(pu.Grade or "F"), why))
+		task.wait(3)
+		return
 	end
-	step("grade", "roll " .. pu.PlayerUnitName)
-	local before = pu.Grade
-	if useToken then
-		R("NewRerollPlayerUnitGrade"):FireServer(pick, true, before)
-		task.wait(GRADE_GAP)
-	else
-		withWallet(function()
-			R("NewRerollPlayerUnitGrade"):FireServer(pick, false, before)
-			task.wait(0.3) -- long enough for the charge to land in the cash mirror; the cooldown waits outside the lock
-		end)
-		task.wait(GRADE_GAP - 0.3)
-	end
-	local now = (data().PlayerUnits or {})[pick]
-	stats.graded += 1
-	say("grade", ("%s %s: %s -> %s (%s)"):format(pu.Variant, pu.PlayerUnitName, tostring(before or "F"), tostring(now and now.Grade or "?"), useToken and "token" or "cash"))
+	trip(gradeSpec, pick, alive)
 end
 
 -- trait ----------------------------------------------------------------------
 -- RerollPlayerUnitTrait(guid, currentTrait), one Trait token a roll (probed: token 5 -> 4, TraitPity +1). Like a
 -- grade, a roll replaces the trait, so the best placed unit is rolled only until its cash multiplier reaches
--- the target. Trait tokens come from the Infinity Tower (5 from one 214-floor run).
+-- the target. Trait tokens come from the Infinity Tower (5 from one 214-floor run). Same v15 gates as a grade
+-- roll, at the Traits station: a trip (above).
 local TL = require(RS.Shared.Core.Storage.Game.TraitsLibrary)
 local function traitCash(t)
 	return t and TL[t] and TL[t].CashMultiplier or 1
@@ -868,10 +1176,38 @@ table.sort(TRAIT_ORDER, function(a, b)
 end)
 local traitTarget = "FortuneIII"
 
-local function traitBody()
+local traitSpec = {
+	slot = "trait",
+	tag = TS.HITBOX_TAG or "TraitsHitbox",
+	spent = function()
+		return data().Tokens and data().Tokens.Trait or 0
+	end,
+	blocked = function(u)
+		if traitCash(u.Trait) >= traitCash(traitTarget) then
+			return ("%s reached %s"):format(u.PlayerUnitName, tostring(u.Trait))
+		elseif (data().Tokens and data().Tokens.Trait or 0) < 1 then
+			return "out of trait tokens (the tower drops them)"
+		end
+		return nil
+	end,
+	roll = function(guid, u)
+		local before = u.Trait
+		R("RerollPlayerUnitTrait"):FireServer(guid, before)
+		local good, cd = pcall(TS.GetRerollCooldown, player)
+		task.wait((good and tonumber(cd) or GRADE_GAP) + 0.05)
+		local now = (data().PlayerUnits or {})[guid]
+		say("trait", ("%s %s: %s -> %s"):format(tostring(u.Variant), u.PlayerUnitName, tostring(before or "none"), tostring(now and now.Trait or "none")))
+	end,
+}
+
+local function traitBody(alive)
+	if moving then
+		task.wait(1)
+		return
+	end
 	local d = data()
 	local target = traitCash(traitTarget)
-	local pick, pv, pu
+	local pick, pv
 	for guid, u in pairs(d.PlayerUnits or {}) do
 		if u.Equipped and traitCash(u.Trait) < target then
 			local v = PUS.GetPlayerUnitCashPerDrop(player, {
@@ -881,7 +1217,7 @@ local function traitBody()
 				PlayerUnitGrade = u.Grade,
 			})
 			if not pv or v > pv then
-				pick, pv, pu = guid, v, u
+				pick, pv = guid, v
 			end
 		end
 	end
@@ -891,12 +1227,7 @@ local function traitBody()
 		task.wait(5)
 		return
 	end
-	step("trait", "roll " .. pu.PlayerUnitName)
-	local before = pu.Trait
-	R("RerollPlayerUnitTrait"):FireServer(pick, before)
-	task.wait(GRADE_GAP)
-	local now = (data().PlayerUnits or {})[pick]
-	say("trait", ("%s %s: %s -> %s"):format(pu.Variant, pu.PlayerUnitName, tostring(before or "none"), tostring(now and now.Trait or "?")))
+	trip(traitSpec, pick, alive)
 end
 
 -- infinity tower ---------------------------------------------------------------
@@ -1092,7 +1423,7 @@ Units:AddToggle("Level", {
 })
 Units:AddToggle("Equip", {
 	Text = "Auto Equip Best",
-	Tooltip = "Presses the game's Equip Best when a box opens or a backpack unit beats a placed one",
+	Tooltip = "Fills a free slot with the best backpack unit, and swaps out the weakest placed unit for a backpack one that is better at equal level when levelling it pays back inside Max payback. Places units itself: the game's Equip Best ranks by income now and would put a levelled weak unit back",
 	Default = false,
 	Callback = function(on)
 		equipping = on
@@ -1101,7 +1432,7 @@ Units:AddToggle("Equip", {
 })
 Units:AddToggle("Grade", {
 	Text = "Auto Grade",
-	Tooltip = "Rerolls the best placed unit's grade until it reaches the target, then the next one. A roll replaces the grade, so it never touches a unit already at the target",
+	Tooltip = "Rerolls the best placed unit's grade until it reaches the target, then the next one. The game only rolls a unit off the plot, at the Grading stand: this takes it off, walks there, rolls up to 30, walks back and puts it back. MOVES YOUR CHARACTER",
 	Default = false,
 	Callback = function(on)
 		if on then
@@ -1269,7 +1600,7 @@ Upgrades:AddInput("MaxPayback", {
 
 Units:AddToggle("Trait", {
 	Text = "Auto Trait (tokens)",
-	Tooltip = "Rerolls the best placed unit's trait with Trait tokens until its cash multiplier reaches the target, then the next one. A roll replaces the trait",
+	Tooltip = "Rerolls the best placed unit's trait with Trait tokens until its cash multiplier reaches the target, then the next one. Same trip as Auto Grade, to the Traits stand. MOVES YOUR CHARACTER",
 	Default = false,
 	Callback = function(on)
 		if on then
