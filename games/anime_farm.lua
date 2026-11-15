@@ -40,8 +40,10 @@
                v15 gate (client GUI and server): the unit must be OFF the plot and you within GradeService.
                ROLL_RANGE 25 of the GradingHitbox part (Workspace.Systems.Interactables.Grading, ~105 studs from the
                plot), unless you own Bluetooth (Mad Scientist craft: 10 BluetoothPotion + 100 of each token +
-               Cursed + 5 Transcendent; or a BluetoothPotion). Refused silently, nothing spent. So a TRIP: unplace,
-               hop there, roll up to ROLL_BATCH, hop back, place on the same dropper (the slot is held meanwhile).
+               Cursed + 5 Transcendent; or a BluetoothPotion). Refused silently, nothing spent. So a SESSION:
+               teleport to the stall once, then per unit take it off its dropper, roll to the target, put it back
+               (both remotes work from the stall, 174 studs off), next; home when nothing is left or an obby is due.
+               The first version went home every 30 rolls and between units: it shuttled every ~30s.
                Live: DEAki F -> A in 10 token rolls, ~3.5s of travel a trip, unit back on its dropper.
                Stands on the ground just outside the stall on the side it came from (13 from the hitbox centre,
                in range); the centre itself is the awning. Twins (two fresh TIHange) made the trip take the wrong
@@ -57,6 +59,13 @@
                server got the level-up refused.
      REWARDS : ClaimAllIndexRewards (+2 grade tokens seen), ClaimPlaytimeReward(i) for each Claimable one,
                ClaimDailyReward, ClaimOfflineEarnings.
+     OBBY    : one PivotTo straight onto Workspace.Systems.Obby.VictoryParts.<Easy|Medium|Hard>Obby (y ~370-406,
+               ~400 studs off; 420 held) and the game's own circle check fires ClaimObbyBonus(part) within 0.2s;
+               ours is the fallback. Fired from the plot it does nothing. Then PivotTo back to where you were,
+               watched 2.5s: the obby's lava pulls you to its start just after you leave (2 of 3 claims), so it
+               jumps again. Easy 2 Grade tokens / 5 min, Medium 5 + Luck buff / 10 min, Hard 5 + Grade Speed
+               buff + 1 BluetoothPotion / 15 min = ~74 Grade tokens and 4 Bluetooth potions an hour.
+               Live: Easy, Medium, Hard claimed, each ~1-3s away from the plot.
      ANTI-AFK: the game's AntiAfk fires RejoinRemote after 900s without InputBegan/Ended and teleports you to a
                reserved server (that is what ended the first bridge session). An F15 key event every 60s resets it
                (same kit and fix as blue_lock_farm.lua).
@@ -79,7 +88,8 @@
        in 2s, 25 crates, grade and trait trips until both token pools ran out, every unit back on the plot.
      Not wired (Robux): SkipBoxOnDropper / Skip All (dev products SkipTimers / SkipAllTimers), AutoConveyor pass,
        BoxPurchaseProductId. Not wired (out of reach / unprobed): Crate Polisher (1.5e14 + 11 expansions),
-       obby bonus, collectables, item rain, potions (UseItem), variant tokens, codes.
+       collectables, item rain, potions (UseItem: a BluetoothPotion would skip the stall trips), variant
+       tokens, codes.
      The PS.Client.Controllers / JJK half of the decompile is a sibling game's kit (its Net remote does not exist
      here); everything above is ReplicatedStorage.Client.Core.
 
@@ -101,14 +111,16 @@ local BOX_INV_CAP = 95 -- stop buying at this many boxes held (the game's cap is
 local OPEN_WAIT = 6 -- OpenBoxOnDropper is an InvokeServer; give up on it after this
 local EQUIP_GAP = 3.2 -- between two unit swaps, so the level loop and the box loop see each one land
 local GRADE_GAP = 0.8 -- fallback roll gap; the real one is GradeService.GetRerollCooldown (0.75s, x0.75 with a token)
-local HOP_MAX = 40 -- studs per hop (Z.moves 2026-11-14: 40 held, 80 reverted); a revert drops it to 60% and walks the rest
+local HOP_MAX = 40 -- studs per hop once a whole teleport was undone (Z.moves 2026-11-14: 40 held); a revert drops it to 60%
 local HOP_GAP = 0.35 -- after a hop the position must still be there; a pull-back shows inside this
 local WALK_TIMEOUT = 40 -- a walk (after a hop was undone) gives up after this
 local STAND_IN = 4 -- studs from the spot in front of the stall to stop at; the server allows GradeService.ROLL_RANGE (25) from its centre
 local STAND_OFF = 2 -- studs outside the stall's hitbox edge to stand (the spot is 13 from its centre)
 local ARRIVE_SETTLE = 0.5 -- after arriving, before the first roll: the server has to see you there
-local ROLL_BATCH = 30 -- rolls per trip before going home to put the unit back (bounds how long its slot sits empty)
 local ROLL_DUD = 4 -- this many rolls in a row that spend nothing = the server is refusing; go home
+local OBBY_CLAIM_WAIT = 3 -- the game's own circle check claims within 0.2s of landing; our ClaimObbyBonus after this
+local OBBY_HOME_WATCH = 2.5 -- the obby's lava can pull you to its start just after you leave; watch this long, then jump again
+local OBBY_POLL = 5 -- cooldowns are looked at this often (they are 5 / 10 / 15 minutes)
 local GRADE_SHARE = 10 -- % of cash one cash grade roll may cost
 local CLAIM_EVERY = 20
 local AFK_BEAT = 60 -- an F15 key event this often resets the game's 900s AntiAfk rejoin
@@ -209,16 +221,32 @@ local function flat(a, b)
 	return Vector2.new(a.X - b.X, a.Z - b.Z).Magnitude
 end
 
--- Hops of hopMax studs, each judged, then Humanoid:MoveTo re-issued every second. No whole-distance jump (80
--- reverted, every trip here is 100+) and no glide (pulled back at 30 studs/s, slower than a hop chain).
-local hopMax = HOP_MAX
+-- One whole-distance teleport first: 2026-11-15 plot -> Grading stall (105), plot -> obby finish (420) and obby ->
+-- plot (379) all held (the 80-stud revert of 2026-11-14 did not come back). If one is undone, hops of hopMax
+-- studs for the rest of the run, each judged, then Humanoid:MoveTo re-issued every second. No glide (pulled back
+-- at 30 studs/s, slower than either).
+local hopMax, jumpOk = HOP_MAX, true
 local function travel(pos, tol)
 	local r = root()
 	if not r then
 		return false
 	end
+	if jumpOk and flat(r.Position, pos) > tol then
+		local p = pos + Vector3.new(0, 3, 0)
+		r.CFrame = CFrame.new(p) * r.CFrame.Rotation
+		r.AssemblyLinearVelocity = Vector3.zero
+		task.wait(HOP_GAP)
+		r = root()
+		if not r then
+			return false
+		end
+		if flat(r.Position, p) > 10 then
+			jumpOk = false
+			log(("a %d-stud teleport was undone; hopping from now on"):format(math.floor(flat(r.Position, pos))))
+		end
+	end
 	local start = r.Position
-	local n = math.ceil(flat(start, pos) / hopMax)
+	local n = flat(start, pos) > tol and math.ceil(flat(start, pos) / hopMax) or 0
 	for i = 1, n do
 		r = root()
 		if not r then
@@ -349,7 +377,7 @@ local function slotState()
 end
 
 -- farm -----------------------------------------------------------------------
-local stats = { sold = 0, soldBalls = 0, levels = 0, upgrades = 0, rolls = 0, bought = 0, placed = 0, opened = 0, graded = 0 }
+local stats = { sold = 0, soldBalls = 0, levels = 0, upgrades = 0, rolls = 0, bought = 0, placed = 0, opened = 0, graded = 0, obby = 0 }
 local beat = {} -- loop -> { at = os.clock(), step = "..." }
 local function step(loop, what)
 	beat[loop] = { at = os.clock(), step = what }
@@ -989,6 +1017,9 @@ local gradeShare = GRADE_SHARE
 local GS = require(RS.Shared.Services.GradeService)
 local TS = require(RS.Shared.Services.TraitService)
 local moving = false
+local obbyDue = function()
+	return false -- set in the obby section: a ticked obby is ready, so a roll session goes home and lets it run
+end
 
 -- the dropper a unit sits on: the data has no dropper and the dropper no guid, so match what both carry. A twin
 -- (same name, variant, level, grade, trait) is caught by unplace() handing back the other guid.
@@ -1024,18 +1055,16 @@ local function standSpot(st, from)
 end
 
 -- spec = { slot, tag, spent() -> number that drops when a roll is paid, blocked(u) -> reason or nil, roll(guid, u) }
-local function trip(spec, guid, alive)
+-- Take a placed unit off its dropper (from anywhere: 174 studs from the slot at the stall, probed). Returns the
+-- guid that is now off and held for, its data and its dropper, or nil.
+local function takeOff(spec, guid)
 	local u = (data().PlayerUnits or {})[guid]
 	local d = u and u.Equipped and dropperOf(u)
-	local st = CollectionService:GetTagged(spec.tag)[1]
-	local r = root()
-	if not (d and st and r) then
-		say(spec.slot, ("WARN no %s"):format(not d and "dropper for " .. tostring(u and u.PlayerUnitName) or not st and spec.tag or "character"))
-		task.wait(3)
-		return
+	if not d then
+		say(spec.slot, "WARN no dropper for " .. tostring(u and u.PlayerUnitName))
+		return nil
 	end
-	local home = r.Position
-	moving, away[guid] = true, d
+	away[guid] = d
 	step(spec.slot, "unplace " .. u.PlayerUnitName)
 	local off = unplace(d, guid)
 	-- The slot emptied but the data mirror had not shown our unit unequipped inside CONFIRM: it is ours, just late.
@@ -1063,11 +1092,40 @@ local function trip(spec, guid, alive)
 		if off then
 			place(d, off) -- someone else's unit came off this slot; put it back
 		end
-		moving = false
 		say(spec.slot, "WARN could not take " .. u.PlayerUnitName .. " off its slot")
+		return nil
+	end
+	return guid, u, d
+end
+
+local function putBack(spec, guid, u, d)
+	step(spec.slot, "place back")
+	local back = place(d, guid)
+	if not back then
+		back = place(d, guid) -- one retry: the slot can still be settling from the removal
+	end
+	if not back then
+		say(spec.slot, "WARN could not put " .. u.PlayerUnitName .. " back (Auto Equip will)")
+	end
+	away[guid] = nil
+end
+
+-- One session per station: go once, then for each unit spec.pick() hands back, take it off its dropper, roll it
+-- until it reaches the target (or the roll is blocked or refused), put it back, next. Home only when nothing is
+-- left, the toggle goes off or an obby is due (Auto Obby must not starve behind a long chase). The first version
+-- went home every 30 rolls and between units: a unit at F needs 20-40 single cash rolls to reach A, so the
+-- character shuttled to the stall and back every half minute.
+local function session(spec, alive)
+	local st = CollectionService:GetTagged(spec.tag)[1]
+	local r = root()
+	if not (st and r) then
+		say(spec.slot, "WARN no " .. (r and spec.tag or "character"))
 		task.wait(3)
 		return
 	end
+	local home = r.Position
+	moving = true
+	local held -- { guid, u, d } of the unit off its slot right now
 	local good, err = pcall(function()
 		step(spec.slot, "travel")
 		if not (GS.CanReachRollStation(player, spec.tag) or travel(standSpot(st, home), STAND_IN)) then
@@ -1075,38 +1133,47 @@ local function trip(spec, guid, alive)
 			return
 		end
 		task.wait(ARRIVE_SETTLE)
-		local n, duds = 0, 0
-		while alive() and n < ROLL_BATCH and duds < ROLL_DUD do
-			local cur = data().PlayerUnits[guid]
-			local why = cur and spec.blocked(cur)
-			if not cur or why then
-				say(spec.slot, why or "unit gone")
+		while alive() and not obbyDue() do
+			local pick, why = spec.pick()
+			if not pick then
+				say(spec.slot, why)
 				return
 			end
-			local before = spec.spent()
-			step(spec.slot, "roll " .. cur.PlayerUnitName)
-			spec.roll(guid, cur)
-			n += 1
-			duds = waitFor(function()
-				return spec.spent() < before
-			end, 1) and 0 or duds + 1
-		end
-		if duds >= ROLL_DUD then
-			say(spec.slot, ("WARN %d rolls in a row spent nothing: the server is refusing"):format(duds))
+			local guid, u, d = takeOff(spec, pick)
+			if not guid then
+				return
+			end
+			held = { guid, u, d }
+			local duds = 0
+			while alive() and duds < ROLL_DUD and not obbyDue() do
+				local cur = data().PlayerUnits[guid]
+				local blocked = cur and spec.blocked(cur)
+				if not cur or blocked then
+					say(spec.slot, blocked or "unit gone")
+					break
+				end
+				local before = spec.spent()
+				step(spec.slot, "roll " .. cur.PlayerUnitName)
+				spec.roll(guid, cur)
+				duds = waitFor(function()
+					return spec.spent() < before
+				end, 1) and 0 or duds + 1
+			end
+			putBack(spec, guid, u, d)
+			held = nil
+			if duds >= ROLL_DUD then
+				say(spec.slot, ("WARN %d rolls in a row spent nothing: the server is refusing"):format(duds))
+				return
+			end
 		end
 	end)
-	-- every path comes home and puts the unit back, a thrown error included
+	-- every path puts the unit back and comes home, a thrown error included
+	if held then
+		putBack(spec, held[1], held[2], held[3])
+	end
 	step(spec.slot, "home")
 	travel(home, 4)
-	step(spec.slot, "place back")
-	local back = place(d, guid)
-	if not back then
-		back = place(d, guid) -- one retry: the first can land while the walk home is still settling
-	end
-	if not back then
-		say(spec.slot, "WARN could not put " .. u.PlayerUnitName .. " back (Auto Equip will)")
-	end
-	away[guid], moving = nil, false
+	moving = false
 	if not good then
 		error(err, 0)
 	end
@@ -1164,16 +1231,11 @@ gradeSpec = {
 	end,
 }
 
-local function gradeBody(alive)
-	if moving then
-		task.wait(1)
-		return
-	end
-	local d = data()
+-- the placed unit to roll next (best level-1 drop without its grade), or nil + why not
+gradeSpec.pick = function()
 	local target = gradeMult(gradeTarget)
-	-- placed units, best level-1 drop without their grade first
 	local pick, pv, pu
-	for guid, u in pairs(d.PlayerUnits or {}) do
+	for guid, u in pairs(data().PlayerUnits or {}) do
 		if u.Equipped and gradeMult(u.Grade) < target then
 			local v = PUS.GetPlayerUnitCashPerDrop(player, {
 				PlayerUnitName = u.PlayerUnitName,
@@ -1187,19 +1249,32 @@ local function gradeBody(alive)
 		end
 	end
 	if not pick then
-		say("grade", "every placed unit is at " .. gradeTarget .. " or better")
-		task.wait(5)
-		return
+		return nil, "every placed unit is at " .. gradeTarget .. " or better"
 	end
-	-- checked here as well as in the trip, so an unaffordable roll never costs a walk
 	local why = gradeSpec.blocked(pu)
 	if why then
-		say("grade", ("%s is %s; %s"):format(pu.PlayerUnitName, tostring(pu.Grade or "F"), why))
-		task.wait(3)
-		return
+		return nil, ("%s is %s; %s"):format(pu.PlayerUnitName, tostring(pu.Grade or "F"), why)
 	end
-	trip(gradeSpec, pick, alive)
+	return pick
 end
+
+-- checked before leaving as well as at the stall, so nothing to roll never costs a walk
+local function rollBody(spec)
+	return function(alive)
+		if moving or obbyDue() then
+			task.wait(1)
+			return
+		end
+		local pick, why = spec.pick()
+		if not pick then
+			say(spec.slot, why)
+			task.wait(5)
+			return
+		end
+		session(spec, alive)
+	end
+end
+local gradeBody = rollBody(gradeSpec)
 
 -- trait ----------------------------------------------------------------------
 -- RerollPlayerUnitTrait(guid, currentTrait), one Trait token a roll (probed: token 5 -> 4, TraitPity +1). Like a
@@ -1245,11 +1320,7 @@ local traitSpec = {
 	end,
 }
 
-local function traitBody(alive)
-	if moving then
-		task.wait(1)
-		return
-	end
+traitSpec.pick = function()
 	local d = data()
 	local target = traitCash(traitTarget)
 	local pick, pv
@@ -1266,14 +1337,14 @@ local function traitBody(alive)
 			end
 		end
 	end
-	local tokens = d.Tokens and d.Tokens.Trait or 0
-	if not pick or tokens < 1 then
-		say("trait", not pick and ("every placed unit has %s or better"):format(traitTarget) or "no trait tokens (the tower drops them)")
-		task.wait(5)
-		return
+	if not pick then
+		return nil, ("every placed unit has %s or better"):format(traitTarget)
+	elseif (d.Tokens and d.Tokens.Trait or 0) < 1 then
+		return nil, "no trait tokens (the tower drops them)"
 	end
-	trip(traitSpec, pick, alive)
+	return pick
 end
+local traitBody = rollBody(traitSpec)
 
 -- infinity tower ---------------------------------------------------------------
 -- StartInfinityTowerBattle(tower, { up to 4 guids }) (InvokeServer) and SetInfinityTowerAutoBattle(tower, true):
@@ -1368,6 +1439,127 @@ local function stopTower()
 			R("SetInfinityTowerAutoBattle"):FireServer(towerAuto, false) -- give the player's own setting back; the run ends by itself
 		end)
 		towerAuto = nil
+	end
+end
+
+-- obby -----------------------------------------------------------------------
+-- Each obby's finish is a part in Workspace.Systems.Obby.VictoryParts (EasyObby / MediumObby / HardObby), up at
+-- y ~370-406 and ~400 studs from the plot. The game's own ObbyBonusPart client fires ClaimObbyBonus(part) the moment
+-- you are inside a small circle around it (radius 2.5) and the cooldown is up; the server wants you there (fired
+-- from the plot: nothing). One PivotTo straight onto the finish holds from anywhere (420 studs, plot -> Hard,
+-- claimed 0.2s after landing); the obby start <-> plot jump is the game's own Obby / Home button. After a claim
+-- the obby's lava can pull you to its start a moment after you have jumped home, so the jump home is watched
+-- and repeated. Rewards: Easy 2 Grade tokens / 5 min, Medium 5 + Luck potion buff / 10 min, Hard 5 + Grade
+-- Speed buff + 1 BluetoothPotion / 15 min (ObbyBonusLibrary). It drives the character, so it shares `moving`
+-- with the grade / trait trips.
+local OBS = require(RS.Shared.Services.ObbyBonusService)
+local OBBY_NAMES = { "EasyObby", "MediumObby", "HardObby" }
+local OBBY_LABEL = { EasyObby = "Easy", MediumObby = "Medium", HardObby = "Hard" }
+local obbyOn = { EasyObby = true, MediumObby = true, HardObby = true }
+local obbySeen, obbyBench = {}, {}
+
+-- the finish, or where it was last seen if streaming dropped it
+local function finishOf(name)
+	local s = workspace:FindFirstChild("Systems")
+	local f = s and s:FindFirstChild("Obby") and s.Obby:FindFirstChild("VictoryParts")
+	local p = f and f:FindFirstChild(name)
+	if p then
+		obbySeen[name] = p.CFrame
+	end
+	return p, obbySeen[name]
+end
+
+local function lastClaim(name)
+	local b = data().ObbyBonuses
+	return b and b[name] or 0
+end
+
+obbyDue = function()
+	if not beat.obby then
+		return false -- Auto Obby is off
+	end
+	for _, name in ipairs(OBBY_NAMES) do
+		if obbyOn[name] and OBS.GetBonusCooldownTimeLeft(player, name) <= 0 and not (obbyBench[name] and obbyBench[name] > os.clock()) then
+			return true
+		end
+	end
+	return false
+end
+
+local function obbyRun(name)
+	local r = root()
+	local _, cf = finishOf(name)
+	if not (r and cf) then
+		say("obby", "WARN no " .. (r and OBBY_LABEL[name] .. " finish" or "character"))
+		obbyBench[name] = os.clock() + 30
+		return
+	end
+	local home, before = r.CFrame, lastClaim(name)
+	moving = true
+	local good, err = pcall(function()
+		step("obby", "to " .. name)
+		player.Character:PivotTo(cf * CFrame.new(0, 3, 0))
+		r.AssemblyLinearVelocity = Vector3.zero
+		if not waitFor(function()
+			return lastClaim(name) ~= before
+		end, OBBY_CLAIM_WAIT) then
+			local part = finishOf(name)
+			if part then
+				R("ClaimObbyBonus"):FireServer(part)
+			end
+			waitFor(function()
+				return lastClaim(name) ~= before
+			end, 2)
+		end
+	end)
+	-- every path jumps home, a thrown error included
+	step("obby", "home")
+	for _ = 1, 3 do
+		local r2 = root()
+		if not r2 then
+			break
+		end
+		player.Character:PivotTo(home)
+		r2.AssemblyLinearVelocity = Vector3.zero
+		if waitFor(function()
+			local r3 = root()
+			return r3 ~= nil and (r3.Position - home.Position).Magnitude > 8
+		end, OBBY_HOME_WATCH) then
+			log("pulled back to the obby after jumping home; jumping again")
+		else
+			break
+		end
+	end
+	moving = false
+	if not good then
+		error(err, 0)
+	end
+	if lastClaim(name) ~= before then
+		stats.obby += 1
+		say("obby", ("claimed %s obby (%d this run)"):format(OBBY_LABEL[name], stats.obby))
+	else
+		say("obby", "WARN " .. OBBY_LABEL[name] .. " obby not claimed; trying again in 60s")
+		obbyBench[name] = os.clock() + 60
+	end
+end
+
+local function obbyBody(alive)
+	local waits = {}
+	for _, name in ipairs(OBBY_NAMES) do
+		if obbyOn[name] and alive() then
+			local left = OBS.GetBonusCooldownTimeLeft(player, name)
+			if left <= 0 and not moving and not (obbyBench[name] and obbyBench[name] > os.clock()) then
+				obbyRun(name)
+				task.wait(0.5)
+			else
+				waits[#waits + 1] = ("%s %s"):format(OBBY_LABEL[name], left > 0 and ("%d:%02d"):format(left // 60, math.floor(left % 60)) or "ready")
+			end
+		end
+	end
+	say("obby", #waits > 0 and table.concat(waits, ", ") or "nothing ticked", true)
+	local t0 = os.clock()
+	while alive() and os.clock() - t0 < OBBY_POLL do
+		task.wait(0.5)
 	end
 end
 
@@ -1758,6 +1950,30 @@ Misc:AddToggle("Claim", {
 		end
 	end,
 })
+Misc:AddToggle("Obby", {
+	Text = "Auto Obby",
+	Tooltip = "Jumps onto each ticked obby's finish the moment its cooldown is up, lets the game claim it, and jumps back to where you were. Easy 2 Grade tokens / 5 min, Medium 5 + Luck buff / 10 min, Hard 5 + Grade Speed buff + 1 Bluetooth potion / 15 min. MOVES YOUR CHARACTER for ~1s",
+	Default = false,
+	Callback = function(on)
+		if on then
+			loop("obby", obbyBody)
+		else
+			stop("obby")
+		end
+	end,
+})
+Misc:AddDropdown("ObbyList", {
+	Text = "Obbies",
+	Values = { "Easy", "Medium", "Hard" },
+	Default = { "Easy", "Medium", "Hard" },
+	Multi = true,
+	Callback = function(picked)
+		local set = ticked(picked)
+		for _, name in ipairs(OBBY_NAMES) do
+			obbyOn[name] = set[OBBY_LABEL[name]] == true
+		end
+	end,
+})
 Misc:AddToggle("AntiAfk", {
 	Text = "Anti-AFK",
 	Tooltip = "The game rejoins you to a private server after 15 minutes without input. This sends an F15 key every minute you are away",
@@ -1794,6 +2010,7 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
 		{ "Grade", note.grade or "off" },
 		{ "Trait", note.trait or "off" },
 		{ "Tower", note.tower or "off" },
+		{ "Obby", note.obby or "off" },
 	})
 end))
 
