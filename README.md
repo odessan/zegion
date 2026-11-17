@@ -87,6 +87,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | My Dancing Animals!                 | `102602309625870` | `dancing_animals.lua`                  |
 | My Seafood Stand!                   | `72896199592423`  | `my_seafood_stand.lua`                 |
 | Power Blast Lucky Block             | `119822977170203` | `power_blast_lucky_block.lua`          |
+| Pull a Dino                         | `127366577128237` | `pull_a_dino.lua`                      |
 | Pull a Lucky Block                  | `80861715191104`  | `pull_a_lucky_block.lua`               |
 | Pull a Lucky Fish                   | `112781315318195` | `pull_a_lucky_fish.lua`                |
 | Roll for Pets to Fight              | `137395343406581` | `roll_for_pets_to_fight.lua`           |
