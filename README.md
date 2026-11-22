@@ -56,6 +56,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Break and Steal Eggs                | `114326934417838` | `break_and_steal_eggs.lua`             |
 | Build a Bridge for Brainrots        | `88207898227053`  | `build_bridge_for_brainrots.lua`       |
 | Build to Kill Zombie                | `105011592530400` | `build_to_kill_zombie.lua`             |
+| Cast for Fish                       | `131424283721618` | `cast_for_fish.lua`                    |
 | Chicken Farm                        | `137233438285284` | `chicken_farm.lua`                     |
 | Cup Shuffle Zoo                     | `79226825467411`  | `cup_shuffle_zoo.lua`                  |
 | Cut a Rock                          | `113742027864370` | `cut_a_rock.lua`                       |
