@@ -118,6 +118,7 @@ local GAMES = {
 	["81833593897486"] = "anime_farm.lua", -- Anime Farm
 	["127366577128237"] = "pull_a_dino.lua", -- Pull a Dino
 	["107192230357786"] = "fish_for_secret_animals.lua", -- Fish for Secret Animals
+	["93545804988403"] = "jump_for_cases.lua", -- Jump for Cases
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
