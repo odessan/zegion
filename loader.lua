@@ -121,6 +121,7 @@ local GAMES = {
 	["93545804988403"] = "jump_for_cases.lua", -- Jump for Cases
 	["131424283721618"] = "cast_for_fish.lua", -- Cast for Fish
 	["129081220403721"] = "throw_a_seed.lua", -- Throw a Seed
+	["90296841634441"] = "fish_for_sea_animals.lua", -- Fish for Sea Animals
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.

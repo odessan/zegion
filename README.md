@@ -82,6 +82,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Fake a Brainrot                     | `110627433764494` | `fake_a_brainrot.lua`                  |
 | Fall For Brainrots!                 | `86368783421928`  | `fall_for_brainrots.lua`               |
 | Fish an Anime!                      | `74729868188364`  | `fish_for_anime_rng.lua`               |
+| Fish for Sea Animals                | `90296841634441`  | `fish_for_sea_animals.lua`             |
 | Fish for Secret Animals             | `107192230357786` | `fish_for_secret_animals.lua`          |
 | Jump for Cases                      | `93545804988403`  | `jump_for_cases.lua`                   |
 | Jump for SCP                        | `123724279728430` | `jump_for_scp.lua`                     |
