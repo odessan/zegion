@@ -4,14 +4,15 @@
                Aim -> 0.75s -> Here -> Throw:InvokeServer(1). The server times the meter from its own Aim
                (0.5 - cos(t / 1.5 * 2pi) / 2, peak at 0.75s), ignores a second Aim while one is open, and
                clamps the meter at 1, so distance (and the zone, and the seed) only grows with Strength.
-               One throw per flight: the server answers nil to anything sooner and says nothing when it
-               ends. 6-7s at 290 studs, 7-8s at 1.7K, and at ~6K two modes: ~7.5s on about a third of
-               throws, ~9.7s on the rest. The server takes an Aim even mid-flight and keeps it open (a
-               refused Throw does not close it) and meters from it, so: one Aim, then a Throw on each
-               meter peak (every 1.5s) from +8.3s; the first peak after the flight is accepted and
-               perfect. Overlapping Aim/Throw pairs were accepted too, but off-peak: never perfect, zone 13
-               instead of 15. No paid skip exists. A Throw works without a Collect first; one Collect
-               banks every open seed (proven 68 -> 70 plants).
+               One throw per server-timed gap: nil to anything sooner, no signal when it ends. At 8.02K
+               studs (2026-11-24) the gap has two modes and nothing between: ready at ~6.4-7.2s on one
+               throw in 6-7 (a counter, not the plant), 9.19-9.56s on the rest. An Aim sent before the
+               server is ready is DROPPED; the first one after is kept. So: Aim at +7.25, Throw 0.75s
+               later; on nil Aim again at +9.35, then every ~0.8s. Measured 9.82s a throw over 44, all
+               perfect, against 10.16s for the old one-Aim-on-1.5s-peaks loop (7 in 29 slipped to 11.5s).
+               Aims every 0.2s with their own Throws ran 9.53s but never perfect (a later pair's Throw lands
+               off-peak on an earlier kept Aim). No paid skip exists. A Throw works without a Collect
+               first; one Collect banks every open seed (proven 68 -> 70 plants).
                Collect(true) banks the seed and re-arms; Collect() banks it and sends you home.
                Between throws it parks just off the strip, because the game's own throw controller
                starts a throw (anchors you, shows the meter) whenever you stand on it; its abort() is
@@ -38,11 +39,19 @@
        Throw sooner than the flight        nil at 2-6s, accepted at 7s (290 studs); 7s nil, 8s ok (1.7K)
        Aim again without Collect           nil at 3s and 5s
        Collect() (go home) early, then Aim nil at 4s -> 6s, accepted at 7.6s: the same floor
-       a softer throw for a shorter flight zone 15 needs meter >= 0.94 (~6% shorter), and loses distance luck
+       a softer throw for a shorter flight zone 15 needs meter >= 0.94 (~6% shorter), and loses distance luck;
+                                           client flight is log10(1 + d/60) * 2.2 + 1.5, so half the distance
+                                           saves only ~0.7s
        a landing signal                    none: 12s of attributes and Notify after a throw, only ThrowT0/Throws
        Throw while training                nil
        a short train window per cooldown   pays nothing: the first rep batch lands after ~7s+
        SetSkipCine                         client-only cinematic, no effect on the server's gap
+       Cutscenes SHORT in settings         = SetSkipCine true; 2026-11-24, 6 throws at 8.02K studs with a
+                                           Throw on every peak from 2.5s: nil up to 7s, accepted at 8.5-11.5s
+       an off-peak Throw to skip the wait  PerfectBand 0.08 = +-0.14s around a peak; perfect is x2 size, x1.1
+       Throw spam at 10Hz from +6.5s       one Aim, dropped (sent before ready): nothing until the 25s retry,
+                                           a flat 26.6s gap; not a penalty
+       a burst after a minute idle         none: the 1-short-in-6/7 pattern holds from the first throw
        synthetic tap / InputBegan call     the game's input never sees it; executor hooks do not see the
                                            game's own remote calls either (irrelevant once replayed)
      Not wired: fuse (removed on request; Request("Fuse", { ids = {a, b, c} }), never run live),
@@ -57,14 +66,16 @@ local TP_SETTLE = 0.15 -- after a teleport, wait this long before judging it (x 
 local TP_TRIES = 3 -- straight teleports before falling back to a glide
 local TP_TOL = 6 -- studs: arrived
 local GLIDE_SPEED = 600 -- studs/s for the fallback glide (3000 held in zb moves); lower it if glides get pulled back
-local PEAK = 0.75 -- seconds from Aim to the meter's peak (period 1.5s)
--- The server takes an Aim even mid-flight and keeps that one open (a second is ignored); only the Throw waits for
--- the flight, and it meters from the open Aim. The meter peaks every METER_PERIOD, so one Aim and a Throw on each
--- peak: the first peak after the flight is accepted AND perfect. The flight has two modes at ~6K studs (~7.5s on
--- about a third of throws, ~9.7s on the rest), so the peaks sit at FIRST_PEAK and FIRST_PEAK + 1.5 to catch both.
-local FIRST_PEAK = 8.3 -- seconds after the last accepted Throw; the peaks after it follow every METER_PERIOD
+local PEAK = 0.75 -- seconds from Aim to the meter's peak (period 1.5s): a Throw this long after its Aim is PERFECT
 local METER_PERIOD = 1.5
-local MAX_PEAKS = 8 -- no throw accepted after this many peaks: Collect() and start over
+-- The server drops an Aim that arrives before it is ready for the next throw, and keeps the first one after; a Throw
+-- PEAK after that Aim is accepted and perfect. So: Aim, PEAK, Throw, and on nil a fresh Aim (2026-11-24, 8.02K studs,
+-- 50+ throws all perfect). Ready points, from the last accepted Throw: ~6.4-7.2s on about one throw in 6-7, 9.19-9.56s
+-- on the rest; nothing in between, so the second Aim jumps straight to AIM_LONG.
+local AIM_SHORT = 7.25 -- first Aim; lower it toward 6.5 if short throws keep landing on the first try
+local AIM_LONG = 9.35 -- second Aim; raise it toward 9.6 if long throws need a third try, lower it if they never do
+local RETRY_AIM = 0.05 -- after a refused Throw, the next Aim goes this long after the reply
+local MAX_TRIES = 12 -- no throw accepted after this many Aims: Collect() and start over
 local TRAIN_STOP_WAIT = 1.5 -- after StopTrain, wait this long for Training to clear
 local PROMPT_TRIES = 6 -- TrainPrompt presses before giving up on this block
 local XP_CLAIM_DELAY = 0.3 -- after an x2 offer shows, claim it this much later (ttl is 3s; under 0.15 the game refuses its own tap)
@@ -315,7 +326,9 @@ end
 
 local function throwOnce(alive)
 	stopTraining()
-	local wait = lastThrow + FIRST_PEAK - PEAK - os.clock()
+	-- the Aim goes on the schedule, not after the teleport: the strip hop lands 0.4s ahead so it can't drift it
+	local aimAt = math.max(os.clock() + 0.4, lastThrow + AIM_SHORT)
+	local wait = aimAt - 0.4 - os.clock()
 	if wait > 0 then
 		step("farm", "cooldown")
 		if not tp(spot("park")) then
@@ -336,45 +349,47 @@ local function throwOnce(alive)
 		task.wait(1)
 		return false
 	end
-	-- An Aim sent mid-flight is ignored, so one goes out every METER_PERIOD: whichever the server keeps, the
-	-- peaks fall on the same instants, and a Throw goes out on each until one is accepted.
+	-- Aims before the server is ready are dropped, so each try is a fresh Aim with its own Throw PEAK later
 	step("farm", "throw")
-	local aimAt = os.clock()
-	local r, wonAt, peaks = nil, nil, 0
+	local r, wonAt, tries = nil, nil, 0
 	local function untilT(t)
 		while os.clock() < t do
 			task.wait()
 		end
 	end
-	while alive() and not r and peaks < MAX_PEAKS do
-		untilT(aimAt + METER_PERIOD * peaks)
+	while alive() and not r and tries < MAX_TRIES do
+		untilT(aimAt)
 		freeClient() -- 1.5s grace: the game's controller does not start its own throw under ours
+		local aimed = os.clock()
 		R.Aim:FireServer()
-		local at = aimAt + PEAK + METER_PERIOD * peaks
-		peaks += 1
-		untilT(at)
+		tries += 1
+		untilT(aimed + PEAK)
 		R.Here:FireServer()
+		local sent = os.clock()
 		local res = invoke(R.Throw, REPLY_WAIT, 1)
 		if type(res) == "table" then
-			r, wonAt = res, at
+			r, wonAt = res, sent
+		else
+			aimAt = math.max(os.clock() + RETRY_AIM, tries == 1 and lastThrow + AIM_LONG or 0)
 		end
 	end
 	freeClient()
 	if not r then
 		if alive() then
 			stats.refused += 1
-			say(("no throw accepted on %d peaks: Collect() and start over"):format(MAX_PEAKS))
+			say(("no throw accepted on %d Aims: Collect() and start over"):format(MAX_TRIES))
 		end
 		R.Collect:FireServer()
 		task.wait(1.5)
 		return false
 	end
 	if not r.perfect then
-		first("not perfect", ("meter %s on peak %d"):format(tostring(r.meter), peaks))
+		first("not perfect", ("meter %s on try %d"):format(tostring(r.meter), tries))
 	end
 	R.Collect:FireServer(true) -- banks it now (Place Best and Sell see it), stays armed; proven harmless mid-flight
-	if lastThrow > 0 and wonAt - lastThrow < FIRST_PEAK + METER_PERIOD * 3 then -- back-to-back only, not across training
-		stats.gapSum += wonAt - lastThrow
+	local gap = wonAt - lastThrow
+	if lastThrow > 0 and gap < AIM_LONG + 5 then -- back-to-back only, not across training
+		stats.gapSum += gap
 		stats.gapN += 1
 	end
 	lastThrow = wonAt
@@ -383,8 +398,10 @@ local function throwOnce(alive)
 		best.income, best.text = r.income, ("%s %s/s"):format(tostring(r.plant), fmt(r.income))
 	end
 	say(
-		("throw %d: %s%s%s %s/s, zone %s, %s studs"):format(
+		("throw %d (%s, try %d): %s%s%s %s/s, zone %s, %s studs"):format(
 			stats.throws,
+			gap < 60 and ("%.2fs"):format(gap) or "first",
+			tries,
 			r.perfect and "" or "(not perfect) ",
 			(r.mutation or 1) ~= 1 and ("mut " .. tostring(r.mutation) .. " ") or "",
 			tostring(r.plant),
@@ -745,7 +762,7 @@ end
 
 Farm:AddToggle("Throw", {
 	Text = "Auto Throw (perfect)",
-	Tooltip = "Glides onto the launch strip and throws at the meter's exact peak: PERFECT every throw, one every ~6.5s (the server's limit)",
+	Tooltip = "Glides onto the launch strip and throws at the meter's exact peak: PERFECT every throw, one every ~9.8s at 8K studs (the server's limit)",
 	Default = false,
 	Callback = guarded(function(state)
 		farmWant.throw = state
