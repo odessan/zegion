@@ -118,6 +118,7 @@ Names drift on Roblox; trust the id. The panel shows the live name on its topbar
 | Tap Buttons                         | `77404766588393`  | `tap_buttons.lua`                      |
 | Tap Simulator                       | `72858262610964`  | `tap_simulator.lua`                    |
 | Throw a Seed                        | `129081220403721` | `throw_a_seed.lua`                     |
+| Wish for Anime                      | `106516810880035` | `wish_for_anime.lua`                   |
 | Build an Ant Empire                 | `78490532994307`  | `build_an_ant_empire.lua`              |
 | Anime Dice                          | `113290951185459` | `anime_dice.lua`                       |
 | Anime Farm                          | `81833593897486`  | `anime_farm.lua`                       |
