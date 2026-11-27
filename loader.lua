@@ -124,6 +124,7 @@ local GAMES = {
 	["90296841634441"] = "fish_for_sea_animals.lua", -- Fish for Sea Animals
 	["106516810880035"] = "wish_for_anime.lua", -- Wish for Anime
 	["75854363819554"] = "throw_brain_for_zombies.lua", -- Throw Brain for Zombies
+	["122281262593872"] = "wake_up_the_animal.lua", -- Wake up the Animal
 
 	-- dump / dump_v2 aren't here, and aren't in the repo at all: they're local tools you
 	-- paste in when you want them, not things that should fire the moment you join.
